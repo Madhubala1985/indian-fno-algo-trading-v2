@@ -207,3 +207,15 @@ class KiteAdapter:
             update_kind="SNAPSHOT",
             source="kite_live",
         )
+
+    def check_session(self) -> tuple[bool, str]:
+        """
+        Verify the current access token with a lightweight profile() call.
+        Returns (is_valid, error_message).
+        Raises no exceptions — all errors are captured in the return value.
+        """
+        try:
+            self.kite.profile()
+            return True, ""
+        except Exception as exc:
+            return False, str(exc)

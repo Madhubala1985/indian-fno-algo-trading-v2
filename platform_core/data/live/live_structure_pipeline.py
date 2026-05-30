@@ -1,4 +1,6 @@
+import json
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from platform_core.intelligence.market_context_builder import (
     MarketContextBuilder,
@@ -278,6 +280,95 @@ _soft_halted:            bool        = False
 _soft_halt_reason:       str         = ""
 _consecutive_losses:     int         = 0
 
+# Operational state
+_STATE_FILE:         Path = Path("logs/paper_trading_state.json")
+_kite_session_valid: bool = True   # set False when token expiry is detected
+_kite_session_error: str  = ""
+
+
+# ── State persistence (defined before ENGINES so startup restore runs first) ──
+
+def _save_state() -> None:
+    """
+    Persist all mutable account state to disk atomically.
+    Called after every trade close and every halt-state change.
+    _open_premium_cost is intentionally excluded: on restart there is no
+    in-memory position so the cost exposure is always 0.
+    """
+    state = {
+        "equity":                _equity,
+        "peak_equity":           _peak_equity,
+        "daily_pnl":             _daily_pnl,
+        "consecutive_losses":    _consecutive_losses,
+        "trading_halted":        _trading_halted,
+        "halt_reason":           _halt_reason,
+        "soft_halted":           _soft_halted,
+        "soft_halt_reason":      _soft_halt_reason,
+        "session_date":          _session_date.isoformat() if _session_date else None,
+        "session_opening_equity": _session_opening_equity,
+        "last_atm_iv":           _last_atm_iv,
+    }
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2))
+        tmp.replace(_STATE_FILE)   # atomic on POSIX
+    except Exception as exc:
+        print(f"[STATE] Write failed: {exc}")
+
+
+def _load_state() -> None:
+    """
+    Restore account state from disk if a state file exists.
+    All values are validated into locals first; globals are only written if
+    the entire parse succeeds, so a partial/corrupt file leaves state intact.
+    """
+    global _equity, _peak_equity, _daily_pnl, _consecutive_losses
+    global _trading_halted, _halt_reason, _soft_halted, _soft_halt_reason
+    global _session_date, _session_opening_equity, _last_atm_iv
+
+    if not _STATE_FILE.exists():
+        print(f"[STATE] No state file — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
+        return
+    try:
+        s = json.loads(_STATE_FILE.read_text())
+        # Parse into locals first — globals are only written after full success
+        eq     = float(s["equity"])
+        peak   = float(s["peak_equity"])
+        dpnl   = float(s["daily_pnl"])
+        consec = int(s["consecutive_losses"])
+        halted = bool(s["trading_halted"])
+        hreason= str(s["halt_reason"])
+        soft   = bool(s["soft_halted"])
+        sreason= str(s["soft_halt_reason"])
+        seq    = float(s["session_opening_equity"])
+        iv     = float(s.get("last_atm_iv", _REFERENCE_IV))
+        sd     = s.get("session_date")
+        sdate  = date.fromisoformat(sd) if sd else None
+    except Exception as exc:
+        print(f"[STATE] Restore failed ({exc}) — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
+        return
+    # All values parsed successfully — assign atomically
+    _equity                 = eq
+    _peak_equity            = peak
+    _daily_pnl              = dpnl
+    _consecutive_losses     = consec
+    _trading_halted         = halted
+    _halt_reason            = hreason
+    _soft_halted            = soft
+    _soft_halt_reason       = sreason
+    _session_opening_equity = seq
+    _last_atm_iv            = iv
+    _session_date           = sdate
+    print(
+        f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
+        f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
+        f"halted={_trading_halted}  soft={_soft_halted}  session={_session_date}"
+    )
+
+
+_load_state()   # restore from disk at process startup
+
 
 ENGINES = {}
 SWING_DETECTORS = {}
@@ -503,6 +594,7 @@ def _try_resume_trading(current_date: date) -> None:
             f"equity=₹{_equity:,.0f} | peak=₹{_peak_equity:,.0f} | "
             f"tier={tier} | halted={'YES' if _trading_halted else 'NO'}"
         )
+    _save_state()
 
 
 def _size_live_position(rec, market_ctx, tier: int) -> PositionSizingResult:
@@ -590,6 +682,7 @@ def on_ticks(raw_ticks):
     global _equity, _peak_equity, _open_premium_cost, _bar_count, _last_atm_iv
     global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
     global _soft_halted, _soft_halt_reason, _consecutive_losses
+    global _kite_session_valid, _kite_session_error
 
     for raw_tick in raw_ticks:
 
@@ -671,7 +764,7 @@ def on_ticks(raw_ticks):
 
             _captured_market_ctx = market_ctx
 
-            if str(market_ctx.bias) != "NEUTRAL":
+            if str(market_ctx.bias) != "NEUTRAL" and _kite_session_valid:
                 try:
                     spot = completed_bar.close_price
                     bar_date = datetime.now(timezone.utc).date()
@@ -714,7 +807,24 @@ def on_ticks(raw_ticks):
                                 f"iv={best.implied_volatility:.1%}"
                             )
                 except Exception as exc:
-                    print(f"[OPTIONS] Pipeline error: {exc}")
+                    _err_str = str(exc)
+                    _is_auth = any(
+                        kw in _err_str.lower()
+                        for kw in ("token", "forbidden", "access denied", "invalid api", "401", "403")
+                    )
+                    if _is_auth and _kite_session_valid:
+                        _kite_session_valid = False
+                        _kite_session_error = _err_str
+                        print(
+                            f"\n{'='*60}\n"
+                            f"[KITE SESSION EXPIRED] Token rejected by Kite API.\n"
+                            f"  Details: {_err_str}\n"
+                            f"  Action: run `python scripts/generate_kite_session.py` and restart.\n"
+                            f"  Options pipeline DISABLED — structure analysis continues.\n"
+                            f"{'='*60}"
+                        )
+                    elif _kite_session_valid:
+                        print(f"[OPTIONS] Pipeline error: {exc}")
         # ─────────────────────────────────────────────────────────────────────
 
         h4_bar = LATEST_HTF_BARS.get(
@@ -823,6 +933,7 @@ def on_ticks(raw_ticks):
                         _consecutive_losses += 1
                     else:
                         _consecutive_losses = 0
+                    _save_state()
                     trade_logger.log_trade(trade=_closed.as_paper_trade())
                     _summary = performance_tracker.calculate_summary(
                         trades=[t.as_paper_trade() for t in _option_trader.completed_trades]
@@ -843,6 +954,7 @@ def on_ticks(raw_ticks):
                 _trading_halted = True
                 _halt_reason = _halt_msg
                 print(f"\n[CAPITAL HALT] {_halt_reason}  equity=₹{_equity:,.0f}")
+                _save_state()
 
             # ── Soft halt check ──────────────────────────────────────────────
             _is_soft, _soft_msg = _check_soft_halt()
@@ -850,6 +962,7 @@ def on_ticks(raw_ticks):
                 _soft_halted = True
                 _soft_halt_reason = _soft_msg
                 print(f"\n[SOFT HALT] {_soft_halt_reason} — defensive-only mode  equity=₹{_equity:,.0f}")
+                _save_state()
 
             # ── Entry gate: fresh strike, no open position, not hard-halted ─
             if (
@@ -1103,6 +1216,20 @@ def on_ticks(raw_ticks):
                 "\nNo structure events."
             )
 
+
+# ── Validate Kite session before opening WebSocket ────────────────────────────
+_kite_session_valid, _kite_session_error = adapter.check_session()
+if not _kite_session_valid:
+    print(
+        f"\n{'='*60}\n"
+        f"[KITE SESSION ERROR] Access token is invalid or expired.\n"
+        f"  Details: {_kite_session_error}\n"
+        f"  Action: run `python scripts/generate_kite_session.py` and restart.\n"
+        f"  Options pipeline DISABLED — tick stream and structure analysis active.\n"
+        f"{'='*60}\n"
+    )
+else:
+    print("[KITE SESSION] Token valid — options pipeline enabled.")
 
 adapter.add_tick_callback(on_ticks)
 
