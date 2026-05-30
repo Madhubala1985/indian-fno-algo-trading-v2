@@ -1,0 +1,4933 @@
+
+BACKTEST STARTED
+
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+[PAPER] OPENED LONG BANKNIFTY @ 55369.8
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+SIGNAL:
+
+TradeSignal(symbol='BANKNIFTY', direction='LONG', confidence=0.75, reason='Bullish structure confluence detected', action='OPEN', regime='NORMAL')
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+MARKET REGIME:
+
+RegimeState(volatility_regime='NORMAL', directional_regime='BALANCED', confidence_multiplier=1.0)
+
+BACKTEST SUMMARY
+
+PerformanceSummary(total_trades=0, winning_trades=0, losing_trades=0, total_pnl=0, win_rate=0.0, average_pnl=0.0)
