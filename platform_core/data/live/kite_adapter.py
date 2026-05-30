@@ -23,6 +23,19 @@ _INSTRUMENTS_CACHE_TTL: float = 300.0
 
 
 class KiteAdapter:
+    """
+    Kite REST + WebSocket adapter with bounded automatic reconnection.
+
+    Reconnect behaviour:
+      On any non-explicit disconnect, up to _MAX_RECONNECTS attempts are made
+      with exponential backoff (2 s → 4 → 8 → 16 → 32, capped at 60 s).
+      Each successful on_connect resubscribes to _instrument_tokens and resets
+      the attempt counter. Calling disconnect() sets _stopping=True which
+      suppresses reconnect scheduling.
+    """
+
+    _MAX_RECONNECTS:       int   = 5
+    _RECONNECT_BASE_DELAY: float = 2.0    # doubles each attempt, capped at 60 s
 
     def __init__(self) -> None:
 
@@ -35,7 +48,8 @@ class KiteAdapter:
         self.kite = KiteConnect(api_key=self.api_key)
         self.kite.set_access_token(self.access_token)
 
-        self.ticker = KiteTicker(self.api_key, self.access_token)
+        # ticker is created in _do_connect(); None before first connect()
+        self.ticker: KiteTicker | None = None
 
         self._tick_callbacks: list[Callable] = []
         self._connected = False
@@ -45,6 +59,15 @@ class KiteAdapter:
         self._instruments_cache_ts: float = 0.0
         self._instruments_exchange: str | None = None
 
+        # Reconnect state
+        self._instrument_tokens: list[int] = []
+        self._reconnect_count:   int       = 0
+        self._reconnecting:      bool      = False
+        self._reconnect_lock               = threading.Lock()
+        self._stopping:          bool      = False
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
     @property
     def connected(self) -> bool:
         return self._connected
@@ -53,29 +76,77 @@ class KiteAdapter:
         self._tick_callbacks.append(callback)
 
     def connect(self, *, instrument_tokens: list[int]) -> None:
+        """
+        Connect the WebSocket and subscribe to instrument_tokens.
+        Blocks until the first successful connection or raises TimeoutError.
+        Reconnect attempts run in background threads; this method returns
+        after the initial connect.
+        """
+        self._instrument_tokens = list(instrument_tokens)
+        self._stopping = False
+        self._reconnect_count = 0
+        self._do_connect()
 
-        def on_connect(ws, response):
-            print("\n[KITE] WebSocket connected.")
+        timeout = 10.0
+        start = time.time()
+        while not self._connected:
+            if time.time() - start > timeout:
+                raise TimeoutError("Kite WebSocket initial connection timeout (10 s).")
+            time.sleep(0.1)
+
+    def disconnect(self) -> None:
+        """Explicitly close the WebSocket. Suppresses automatic reconnect."""
+        self._stopping = True
+        if self.ticker is not None:
+            self.ticker.close()
+        self._connected = False
+
+    # ── Internal connection machinery ─────────────────────────────────────────
+
+    def _do_connect(self) -> None:
+        """
+        Create a fresh KiteTicker, register callbacks, and start the connection
+        thread. Closes any existing ticker first.
+        """
+        # Close stale ticker cleanly before replacing it
+        if self.ticker is not None:
+            try:
+                self.ticker.close()
+            except Exception:
+                pass
+
+        self.ticker = KiteTicker(self.api_key, self.access_token)
+
+        def on_connect(ws, response) -> None:
             self._connected = True
-            ws.subscribe(instrument_tokens)
-            ws.set_mode(ws.MODE_FULL, instrument_tokens)
-            print(f"[KITE] Subscribed: {instrument_tokens}")
+            self._reconnect_count = 0           # reset on every successful connect
+            ws.subscribe(self._instrument_tokens)
+            ws.set_mode(ws.MODE_FULL, self._instrument_tokens)
+            print(
+                f"\n[KITE] WebSocket connected.  "
+                f"Subscribed {len(self._instrument_tokens)} token(s): "
+                f"{self._instrument_tokens}"
+            )
 
-        def on_ticks(ws, ticks):
+        def on_ticks(ws, ticks) -> None:
             for callback in self._tick_callbacks:
                 callback(ticks)
 
-        def on_close(ws, code, reason):
+        def on_close(ws, code, reason) -> None:
             self._connected = False
-            print(f"\n[KITE] Closed: {code} {reason}")
+            if self._stopping:
+                print(f"\n[KITE] Disconnected (operator request): {code} {reason}")
+                return
+            print(f"\n[KITE] Connection lost: code={code}  reason={reason!r}")
+            self._schedule_reconnect()
 
-        def on_error(ws, code, reason):
-            print(f"\n[KITE] Error: {code} {reason}")
+        def on_error(ws, code, reason) -> None:
+            print(f"\n[KITE] Error: code={code}  reason={reason!r}")
 
         self.ticker.on_connect = on_connect
-        self.ticker.on_ticks = on_ticks
-        self.ticker.on_close = on_close
-        self.ticker.on_error = on_error
+        self.ticker.on_ticks   = on_ticks
+        self.ticker.on_close   = on_close
+        self.ticker.on_error   = on_error
 
         thread = threading.Thread(
             target=self.ticker.connect,
@@ -84,16 +155,79 @@ class KiteAdapter:
         )
         thread.start()
 
-        timeout = 10
-        start = time.time()
-        while not self._connected:
-            if time.time() - start > timeout:
-                raise TimeoutError("Kite websocket connection timeout.")
-            time.sleep(0.1)
+    def _schedule_reconnect(self) -> None:
+        """
+        Schedule one reconnect attempt, with storm protection via a lock and
+        the _reconnecting flag. Returns immediately; reconnect runs in a
+        background thread.
+        """
+        with self._reconnect_lock:
+            if self._stopping or self._reconnecting:
+                return
 
-    def disconnect(self) -> None:
-        self.ticker.close()
-        self._connected = False
+            self._reconnect_count += 1
+
+            if self._reconnect_count > self._MAX_RECONNECTS:
+                print(
+                    f"\n{'='*60}\n"
+                    f"[KITE] Max reconnects ({self._MAX_RECONNECTS}) exceeded.\n"
+                    f"  The WebSocket cannot be restored automatically.\n"
+                    f"  Check: network connectivity, access token expiry.\n"
+                    f"  Action: run scripts/generate_kite_session.py and restart.\n"
+                    f"{'='*60}"
+                )
+                return
+
+            delay = min(
+                self._RECONNECT_BASE_DELAY * (2 ** (self._reconnect_count - 1)),
+                60.0,
+            )
+            print(
+                f"\n[KITE] Reconnect {self._reconnect_count}/{self._MAX_RECONNECTS} "
+                f"scheduled in {delay:.0f} s"
+            )
+            self._reconnecting = True
+
+        thread = threading.Thread(
+            target=self._reconnect_after_delay,
+            args=(self._reconnect_count, delay),
+            daemon=True,
+        )
+        thread.start()
+
+    def _reconnect_after_delay(self, attempt: int, delay: float) -> None:
+        """Sleep for delay, then attempt to reconnect and resubscribe."""
+        time.sleep(delay)
+
+        with self._reconnect_lock:
+            self._reconnecting = False
+
+        if self._stopping:
+            return
+
+        print(f"\n[KITE] Attempting reconnect {attempt}/{self._MAX_RECONNECTS}…")
+        try:
+            self._do_connect()
+
+            # Wait for on_connect to fire (up to 15 s)
+            start = time.time()
+            while not self._connected and time.time() - start < 15.0:
+                time.sleep(0.1)
+
+            if self._connected:
+                print(
+                    f"[KITE] Reconnect {attempt} succeeded.  "
+                    f"Subscriptions restored for {len(self._instrument_tokens)} token(s)."
+                )
+            else:
+                print(f"[KITE] Reconnect {attempt} timed out — scheduling next attempt.")
+                self._schedule_reconnect()
+
+        except Exception as exc:
+            print(f"[KITE] Reconnect {attempt} raised exception: {exc}")
+            self._schedule_reconnect()
+
+    # ── REST helpers ───────────────────────────────────────────────────────────
 
     def fetch_option_chain(
         self,
@@ -168,7 +302,7 @@ class KiteAdapter:
             ask_qty = int(sell_levels[0]["quantity"]) if sell_levels and sell_levels[0].get("quantity") else None
 
             ltp_raw = q.get("last_price")
-            oi_raw = q.get("oi")
+            oi_raw  = q.get("oi")
             vol_raw = q.get("volume")
 
             option_side = "CALL" if inst["instrument_type"] == "CE" else "PUT"
