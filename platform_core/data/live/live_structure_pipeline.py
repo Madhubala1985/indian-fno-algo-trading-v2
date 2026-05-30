@@ -69,7 +69,7 @@ from platform_core.paper_trading.trade_logger import (
     TradeLogger,
 )
 
-from platform_core.backtesting.backtest_runner import OptionPaperTrader, OptionPosition
+from platform_core.backtesting.backtest_runner import OptionPaperTrader, OptionPosition, DailyBarAccumulator
 from platform_core.risk.position_sizing import (
     PortfolioRiskSnapshot,
     PositionSizer,
@@ -110,8 +110,30 @@ from platform_core.analytics.structure.support_resistance_engine import (
     SupportResistanceEngineConfig,
 )
 
+from platform_core.analytics.structure.session_context import (
+    SessionContextEngine,
+)
+
+from platform_core.analytics.structure.previous_day_levels import (
+    PreviousDayLevelsEngine,
+)
+
+from platform_core.analytics.structure.opening_range import (
+    OpeningRangeEngine,
+)
+
+from platform_core.analytics.structure.fvg_scoring import (
+    FVGQualityScore,
+    FVGQualityScorer,
+    FVG_QUALITY_BLOCK_THRESHOLD,
+    FVG_QUALITY_STALENESS_BARS,
+)
+
+from platform_core.analytics.structure.models import StructureEventType
+
 from platform_core.data.bar_builder import (
     BarBuilder,
+    LiveBar,
 )
 
 from platform_core.data.live.instrument_registry import (
@@ -203,6 +225,18 @@ _opt_ctx_builder = OptionsContextBuilder(
 _strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=3))
 _expiry_provider = ExpiryProvider(_OPTION_TARGET)
 
+# ── Session / PDH-PDL / Opening-Range / FVG-quality filters ──────────────────
+# Identical instances and configuration to BacktestRunner.
+_session_engine   = SessionContextEngine()
+_pdl_engine       = PreviousDayLevelsEngine()
+_or_engine        = OpeningRangeEngine()
+_fvg_scorer       = FVGQualityScorer()
+_fvg_15m = FVGEngine(config=FVGEngineConfig(instrument_id=_OPTION_TARGET, timeframe="MIN_15"))
+_fvg_1h  = FVGEngine(config=FVGEngineConfig(instrument_id=_OPTION_TARGET, timeframe="HOUR_1"))
+_fvg_quality:     float = 1.0
+_fvg_quality_bar: int   = -FVG_QUALITY_STALENESS_BARS - 1
+_daily_acc = DailyBarAccumulator(symbol=_OPTION_TARGET)
+
 # ── Virtual account — ₹1,00,000 capital model ────────────────────────────────
 _INITIAL_EQUITY: float = 100_000.0  # configurable virtual capital (₹)
 _REFERENCE_IV:   float = 0.18       # baseline IV for vol-ratio scaling
@@ -285,16 +319,58 @@ _STATE_FILE:         Path = Path("logs/paper_trading_state.json")
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
+# MCB warm-start: recent bar history persisted for post-restart rehydration
+_MCB_HISTORY_BARS:   int  = 30   # bars per timeframe kept (> min_history_bars=24)
+_MCB_SAVE_INTERVAL:  int  = 15   # write state every N BANKNIFTY 1-min bars
+
+_bar_history: dict          = {}  # {tf: [bar_dict, ...]} — in-place mutated, no global needed
+_bars_since_history_save: int = 0
+
 
 # ── State persistence (defined before ENGINES so startup restore runs first) ──
 
+def _bar_to_dict(bar: LiveBar) -> dict:
+    """Serialise a LiveBar to a JSON-safe dict."""
+    return {
+        "symbol":    bar.symbol,
+        "timeframe": bar.timeframe,
+        "start":     bar.start_timestamp.isoformat(),
+        "end":       bar.end_timestamp.isoformat(),
+        "open":      bar.open_price,
+        "high":      bar.high_price,
+        "low":       bar.low_price,
+        "close":     bar.close_price,
+        "volume":    bar.volume,
+    }
+
+
+def _dict_to_bar(d: dict) -> LiveBar:
+    """Reconstruct a LiveBar from a serialised dict."""
+    ts = datetime.fromisoformat(d["start"])
+    te = datetime.fromisoformat(d["end"])
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if te.tzinfo is None:
+        te = te.replace(tzinfo=timezone.utc)
+    return LiveBar(
+        symbol          = d["symbol"],
+        timeframe       = d["timeframe"],
+        start_timestamp = ts,
+        end_timestamp   = te,
+        open_price      = float(d["open"]),
+        high_price      = float(d["high"]),
+        low_price       = float(d["low"]),
+        close_price     = float(d["close"]),
+        volume          = float(d["volume"]),
+    )
+
+
 def _save_state() -> None:
     """
-    Persist all mutable account state to disk atomically.
-    Called after every trade close and every halt-state change.
-    _open_premium_cost is intentionally excluded: on restart there is no
-    _open_premium_cost is not stored directly — it is re-derived from
+    Persist mutable account state and recent bar history to disk atomically.
+    _open_premium_cost is not stored directly — re-derived from
     open_position.entry_premium × lot_size × lots on restore.
+    bar_history is stored as-is for MCB warm-start rehydration.
     """
     pos = _option_trader._position
     state = {
@@ -323,6 +399,7 @@ def _save_state() -> None:
             "direction":         pos.direction,
             "bar_index":         pos.bar_index,
         } if pos is not None else None,
+        "bar_history": _bar_history,
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -411,6 +488,31 @@ def _load_state() -> None:
             f"lots={pos_data['lots']}  entry=₹{pos_data['entry_premium']:.2f}  "
             f"direction={pos_data['direction']}  expiry={pos_data['expiry_date']}"
         )
+    # Rehydrate MarketContextBuilder from persisted bar history.
+    # Parsed and fed separately so a corrupt bar_history never blocks account state restore.
+    try:
+        hist_raw = s.get("bar_history", {})
+        if hist_raw:
+            bars_by_tf: dict[str, list[LiveBar]] = {}
+            for tf, raw_bars in hist_raw.items():
+                bars_by_tf[tf] = [_dict_to_bar(b) for b in raw_bars]
+            # Restore in-memory history dict (as dicts, ready for next save)
+            _bar_history.clear()
+            for tf, raw_bars in hist_raw.items():
+                _bar_history[tf] = list(raw_bars)
+            # Replay into MCB — each timeframe's classifier is independent
+            total = sum(len(v) for v in bars_by_tf.values())
+            for tf in sorted(bars_by_tf.keys()):
+                for bar in bars_by_tf[tf]:
+                    _market_ctx_builder.update(bar=bar, timeframe=tf)
+            ctx = _market_ctx_builder.build()
+            print(
+                f"[STATE] MCB rehydrated: {total} bars across {len(bars_by_tf)} timeframe(s)  "
+                f"bias={ctx.bias}  conf={ctx.confidence:.2f}  "
+                f"ready={list(ctx.timeframes_with_history)}"
+            )
+    except Exception as exc:
+        print(f"[STATE] MCB warm-start skipped ({exc}) — cold start required.")
 
 
 _load_state()   # restore from disk at process startup
@@ -729,6 +831,8 @@ def on_ticks(raw_ticks):
     global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
     global _soft_halted, _soft_halt_reason, _consecutive_losses
     global _kite_session_valid, _kite_session_error
+    global _bars_since_history_save
+    global _fvg_quality, _fvg_quality_bar
 
     for raw_tick in raw_ticks:
 
@@ -795,10 +899,36 @@ def on_ticks(raw_ticks):
 
         # ── Options pipeline (runs only for the designated target symbol) ─────
         if completed_bar.symbol == _OPTION_TARGET:
+            # Session / Opening-Range / PDH-PDL — same update sequence as BacktestRunner
+            _session_ctx = _session_engine.classify(completed_bar.start_timestamp)
+            _or_engine.update_bar(completed_bar)
+            _daily_bar = _daily_acc.update(completed_bar)
+            if _daily_bar is not None:
+                _pdl_engine.update_daily_bar(_daily_bar)
+
             _market_ctx_builder.update(bar=completed_bar, timeframe="1m")
+            _h1m = _bar_history.setdefault("1m", [])
+            _h1m.append(_bar_to_dict(completed_bar))
+            if len(_h1m) > _MCB_HISTORY_BARS:
+                del _h1m[:-_MCB_HISTORY_BARS]
+
             for tf_key, tf_bar in mtf_bars.items():
                 tf_name = _MTF_KEY_MAP.get(tf_key, tf_key.lower())
                 _market_ctx_builder.update(bar=tf_bar, timeframe=tf_name)
+                _htf = _bar_history.setdefault(tf_name, [])
+                _htf.append(_bar_to_dict(tf_bar))
+                if len(_htf) > _MCB_HISTORY_BARS:
+                    del _htf[:-_MCB_HISTORY_BARS]
+                # Feed completed MTF bars to dedicated FVGEngine instances (HTF confluence)
+                if tf_key == "MIN_15":
+                    _fvg_15m.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
+                elif tf_key == "HOUR_1":
+                    _fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
+
+            _bars_since_history_save += 1
+            if _bars_since_history_save >= _MCB_SAVE_INTERVAL:
+                _bars_since_history_save = 0
+                _save_state()
 
             market_ctx = _market_ctx_builder.build(
                 valuation_timestamp=datetime.now(timezone.utc)
@@ -1010,11 +1140,92 @@ def on_ticks(raw_ticks):
                 print(f"\n[SOFT HALT] {_soft_halt_reason} — defensive-only mode  equity=₹{_equity:,.0f}")
                 _save_state()
 
+            # ── FVG quality + effective confidence (mirrors BacktestRunner step 8) ─
+            _fvg_events = [
+                e for e in result.emitted_events
+                if e.event_type == StructureEventType.FVG_CREATED
+            ]
+            _recent_sweeps_live = tuple(
+                ENGINES[_OPTION_TARGET]._liquidity_sweep_detector.recent_sweeps
+            )
+            _htf_fvgs_live = {
+                "MIN_15": _fvg_15m.active_gaps,
+                "HOUR_1": _fvg_1h.active_gaps,
+            }
+
+            _effective_conf = (
+                _captured_market_ctx.confidence * _session_ctx.confidence_multiplier
+            )
+
+            _pdl_mult, _pdl_reason = 1.0, ""
+            if _pdl_engine.ready and str(_captured_market_ctx.bias) != "NEUTRAL":
+                _pdl_mult, _pdl_reason = _pdl_engine.levels.confidence_multiplier(
+                    spot=completed_bar.close_price,
+                    bias=str(_captured_market_ctx.bias),
+                )
+            _effective_conf *= _pdl_mult
+
+            _or_mult, _or_reason = 1.0, ""
+            if _or_engine.ready and str(_captured_market_ctx.bias) != "NEUTRAL":
+                _or_mult, _or_reason = _or_engine.current_range.confidence_multiplier(
+                    spot=completed_bar.close_price,
+                    bias=str(_captured_market_ctx.bias),
+                )
+            _effective_conf *= _or_mult
+
+            _fvg_quality_for_entry = 1.0
+            _fvg_quality_reason = ""
+            if _fvg_events and str(_captured_market_ctx.bias) != "NEUTRAL":
+                _rescored = [
+                    _fvg_scorer.score_event(
+                        event=e,
+                        market_bias=str(_captured_market_ctx.bias),
+                        recent_sweeps=_recent_sweeps_live,
+                        active_htf_fvgs=_htf_fvgs_live,
+                        mitigation_ratio=0.0,
+                    )
+                    for e in _fvg_events
+                ]
+                _best_q = max(_rescored, key=lambda s: s.total)
+                _fvg_quality = _best_q.total
+                _fvg_quality_bar = _bar_count
+                _fvg_quality_for_entry = _best_q.confidence_multiplier()
+                if _best_q.blocks_entry:
+                    _fvg_quality_reason = (
+                        f"low FVG quality={_best_q.total:.2f} "
+                        f"(disp={_best_q.displacement:.2f} "
+                        f"sess={_best_q.session:.2f} "
+                        f"sweep={_best_q.sweep_origin:.2f} "
+                        f"htf={_best_q.htf_alignment:.2f})"
+                    )
+            elif _bar_count - _fvg_quality_bar <= FVG_QUALITY_STALENESS_BARS:
+                _stored_q = FVGQualityScore(
+                    total=_fvg_quality,
+                    displacement=0.0, session=0.0, sweep_origin=0.0,
+                    htf_alignment=0.0, freshness=0.0, volume=0.0,
+                )
+                _fvg_quality_for_entry = _stored_q.confidence_multiplier()
+                if _fvg_quality < FVG_QUALITY_BLOCK_THRESHOLD:
+                    _fvg_quality_reason = f"stored low FVG quality={_fvg_quality:.2f}"
+            _effective_conf *= _fvg_quality_for_entry
+
+            if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_ctx.allow_entry:
+                print(
+                    f"\n[FILTER] bar={_bar_count}  "
+                    f"conf={_captured_market_ctx.confidence:.2f}→eff={_effective_conf:.2f}"
+                    + (f"  session={_session_ctx.phase}" if not _session_ctx.allow_entry else "")
+                    + (f"  {_pdl_reason}" if _pdl_reason else "")
+                    + (f"  {_or_reason}" if _or_reason else "")
+                    + (f"  {_fvg_quality_reason}" if _fvg_quality_reason else "")
+                )
+
             # ── Entry gate: fresh strike, no open position, not hard-halted ─
             if (
                 _captured_strike_rec is not None
                 and not _option_trader.has_open_position()
                 and not _trading_halted
+                and _session_ctx.allow_entry
+                and not _fvg_quality_reason
             ):
                 # Soft halt overrides tier selection: forces tier 0 (sizer_soft)
                 if _soft_halted:
@@ -1025,7 +1236,7 @@ def on_ticks(raw_ticks):
                     _tier_min_confs     = {1: _TIER1_MIN_CONF, 2: _TIER2_MIN_CONF, 3: _TIER3_MIN_CONF}
                     _effective_min_conf = _tier_min_confs[_effective_tier]
 
-                if _captured_market_ctx.confidence >= _effective_min_conf:
+                if _effective_conf >= _effective_min_conf:
                     _sizing = _size_live_position(
                         _captured_strike_rec, _captured_market_ctx, _effective_tier
                     )
@@ -1049,7 +1260,7 @@ def on_ticks(raw_ticks):
                             print(
                                 f"    [TIER{_tier_label}] lots={_lots}  "
                                 f"cost=₹{_cost:,.2f}  equity=₹{_equity:,.2f}  "
-                                f"conf={_captured_market_ctx.confidence:.2f}"
+                                f"conf={_captured_market_ctx.confidence:.2f}→eff={_effective_conf:.2f}"
                             )
                         else:
                             print(
