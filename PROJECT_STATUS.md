@@ -55,7 +55,7 @@ Classifies a bar timestamp into its NSE session phase (IST):
 | CLOSING | 15:00–15:29 | No | 0.0 |
 | CLOSED | outside | No | 0.0 |
 
-**Status: Wired into backtest (`BacktestRunner`) only. Not yet in the live pipeline.**
+**Status: Active in both `BacktestRunner` and live pipeline (`live_structure_pipeline.py`).**
 
 ---
 
@@ -64,9 +64,9 @@ Classifies a bar timestamp into its NSE session phase (IST):
 
 Carries PDH (prior day high) and PDL (prior day low) forward from completed daily bars. Applies a `0.45×` confidence penalty when spot approaches an opposing level (within 0.3% proximity). Penalises: LONG near PDH (resistance), SHORT near PDL (support). Confirms with full multiplier when spot has broken through.
 
-Updated by `DailyBarAccumulator` output in `BacktestRunner.run()`.
+Updated by `DailyBarAccumulator` output. In the live pipeline, `_daily_acc` (a module-level `DailyBarAccumulator`) feeds `_pdl_engine` whenever the session date rolls over.
 
-**Status: Wired into backtest only. Not yet in the live pipeline.**
+**Status: Active in both `BacktestRunner` and live pipeline (`live_structure_pipeline.py`).**
 
 ---
 
@@ -82,7 +82,7 @@ Confidence adjustments:
 - LONG below OR → 0.40× (contradiction)
 - SHORT above OR → 0.40× (contradiction)
 
-**Status: Wired into backtest only. Not yet in the live pipeline.**
+**Status: Active in both `BacktestRunner` and live pipeline (`live_structure_pipeline.py`).**
 
 ---
 
@@ -100,11 +100,11 @@ Six-factor FVG quality score in [0,1]:
 | Freshness | 0.10 | 1 − mitigation_ratio |
 | Volume participation | 0.10 | Middle-bar volume vs left bar |
 
-MTF confluence bonus [0.0, 0.15] additive when lower-TF FVG sits inside an active higher-TF FVG of the same direction.
+MTF confluence bonus [0.0, 0.15] additive when lower-TF FVG sits inside an active higher-TF FVG of the same direction. In the live pipeline, dedicated `_fvg_15m` and `_fvg_1h` `FVGEngine` instances provide the HTF active gaps.
 
 Block threshold: `total < 0.40` → hard block. Scores 0.30–0.70 reduce confidence proportionally.
 
-**Status: Wired into backtest only. Not yet in the live pipeline.**
+**Status: Active in both `BacktestRunner` and live pipeline (`live_structure_pipeline.py`).**
 
 ---
 
@@ -244,8 +244,12 @@ LiveStructureAdapter
   ├──► MultiTimeframeBuilder → MTF bars (5m / 15m / 1h / 4h)
   │
   ▼ [BANKNIFTY only]
-MarketContextBuilder.update(bar, timeframe)
-  │  accumulates 1m + MTF bars
+SessionContextEngine.classify(bar.start_timestamp) → _session_ctx
+OpeningRangeEngine.update_bar(bar)
+DailyBarAccumulator.update(bar) → on date roll → PreviousDayLevelsEngine.update_daily_bar()
+  │
+MarketContextBuilder.update(bar, timeframe)  [1m + MTF bars]
+  │  MTF bars also fed to _fvg_15m / _fvg_1h FVGEngine instances
   │  saves bar_history every 15 bars → logs/paper_trading_state.json
   ▼
 MarketContextBuilder.build() → MarketContext (bias, confidence)
@@ -272,11 +276,23 @@ _check_capital_limits() ← hard halt evaluation
 _check_soft_halt()      ← soft halt evaluation
 
   ▼
+[Effective confidence composition]
+_effective_conf = MCB.confidence
+                × session_ctx.confidence_multiplier   ← SessionContextEngine
+                × pdl_mult                            ← PreviousDayLevelsEngine
+                × or_mult                             ← OpeningRangeEngine
+                × fvg_quality_for_entry               ← FVGQualityScorer
+  │
+  │  [FILTER] printed when any multiplier reduces confidence
+  │
+  ▼
 [Entry gate — all conditions must be true]
   strike_rec is not None
   and not has_open_position()
   and not trading_halted
-  and confidence >= effective_min_conf (tier-dependent)
+  and session_ctx.allow_entry            ← blocks OPENING / PRE_OPEN / CLOSING
+  and not fvg_quality_reason             ← blocks total < 0.40
+  and _effective_conf >= tier_min_conf   ← tier-dependent threshold
 
   ▼
 _size_live_position()   [tier-appropriate PositionSizer]
@@ -295,7 +311,7 @@ SwingDetector → StructureEngine (BOS / CHOCH / FVG / sweep)
 → MarketMemory → ReflectionEngine
 ```
 
-**Note:** `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, `FVGQualityScorer`, and `LiquiditySweepValidationEngine` are active in `BacktestRunner` but are NOT yet wired into the live pipeline at `live_structure_pipeline.py`. The live entry gate relies only on MCB bias/confidence threshold and capital protection state.
+**Note:** `LiquiditySweepValidationEngine` remains backtest-only (observability mode, `setup_score` multiply explicitly commented out). All other filters are active in both paths.
 
 ---
 
@@ -466,6 +482,7 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 
 | Hash | Message |
 |---|---|
+| `eff6a84` | Align live pipeline with backtest filtering logic ← **`paper-trading-ready` tag** |
 | `34d7388` | Add bounded automatic WebSocket reconnection to KiteAdapter |
 | `b32aea5` | Persist open positions to state file for crash recovery |
 | `3a48882` | Add end-to-end live pipeline validation script |
@@ -534,9 +551,10 @@ Backtest P&L figures cannot be fully trusted because OI, PCR, max pain, and GEX 
 - TradeLogger and PerformanceTracker
 - End-to-end validation script (`scripts/validate_live_pipeline.py`, 10 steps)
 - StrikeSelectionValidator (counterfactual P&L audit in backtests)
-- SessionContextEngine, PreviousDayLevelsEngine, OpeningRangeEngine, FVGQualityScorer, LiquiditySweepValidationEngine (all in BacktestRunner)
+- SessionContextEngine, PreviousDayLevelsEngine, OpeningRangeEngine, FVGQualityScorer wired into live pipeline (commit `eff6a84`)
+- LiquiditySweepValidationEngine (BacktestRunner observability-only)
 - HistoricalOptionChainFeed (reads real recorded chains in backtest when available)
-- DailyBarAccumulator (feeds 1d slot of MCB in backtest)
+- DailyBarAccumulator (feeds 1d slot of MCB in backtest; also feeds PDH/PDL in live pipeline)
 - SyntheticOptionChainBuilder with ExpiryProvider
 - 91,934 bars BANKNIFTY 1m historical data (June 2025–May 2026)
 
@@ -565,9 +583,7 @@ Backtest P&L figures cannot be fully trusted because OI, PCR, max pain, and GEX 
 
 1. **Daily Kite access token renewal.** Zerodha tokens expire at the end of each trading day. Before each session: `python scripts/generate_kite_session.py`. The system detects an invalid token at startup and disables the options pipeline with a printed instruction, but the token must be renewed manually before starting.
 
-**One gap between backtest and live pipeline** (not a hard blocker but degrades live entry quality):
-
-2. **Session-context filters not yet wired into live pipeline.** `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, and `FVGQualityScorer` are active in `BacktestRunner` but absent from `live_structure_pipeline.py`. The live entry gate uses only MCB confidence threshold. This means: trades can be entered during the OPENING phase (09:15–09:30), near PDH/PDL opposing levels, inside the opening range, and on low-quality FVGs without confidence reduction.
+There are no remaining code-level gaps between the backtest and live entry logic. `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, and `FVGQualityScorer` are now active in the live pipeline.
 
 ---
 
@@ -615,9 +631,9 @@ Future sessions must respect the following constraints. The components listed be
 - New architecture without clear justification. Three similar lines of code are better than a premature abstraction.
 
 **Prefer extending existing components:**
-- Session filtering in the live pipeline: wire `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, and `FVGQualityScorer` into `on_ticks()` using the same pattern already proven in `BacktestRunner.run()`.
 - Real option chain recording: `scripts/record_option_chains.py` already exists; run it, then set `chain_data_dir` in backtest config.
 - Additional risk filters: extend the existing `_check_capital_limits()` / `_check_soft_halt()` pattern rather than adding new global state variables.
+- `LiquiditySweepValidationEngine`: re-enable `setup_val.setup_score` multiply in both `BacktestRunner` and the live pipeline once sweep event frequency is validated on real data.
 
 ---
 
@@ -649,8 +665,9 @@ Execute in this exact sequence:
 
 4. **Observe bar-level recommendations.** Per BANKNIFTY bar, watch for:
    - `[OPTIONS] bias=LONG conf=0.XX` — MCB output
+   - `[FILTER] bar=N  conf=0.XX→eff=0.XX  ...reason...` — when a filter reduces confidence
    - `[STRIKE] BANKNIFTY XXXXX CE  δ=0.XX  score=0.XX  iv=XX.X%` — strike selection
-   - `[TIER2] lots=N  cost=₹XX,XXX  equity=₹1,00,XXX  conf=0.XX` — paper entry
+   - `[TIER2] lots=N  cost=₹XX,XXX  equity=₹1,00,XXX  conf=0.XX→eff=0.XX` — paper entry
 
 5. **Observe paper trade lifecycle.**
    - Entry print: `[ENTRY] LONG BANKNIFTY XXXXX CE  expiry=YYYY-MM-DD  lots=N  prem=XXX`
@@ -665,7 +682,8 @@ Execute in this exact sequence:
 7. **Record findings.**
    - Note real vs synthetic chain quality difference in strike recommendations.
    - Note whether bias/confidence levels are sensible relative to price action.
-   - Note any session-phase issues (entries at 09:15 opening, etc.).
+   - Note how often `[FILTER]` lines appear and which filter fires most (session / PDL / OR / FVG).
+   - Note effective confidence vs raw confidence at entries — large gaps indicate active filtering.
    - These observations inform the next development priority.
 
 ---
@@ -674,23 +692,20 @@ Execute in this exact sequence:
 
 After confirming the live pipeline runs correctly during market hours:
 
-**Priority 1 — Wire session-context filters into live pipeline**
-Integrate `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, and `FVGQualityScorer` into `on_ticks()`. Pattern already proven in `BacktestRunner`. This is the most impactful improvement that does not require new code.
-
-**Priority 2 — Record real option chains**
+**Priority 1 — Record real option chains**
 Run `scripts/record_option_chains.py` during live sessions to build `data/option_chains/BANKNIFTY/` CSVs. Once available, re-run backtests with `chain_data_dir="data/option_chains"` to get accurate OI, PCR, max pain, and GEX signal quality. Directly improves `StrikeSelectionEngine` calibration.
 
-**Priority 3 — Enable LiquiditySweepValidationEngine**
-The `setup_val.setup_score` multiply is commented out in `BacktestRunner` due to infrequent confirmed sweep events. Analyse what fraction of trades would be blocked on the real dataset. If the frequency is sufficient, re-enable it — it represents the most institutionally grounded entry gate.
+**Priority 2 — Enable LiquiditySweepValidationEngine**
+The `setup_val.setup_score` multiply is commented out in `BacktestRunner` due to infrequent confirmed sweep events. Analyse what fraction of trades would be blocked on the real dataset. If the frequency is sufficient, re-enable it in both `BacktestRunner` and the live pipeline — it represents the most institutionally grounded entry gate.
 
-**Priority 4 — Real execution path**
+**Priority 3 — Real execution path**
 Wire `ZerodhaIntegration` and `OrderManager` into the live pipeline. Replace `OptionPaperTrader.open()` with a real order submission. This is the pre-requisite for real-money operation and requires all risk safeguards to be active first.
 
-**Priority 5 — Reconciliation integration**
+**Priority 4 — Reconciliation integration**
 Wire `ReconciliationEngine` to run at session start. Compare `_option_trader._position` against Kite's actual positions API. Discrepancies must block new entries.
 
-**Priority 6 — LatencyMonitor and KillSwitches**
+**Priority 5 — LatencyMonitor and KillSwitches**
 Wire `LatencyMonitor` and `KillSwitches` / `EmergencyShutdown` into the live pipeline. These are operational safety layers required before real-money trading.
 
-**Priority 7 — Daily bar warm-start**
-The live pipeline does not have a `DailyBarAccumulator`. The `1d` MCB slot is therefore always cold at startup, meaning the largest weight (0.35) always contributes zero until sufficient 1m bars have been accumulated to form a day. A daily bar seed from the previous session would improve MCB quality immediately at startup.
+**Priority 6 — Daily bar warm-start**
+The live pipeline has a `DailyBarAccumulator` (`_daily_acc`) feeding the PDH/PDL engine, but the `1d` MCB slot is not seeded from it on process restart. The largest MCB weight (0.35) is always cold at startup until a full day accumulates. A daily bar seed from the prior session's closing bar would improve MCB quality immediately after restart.
