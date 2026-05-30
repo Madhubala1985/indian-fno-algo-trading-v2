@@ -69,7 +69,7 @@ from platform_core.paper_trading.trade_logger import (
     TradeLogger,
 )
 
-from platform_core.backtesting.backtest_runner import OptionPaperTrader
+from platform_core.backtesting.backtest_runner import OptionPaperTrader, OptionPosition
 from platform_core.risk.position_sizing import (
     PortfolioRiskSnapshot,
     PositionSizer,
@@ -293,8 +293,10 @@ def _save_state() -> None:
     Persist all mutable account state to disk atomically.
     Called after every trade close and every halt-state change.
     _open_premium_cost is intentionally excluded: on restart there is no
-    in-memory position so the cost exposure is always 0.
+    _open_premium_cost is not stored directly — it is re-derived from
+    open_position.entry_premium × lot_size × lots on restore.
     """
+    pos = _option_trader._position
     state = {
         "equity":                _equity,
         "peak_equity":           _peak_equity,
@@ -307,6 +309,20 @@ def _save_state() -> None:
         "session_date":          _session_date.isoformat() if _session_date else None,
         "session_opening_equity": _session_opening_equity,
         "last_atm_iv":           _last_atm_iv,
+        "open_position": {
+            "underlying_symbol": pos.underlying_symbol,
+            "contract_symbol":   pos.contract_symbol,
+            "strike":            pos.strike,
+            "option_type":       pos.option_type,
+            "expiry_date":       pos.expiry_date.isoformat(),
+            "lot_size":          pos.lot_size,
+            "lots":              pos.lots,
+            "entry_premium":     pos.entry_premium,
+            "entry_spot":        pos.entry_spot,
+            "entry_iv":          pos.entry_iv,
+            "direction":         pos.direction,
+            "bar_index":         pos.bar_index,
+        } if pos is not None else None,
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -326,6 +342,7 @@ def _load_state() -> None:
     global _equity, _peak_equity, _daily_pnl, _consecutive_losses
     global _trading_halted, _halt_reason, _soft_halted, _soft_halt_reason
     global _session_date, _session_opening_equity, _last_atm_iv
+    global _open_premium_cost
 
     if not _STATE_FILE.exists():
         print(f"[STATE] No state file — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
@@ -345,6 +362,24 @@ def _load_state() -> None:
         iv     = float(s.get("last_atm_iv", _REFERENCE_IV))
         sd     = s.get("session_date")
         sdate  = date.fromisoformat(sd) if sd else None
+        # Parse open position if present (optional key — absent in older state files)
+        pos_raw  = s.get("open_position")
+        pos_data = None
+        if pos_raw is not None:
+            pos_data = dict(
+                underlying_symbol = str(pos_raw["underlying_symbol"]),
+                contract_symbol   = str(pos_raw["contract_symbol"]),
+                strike            = float(pos_raw["strike"]),
+                option_type       = str(pos_raw["option_type"]),
+                expiry_date       = date.fromisoformat(str(pos_raw["expiry_date"])),
+                lot_size          = int(pos_raw["lot_size"]),
+                lots              = int(pos_raw["lots"]),
+                entry_premium     = float(pos_raw["entry_premium"]),
+                entry_spot        = float(pos_raw["entry_spot"]),
+                entry_iv          = float(pos_raw["entry_iv"]),
+                direction         = str(pos_raw["direction"]),
+                bar_index         = int(pos_raw["bar_index"]),
+            )
     except Exception as exc:
         print(f"[STATE] Restore failed ({exc}) — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
         return
@@ -365,6 +400,17 @@ def _load_state() -> None:
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
         f"halted={_trading_halted}  soft={_soft_halted}  session={_session_date}"
     )
+    # Restore open position — re-derive _open_premium_cost from position data
+    if pos_data is not None:
+        _option_trader._position = OptionPosition(**pos_data)
+        _open_premium_cost = (
+            pos_data["entry_premium"] * pos_data["lot_size"] * pos_data["lots"]
+        )
+        print(
+            f"[STATE] Open position restored: {pos_data['contract_symbol']}  "
+            f"lots={pos_data['lots']}  entry=₹{pos_data['entry_premium']:.2f}  "
+            f"direction={pos_data['direction']}  expiry={pos_data['expiry_date']}"
+        )
 
 
 _load_state()   # restore from disk at process startup
