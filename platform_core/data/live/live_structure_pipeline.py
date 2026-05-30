@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from platform_core.intelligence.market_context_builder import (
     MarketContextBuilder,
@@ -65,6 +65,16 @@ from platform_core.paper_trading.performance_tracker import (
 
 from platform_core.paper_trading.trade_logger import (
     TradeLogger,
+)
+
+from platform_core.backtesting.backtest_runner import OptionPaperTrader
+from platform_core.risk.position_sizing import (
+    PortfolioRiskSnapshot,
+    PositionSizer,
+    PositionSizingBreakdown,
+    PositionSizingConfig,
+    PositionSizingRequest,
+    PositionSizingResult,
 )
 
 from platform_core.analytics.structure.bos_detector import (
@@ -191,6 +201,83 @@ _opt_ctx_builder = OptionsContextBuilder(
 _strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=3))
 _expiry_provider = ExpiryProvider(_OPTION_TARGET)
 
+# ── Virtual account — ₹1,00,000 capital model ────────────────────────────────
+_INITIAL_EQUITY: float = 100_000.0  # configurable virtual capital (₹)
+_REFERENCE_IV:   float = 0.18       # baseline IV for vol-ratio scaling
+
+# Risk tier parameters — tier is selected at runtime from account state
+# Tier 1 (Defensive): entered when drawdown is elevated
+# Tier 2 (Normal):    default operating mode
+# Tier 3 (Aggressive): only when equity is above initial, low drawdown, high confidence
+_TIER1_RISK_FRAC: float = 0.010   # 1.0% of equity at risk
+_TIER2_RISK_FRAC: float = 0.020   # 2.0% of equity at risk
+_TIER3_RISK_FRAC: float = 0.035   # 3.5% of equity at risk
+_TIER1_MAX_LOTS:  int   = 1
+_TIER2_MAX_LOTS:  int   = 3
+_TIER3_MAX_LOTS:  int   = 5
+_TIER1_MIN_CONF:  float = 0.55    # higher conviction bar in defensive mode
+_TIER2_MIN_CONF:  float = 0.40
+_TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selection
+
+# Tier transition thresholds (deterministic, evaluated per bar)
+_TIER1_DD_ENTRY:  float = 0.05    # enter Tier 1 when drawdown exceeds 5%
+_TIER3_MIN_GAIN:  float = 0.03    # Tier 3 requires equity > initial × 1.03
+_TIER3_MAX_DD:    float = 0.025   # Tier 3 ineligible when drawdown ≥ 2.5%
+_TIER3_CONF_GATE: float = 0.65    # Tier 3 requires confidence ≥ 65%
+
+# Portfolio heat and trade management
+_MAX_HEAT_FRACTION: float = 0.10  # max open-premium / equity
+_STOP_LOSS_PCT:     float = 0.50
+_TAKE_PROFIT_PCT:   float = 2.00
+_MIN_DTE_TO_HOLD:   int   = 2
+
+# Capital protection limits
+# Soft halt — defensive mode, not a full stop
+_SOFT_HALT_DAILY_LOSS_FRAC: float = 0.020   # soft-halt trigger: daily loss >= 2%
+_SOFT_HALT_RISK_FRAC:       float = 0.007   # 0.7% risk — below Tier 1's 1%
+_SOFT_HALT_MAX_LOTS:        int   = 1
+_SOFT_HALT_MIN_CONF:        float = 0.65    # higher bar than Tier 1's 0.55
+# Hard halt — no new trades
+_HARD_HALT_DAILY_LOSS_FRAC: float = 0.040   # hard-halt trigger: daily loss >= 4%
+_HARD_HALT_CONSEC_LOSSES:   int   = 3       # hard-halt trigger: 3 consecutive losses
+_MAX_ACCOUNT_DD:            float = 0.150   # hard-halt trigger: account drawdown >= 15%
+
+# ── Per-tier PositionSizer instances (same class, different risk configs) ──────
+_option_trader = OptionPaperTrader()
+_sizer_t1 = PositionSizer(config=PositionSizingConfig(
+    max_risk_fraction_per_trade=_TIER1_RISK_FRAC,
+    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+))
+_sizer_t2 = PositionSizer(config=PositionSizingConfig(
+    max_risk_fraction_per_trade=_TIER2_RISK_FRAC,
+    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+))
+_sizer_t3 = PositionSizer(config=PositionSizingConfig(
+    max_risk_fraction_per_trade=_TIER3_RISK_FRAC,
+    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+))
+_sizer_soft = PositionSizer(config=PositionSizingConfig(
+    max_risk_fraction_per_trade=_SOFT_HALT_RISK_FRAC,
+    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+))
+
+# ── Mutable account state ──────────────────────────────────────────────────────
+_equity:            float = _INITIAL_EQUITY
+_peak_equity:       float = _INITIAL_EQUITY
+_open_premium_cost: float = 0.0
+_bar_count:         int   = 0
+_last_atm_iv:       float = _REFERENCE_IV
+
+# Capital protection state
+_session_date:           date | None = None
+_session_opening_equity: float       = _INITIAL_EQUITY
+_daily_pnl:              float       = 0.0
+_trading_halted:         bool        = False
+_halt_reason:            str         = ""
+_soft_halted:            bool        = False
+_soft_halt_reason:       str         = ""
+_consecutive_losses:     int         = 0
+
 
 ENGINES = {}
 SWING_DETECTORS = {}
@@ -294,7 +381,215 @@ for symbol in INSTRUMENTS.keys():
     )
 
 
+# ── Helpers reused verbatim from BacktestRunner ────────────────────────────────
+
+def _option_exit_signal(emitted_events, trader: OptionPaperTrader):
+    """Detect CHoCH/BOS structure reversal that invalidates the open position."""
+    pos = trader._position
+    if pos is None:
+        return None
+    for event in emitted_events:
+        evt  = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
+        side = event.side.value if hasattr(event.side, "value") else str(event.side)
+        is_reversal = "CHOCH" in evt or evt == "BOS"
+        if pos.direction == "LONG"  and is_reversal and side == "BEARISH":
+            return f"STRUCTURE_EXIT ({evt})"
+        if pos.direction == "SHORT" and is_reversal and side == "BULLISH":
+            return f"STRUCTURE_EXIT ({evt})"
+    return None
+
+
+def _determine_risk_tier(confidence: float) -> int:
+    """
+    Deterministic tier selection from account state and confidence.
+
+    Tier 1 (Defensive): current drawdown >= _TIER1_DD_ENTRY.
+    Tier 3 (Aggressive): equity > initial*(1+gain_gate) AND low drawdown AND high conf.
+    Tier 2 (Normal): all other conditions.
+    """
+    drawdown = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
+    if drawdown >= _TIER1_DD_ENTRY:
+        return 1
+    if (
+        _equity >= _INITIAL_EQUITY * (1.0 + _TIER3_MIN_GAIN)
+        and drawdown < _TIER3_MAX_DD
+        and confidence >= _TIER3_CONF_GATE
+    ):
+        return 3
+    return 2
+
+
+def _check_capital_limits() -> tuple[bool, str]:
+    """
+    Hard halt: no new trades until the halt clears.
+
+    Triggers (in priority order):
+      1. Account drawdown >= _MAX_ACCOUNT_DD           → manual restart required
+      2. Daily loss >= _HARD_HALT_DAILY_LOSS_FRAC      → auto-resumes next session
+      3. Consecutive losses >= _HARD_HALT_CONSEC_LOSSES → auto-resumes next session
+    """
+    drawdown = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
+    if drawdown >= _MAX_ACCOUNT_DD:
+        return True, (
+            f"MAX_DRAWDOWN {drawdown:.1%} >= {_MAX_ACCOUNT_DD:.1%} "
+            f"— manual restart required"
+        )
+    daily_loss_frac = max(0.0, -_daily_pnl) / max(_session_opening_equity, 1.0)
+    if daily_loss_frac >= _HARD_HALT_DAILY_LOSS_FRAC:
+        return True, (
+            f"DAILY_LOSS {daily_loss_frac:.1%} >= {_HARD_HALT_DAILY_LOSS_FRAC:.1%} "
+            f"— resumes next session"
+        )
+    if _consecutive_losses >= _HARD_HALT_CONSEC_LOSSES:
+        return True, (
+            f"CONSECUTIVE_LOSSES {_consecutive_losses} >= {_HARD_HALT_CONSEC_LOSSES} "
+            f"— resumes next session"
+        )
+    return False, ""
+
+
+def _check_soft_halt() -> tuple[bool, str]:
+    """
+    Soft halt: trading continues in defensive mode only.
+
+    Triggered when daily loss >= _SOFT_HALT_DAILY_LOSS_FRAC.
+    Forces use of _sizer_soft (0.7% risk, max_lots=1, min_conf=0.65).
+    Clears automatically on new session (same as a hard daily-loss halt).
+    """
+    daily_loss_frac = max(0.0, -_daily_pnl) / max(_session_opening_equity, 1.0)
+    if daily_loss_frac >= _SOFT_HALT_DAILY_LOSS_FRAC:
+        return True, (
+            f"daily_loss={daily_loss_frac:.1%} >= {_SOFT_HALT_DAILY_LOSS_FRAC:.1%}"
+        )
+    return False, ""
+
+
+def _try_resume_trading(current_date: date) -> None:
+    """
+    Detect new trading session; reset daily counters and conditionally resume.
+
+    On each new session:
+      - _daily_pnl and _consecutive_losses reset to 0.
+      - _soft_halted always clears (soft halt is intra-day only).
+      - Hard halts from DAILY_LOSS or CONSECUTIVE_LOSSES auto-resume.
+      - Hard halt from MAX_DRAWDOWN never auto-resumes.
+    """
+    global _session_date, _session_opening_equity, _daily_pnl
+    global _trading_halted, _halt_reason
+    global _soft_halted, _soft_halt_reason, _consecutive_losses
+
+    if _session_date is not None and current_date == _session_date:
+        return  # same session — nothing to reset
+
+    _session_date = current_date
+    _session_opening_equity = _equity
+    _daily_pnl = 0.0
+    _consecutive_losses = 0
+    _soft_halted = False
+    _soft_halt_reason = ""
+
+    _daily_halt = "DAILY_LOSS" in _halt_reason or "CONSECUTIVE_LOSSES" in _halt_reason
+    if _trading_halted and _daily_halt:
+        _trading_halted = False
+        _halt_reason = ""
+        print(
+            f"\n[CAPITAL] Session {current_date} — resuming after daily halt.  "
+            f"equity=₹{_equity:,.0f}"
+        )
+    else:
+        tier = _determine_risk_tier(0.5)
+        print(
+            f"\n[CAPITAL] Session {current_date} | "
+            f"equity=₹{_equity:,.0f} | peak=₹{_peak_equity:,.0f} | "
+            f"tier={tier} | halted={'YES' if _trading_halted else 'NO'}"
+        )
+
+
+def _size_live_position(rec, market_ctx, tier: int) -> PositionSizingResult:
+    """
+    Size position using the tier-appropriate PositionSizer.
+
+    Tier selection determines:
+      - which PositionSizer instance (different max_risk_fraction_per_trade)
+      - maximum_lot_count ceiling passed to the request
+      - max_allowed_drawdown_fraction on the PortfolioRiskSnapshot
+
+    All other inputs are derived from current account state.
+    """
+    _tier_sizers  = {0: _sizer_soft, 1: _sizer_t1, 2: _sizer_t2, 3: _sizer_t3}
+    _tier_maxlots = {0: _SOFT_HALT_MAX_LOTS, 1: _TIER1_MAX_LOTS, 2: _TIER2_MAX_LOTS, 3: _TIER3_MAX_LOTS}
+
+    sizer    = _tier_sizers[tier]
+    max_lots = _tier_maxlots[tier]
+
+    entry_premium = rec.last_traded_price
+    stop_premium  = max(entry_premium * _STOP_LOSS_PCT, 0.01)
+    drawdown      = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
+    available     = max(_equity - _open_premium_cost, 0.0)
+    heat          = min(_open_premium_cost / max(_equity, 1.0), 1.0)
+
+    portfolio = PortfolioRiskSnapshot(
+        equity=max(_equity, 1.0),
+        available_cash=available,
+        current_portfolio_heat=heat,
+        current_drawdown_fraction=drawdown,
+        max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
+        correlation_exposure_fraction=0.0,
+        open_position_count=1 if _option_trader.has_open_position() else 0,
+    )
+
+    try:
+        return sizer.size_position(
+            request=PositionSizingRequest(
+                underlying_symbol=rec.underlying_symbol,
+                timestamp=datetime.now(timezone.utc),
+                direction=str(market_ctx.bias),
+                instrument_type="OPTION",
+                entry_price=entry_premium,
+                stop_price=stop_premium,
+                contract_multiplier=1.0,
+                lot_size=rec.lot_size,
+                minimum_lot_count=1,
+                maximum_lot_count=max_lots,
+                confidence_score=min(market_ctx.confidence, 1.0),
+                actionability_score=min(rec.composite_score, 1.0),
+                realized_volatility_ratio=max(_last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
+                liquidity_score=min(rec.breakdown.liquidity, 1.0),
+                spread_bps=50.0,
+                slippage_bps_estimate=10.0,
+                expected_correlation_to_book=0.0,
+                portfolio=portfolio,
+            ),
+            valuation_timestamp=datetime.now(timezone.utc),
+        )
+    except Exception as exc:
+        return PositionSizingResult(
+            underlying_symbol=rec.underlying_symbol,
+            timestamp=datetime.now(timezone.utc),
+            direction=str(market_ctx.bias),
+            recommended_units=rec.lot_size,
+            recommended_lots=1,
+            notional_exposure=entry_premium * rec.lot_size,
+            estimated_risk_amount=entry_premium * rec.lot_size * _STOP_LOSS_PCT,
+            estimated_round_trip_cost=entry_premium * rec.lot_size * 0.006,
+            tradable=True,
+            rejection_reason=None,
+            breakdown=PositionSizingBreakdown(
+                base_risk_budget=0.0, confidence_scale=1.0,
+                volatility_scale=1.0, liquidity_scale=1.0,
+                drawdown_scale=1.0, correlation_scale=1.0,
+                portfolio_heat_scale=1.0, cash_scale=1.0,
+                effective_risk_budget=0.0, per_unit_risk=0.0,
+                preliminary_units=1.0, capped_units=1.0,
+            ),
+            metadata={"fallback_reason": str(exc)},
+        )
+
+
 def on_ticks(raw_ticks):
+    global _equity, _peak_equity, _open_premium_cost, _bar_count, _last_atm_iv
+    global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
+    global _soft_halted, _soft_halt_reason, _consecutive_losses
 
     for raw_tick in raw_ticks:
 
@@ -308,6 +603,10 @@ def on_ticks(raw_ticks):
 
         if completed_bar is None:
             continue
+
+        _bar_count += 1
+        _captured_strike_rec = None
+        _captured_market_ctx = None
 
         print(
             "\n======================"
@@ -370,6 +669,8 @@ def on_ticks(raw_ticks):
                 f"conf={market_ctx.confidence:.2f}"
             )
 
+            _captured_market_ctx = market_ctx
+
             if str(market_ctx.bias) != "NEUTRAL":
                 try:
                     spot = completed_bar.close_price
@@ -391,8 +692,11 @@ def on_ticks(raw_ticks):
                         valuation_timestamp=datetime.now(timezone.utc),
                     )
 
+                    if options_ctx.atm_iv:
+                        _last_atm_iv = options_ctx.atm_iv
+
                     if options_ctx.strike_candidates:
-                        result = _strike_engine.select(
+                        _selection_result = _strike_engine.select(
                             bias=market_ctx.bias,
                             candidates=list(options_ctx.strike_candidates),
                             valuation_timestamp=datetime.now(timezone.utc),
@@ -400,13 +704,15 @@ def on_ticks(raw_ticks):
                             gex_snapshot=options_ctx.gex_snapshot,
                             atm_iv=options_ctx.atm_iv,
                         )
-                        best = result.best()
-                        print(
-                            f"[STRIKE] {best.option_symbol}  "
-                            f"δ={best.delta:.2f}  "
-                            f"score={best.composite_score:.2f}  "
-                            f"iv={best.implied_volatility:.1%}"
-                        )
+                        best = _selection_result.best()
+                        if best is not None:
+                            _captured_strike_rec = best
+                            print(
+                                f"[STRIKE] {best.option_symbol}  "
+                                f"δ={best.delta:.2f}  "
+                                f"score={best.composite_score:.2f}  "
+                                f"iv={best.implied_volatility:.1%}"
+                            )
                 except Exception as exc:
                     print(f"[OPTIONS] Pipeline error: {exc}")
         # ─────────────────────────────────────────────────────────────────────
@@ -490,6 +796,113 @@ def on_ticks(raw_ticks):
                 ),
             )
         )
+
+        # ── OptionPaperTrader: exit evaluation + entry (BANKNIFTY only) ──────
+        if completed_bar.symbol == _OPTION_TARGET and _captured_market_ctx is not None:
+            _bar_date_live = datetime.now(timezone.utc).date()
+
+            # Exit evaluation runs on every bar while a position is open
+            if _option_trader.has_open_position():
+                _exit_sig = _option_exit_signal(result.emitted_events, _option_trader)
+                _closed = _option_trader.evaluate_and_close(
+                    current_spot=completed_bar.close_price,
+                    current_iv=_last_atm_iv,
+                    current_date=_bar_date_live,
+                    bar_index=_bar_count,
+                    stop_loss_pct=_STOP_LOSS_PCT,
+                    take_profit_pct=_TAKE_PROFIT_PCT,
+                    min_dte=_MIN_DTE_TO_HOLD,
+                    force_reason=_exit_sig,
+                )
+                if _closed is not None:
+                    _equity += _closed.pnl
+                    _peak_equity = max(_peak_equity, _equity)
+                    _open_premium_cost = 0.0
+                    _daily_pnl += _closed.pnl
+                    if _closed.pnl < 0:
+                        _consecutive_losses += 1
+                    else:
+                        _consecutive_losses = 0
+                    trade_logger.log_trade(trade=_closed.as_paper_trade())
+                    _summary = performance_tracker.calculate_summary(
+                        trades=[t.as_paper_trade() for t in _option_trader.completed_trades]
+                    )
+                    print(
+                        f"\n[PERF] trades={_summary.total_trades}  "
+                        f"win={_summary.win_rate:.1%}  "
+                        f"P&L=₹{_summary.total_pnl:+,.2f}  "
+                        f"equity=₹{_equity:,.2f}"
+                    )
+
+            # Session reset + capital protection checks run every BANKNIFTY bar
+            _try_resume_trading(_bar_date_live)
+
+            # ── Hard halt check ──────────────────────────────────────────────
+            _should_halt, _halt_msg = _check_capital_limits()
+            if _should_halt and not _trading_halted:
+                _trading_halted = True
+                _halt_reason = _halt_msg
+                print(f"\n[CAPITAL HALT] {_halt_reason}  equity=₹{_equity:,.0f}")
+
+            # ── Soft halt check ──────────────────────────────────────────────
+            _is_soft, _soft_msg = _check_soft_halt()
+            if _is_soft and not _soft_halted and not _trading_halted:
+                _soft_halted = True
+                _soft_halt_reason = _soft_msg
+                print(f"\n[SOFT HALT] {_soft_halt_reason} — defensive-only mode  equity=₹{_equity:,.0f}")
+
+            # ── Entry gate: fresh strike, no open position, not hard-halted ─
+            if (
+                _captured_strike_rec is not None
+                and not _option_trader.has_open_position()
+                and not _trading_halted
+            ):
+                # Soft halt overrides tier selection: forces tier 0 (sizer_soft)
+                if _soft_halted:
+                    _effective_tier    = 0
+                    _effective_min_conf = _SOFT_HALT_MIN_CONF
+                else:
+                    _effective_tier     = _determine_risk_tier(_captured_market_ctx.confidence)
+                    _tier_min_confs     = {1: _TIER1_MIN_CONF, 2: _TIER2_MIN_CONF, 3: _TIER3_MIN_CONF}
+                    _effective_min_conf = _tier_min_confs[_effective_tier]
+
+                if _captured_market_ctx.confidence >= _effective_min_conf:
+                    _sizing = _size_live_position(
+                        _captured_strike_rec, _captured_market_ctx, _effective_tier
+                    )
+                    if _sizing.tradable and _sizing.recommended_lots >= 1:
+                        _lots = _sizing.recommended_lots
+                        _cost = (
+                            _captured_strike_rec.last_traded_price
+                            * _captured_strike_rec.lot_size
+                            * _lots
+                        )
+                        _avail = max(_equity - _open_premium_cost, 0.0)
+                        if _cost <= _avail:
+                            _open_premium_cost = _cost
+                            _option_trader.open(
+                                recommendation=_captured_strike_rec,
+                                direction=str(_captured_market_ctx.bias),
+                                bar_index=_bar_count,
+                                lots=_lots,
+                            )
+                            _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
+                            print(
+                                f"    [TIER{_tier_label}] lots={_lots}  "
+                                f"cost=₹{_cost:,.2f}  equity=₹{_equity:,.2f}  "
+                                f"conf={_captured_market_ctx.confidence:.2f}"
+                            )
+                        else:
+                            print(
+                                f"\n[CASH BLOCK] need=₹{_cost:,.2f}  "
+                                f"available=₹{_avail:,.2f}  equity=₹{_equity:,.2f}"
+                            )
+                    elif not _sizing.tradable:
+                        print(
+                            f"\n[SIZING REJECTED] {_sizing.rejection_reason}  "
+                            f"tier={'SOFT' if _soft_halted else _effective_tier}  "
+                            f"equity=₹{_equity:,.0f}"
+                        )
 
         if result.emitted_events:
 
