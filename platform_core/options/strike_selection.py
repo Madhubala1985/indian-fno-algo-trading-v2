@@ -89,6 +89,14 @@ class StrikeSelectionConfig:
     iv_attractiveness_weight: float = 1.00
     liquidity_weight: float = 1.10
     max_pain_distance_weight: float = 0.50
+    # Dimension 8: theta efficiency — daily theta decay as % of premium.
+    # Penalises options whose time-decay cost is high relative to their
+    # price.  Provides within-optimal-DTE-window differentiation (the DTE
+    # multiplier is flat 1.0 for all 5-18 DTE candidates; theta efficiency
+    # adds the only discrimination between, e.g., a 7-DTE and a 14-DTE
+    # option inside that range).  Uses StrikeCandidate.theta, which is
+    # always BSM-computed (consistent in both backtest and live paths).
+    theta_efficiency_weight: float = 0.60
 
     # Delta targeting for directional swing trades
     # abs(delta) is used — applies equally to calls and puts
@@ -125,6 +133,7 @@ class StrikeSelectionConfig:
             "iv_attractiveness_weight": self.iv_attractiveness_weight,
             "liquidity_weight": self.liquidity_weight,
             "max_pain_distance_weight": self.max_pain_distance_weight,
+            "theta_efficiency_weight": self.theta_efficiency_weight,
         }
         for name, value in weight_fields.items():
             if value < 0.0:
@@ -297,6 +306,7 @@ class StrikeScoreBreakdown:
     iv_attractiveness: float   # [0, 1]
     liquidity: float           # [0, 1]
     max_pain_distance: float   # [0, 1]
+    theta_efficiency: float    # [0, 1] — dim 8: low daily-decay/premium is better
     dte_multiplier: float      # [0, 1] — applied to weighted average
     weighted_raw: float        # weighted average of dimensions before DTE
     composite_score: float     # weighted_raw * dte_multiplier
@@ -310,6 +320,7 @@ class StrikeScoreBreakdown:
             "iv_attractiveness": self.iv_attractiveness,
             "liquidity": self.liquidity,
             "max_pain_distance": self.max_pain_distance,
+            "theta_efficiency": self.theta_efficiency,
             "dte_multiplier": self.dte_multiplier,
             "weighted_raw": self.weighted_raw,
             "composite_score": self.composite_score,
@@ -619,6 +630,7 @@ class StrikeSelectionEngine:
         d5 = self._score_iv_attractiveness(candidate, atm_iv, reasoning)
         d6 = self._score_liquidity(candidate, reasoning)
         d7 = self._score_max_pain_distance(candidate, bias, oi_snapshot, reasoning)
+        d8 = self._score_theta_efficiency(candidate, reasoning)
         dte_mult = self._dte_multiplier(candidate, reasoning)
 
         cfg = self._config
@@ -630,6 +642,7 @@ class StrikeSelectionEngine:
             + cfg.iv_attractiveness_weight
             + cfg.liquidity_weight
             + cfg.max_pain_distance_weight
+            + cfg.theta_efficiency_weight
         )
 
         if total_weight <= 0.0:
@@ -643,6 +656,7 @@ class StrikeSelectionEngine:
                 + cfg.iv_attractiveness_weight * d5
                 + cfg.liquidity_weight * d6
                 + cfg.max_pain_distance_weight * d7
+                + cfg.theta_efficiency_weight * d8
             ) / total_weight
 
         composite = _clip01(weighted_raw * dte_mult)
@@ -655,6 +669,7 @@ class StrikeSelectionEngine:
             iv_attractiveness=d5,
             liquidity=d6,
             max_pain_distance=d7,
+            theta_efficiency=d8,
             dte_multiplier=dte_mult,
             weighted_raw=weighted_raw,
             composite_score=composite,
@@ -970,6 +985,56 @@ class StrikeSelectionEngine:
             f"({direction_label}) → max_pain_distance={score:.2f}"
         )
         return score
+
+    # ── Dimension 8: Theta Efficiency ──────────────────────────────────────────
+
+    def _score_theta_efficiency(
+        self,
+        candidate: StrikeCandidate,
+        reasoning: list[str],
+    ) -> float:
+        """
+        Score based on daily theta decay as a percentage of premium paid.
+
+        For option buyers, lower daily decay relative to premium is better —
+        it means the option retains more value while awaiting the directional
+        move.  Theta efficiency provides within-optimal-DTE-window
+        discrimination: the DTE multiplier returns a flat 1.0 for all
+        5–18 DTE candidates, leaving no differentiation between, e.g., a
+        7-DTE and a 14-DTE option.  Theta efficiency fills that gap.
+
+        Calibration (BANKNIFTY BSM ranges):
+          ≤ 3 %/day  → 1.0  (efficient: typically 14–18 DTE near ATM)
+          ≥ 15 %/day → 0.0  (expensive: typically ≤5 DTE OTM)
+          Linear between 3 % and 15 %.
+
+        Both theta and last_traded_price are always present (BSM-computed
+        for every candidate regardless of data source).  Returns 0.50
+        (neutral) when premium is effectively zero to avoid division errors.
+        """
+        _THETA_EFFICIENT  = 0.03   # 3 % /day → score 1.0
+        _THETA_EXPENSIVE  = 0.15   # 15 % /day → score 0.0
+
+        if candidate.last_traded_price < 0.01:
+            reasoning.append("theta efficiency: no premium data → 0.50")
+            return 0.50
+
+        daily_decay_pct = fabs(candidate.theta) / candidate.last_traded_price
+
+        if daily_decay_pct <= _THETA_EFFICIENT:
+            score = 1.0
+        elif daily_decay_pct >= _THETA_EXPENSIVE:
+            score = 0.0
+        else:
+            score = (_THETA_EXPENSIVE - daily_decay_pct) / (
+                _THETA_EXPENSIVE - _THETA_EFFICIENT
+            )
+
+        reasoning.append(
+            f"theta={candidate.theta:.2f} prem={candidate.last_traded_price:.2f} "
+            f"decay={daily_decay_pct:.1%}/day → theta_efficiency={_clip01(score):.2f}"
+        )
+        return _clip01(score)
 
     # ── DTE Multiplier ─────────────────────────────────────────────────────────
 

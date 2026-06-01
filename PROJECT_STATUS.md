@@ -482,6 +482,7 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 
 | Hash | Message |
 |---|---|
+| (pending) | Add theta_efficiency 8th factor to StrikeSelectionEngine |
 | (pending) | FVG displacement_volume_ratio neutral fix for index instruments |
 | (pending) | Close Gap A+B: PositionSizer effective confidence + dual-expiry chain |
 | `22a8100` | Align live MCB with BacktestRunner and restore 1d context feed |
@@ -505,7 +506,14 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 ### Data Available
 `data/banknifty_1m_2025-06-01_2026-05-29.csv` — 91,934 rows of BANKNIFTY 1-minute OHLCV, June 2025 through May 2026. This is the primary backtest dataset.
 
-**Current backtest baseline (post-FVG-volume-fix, commit pending):** 931 trades · 40.1% win rate · ₹+15,29,912 P&L · 152.99% return · ending equity ₹25,29,912. Prior baseline (with vol=0 false-zero): 922 trades · 40.6% · ₹+14,87,832 · 148.78%. Delta: +9 trades · −0.5pp win rate · +₹42,080 P&L (+2.8%).
+**Current backtest baseline (post-theta-efficiency, commit pending):** 420 trades · 48.8% win rate · ₹+18,30,321 P&L · 183.03% return · ending equity ₹28,30,321 · max_dd 1.99% · avg_win ₹13,391 · avg_loss ₹−4,255 · expectancy ₹4,358/trade.
+
+Prior baseline progression:
+- vol=0 false-zero (original): 922 trades · 40.6% · ₹+14,87,832 · 148.78%
+- FVG volume neutral fix: 931 trades · 40.1% · ₹+15,29,912 · 152.99%
+- Theta efficiency (8th factor): 420 trades · 48.8% · ₹+18,30,321 · 183.03% · expectancy ₹4,358
+
+Theta efficiency trade-off: 55% fewer trades, +8.7pp win rate, +19.6% total P&L, +165% per-trade P&L. System now selects 14-DTE biweekly options preferentially over 7-DTE weekly within the optimal DTE window. Positions held longer → less time unpositioned → fewer entries, but each entry is a better setup.
 
 ### Architecture Lessons That Shaped the Current Design
 
@@ -561,6 +569,7 @@ Backtest P&L figures cannot be fully trusted because OI, PCR, max pain, and GEX 
 - SyntheticOptionChainBuilder with ExpiryProvider
 - 91,934 bars BANKNIFTY 1m historical data (June 2025–May 2026)
 - FVG volume-unavailable fix: `FVGEngine._detect_gap_from_buffer` uses `displacement_volume_ratio=1.0` (neutral) when `left_bar.volume==0`, instead of false-zero. Applies to both live and backtest uniformly.
+- StrikeSelectionEngine 8th factor: `theta_efficiency` (daily theta decay / premium). Weight=0.60. Calibrated to BANKNIFTY BSM ranges (3–15%/day). Fills the DTE multiplier's blind spot inside the 5–18 DTE optimal window. Promotes 14-DTE biweekly options over 7-DTE weekly.
 
 ### Operationally Validated
 
