@@ -482,6 +482,7 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 
 | Hash | Message |
 |---|---|
+| (pending) | FVG displacement_volume_ratio neutral fix for index instruments |
 | (pending) | Close Gap A+B: PositionSizer effective confidence + dual-expiry chain |
 | `22a8100` | Align live MCB with BacktestRunner and restore 1d context feed |
 | `56e4202` | Fix live option-chain retrieval for post-SEBI expiry changes |
@@ -503,6 +504,8 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 
 ### Data Available
 `data/banknifty_1m_2025-06-01_2026-05-29.csv` — 91,934 rows of BANKNIFTY 1-minute OHLCV, June 2025 through May 2026. This is the primary backtest dataset.
+
+**Current backtest baseline (post-FVG-volume-fix, commit pending):** 931 trades · 40.1% win rate · ₹+15,29,912 P&L · 152.99% return · ending equity ₹25,29,912. Prior baseline (with vol=0 false-zero): 922 trades · 40.6% · ₹+14,87,832 · 148.78%. Delta: +9 trades · −0.5pp win rate · +₹42,080 P&L (+2.8%).
 
 ### Architecture Lessons That Shaped the Current Design
 
@@ -557,6 +560,7 @@ Backtest P&L figures cannot be fully trusted because OI, PCR, max pain, and GEX 
 - Live pipeline MCB `1d` gap closed: `_market_ctx_builder.update(bar=_daily_bar, timeframe="1d")` added; `min_history_bars=20` to match BacktestRunner
 - SyntheticOptionChainBuilder with ExpiryProvider
 - 91,934 bars BANKNIFTY 1m historical data (June 2025–May 2026)
+- FVG volume-unavailable fix: `FVGEngine._detect_gap_from_buffer` uses `displacement_volume_ratio=1.0` (neutral) when `left_bar.volume==0`, instead of false-zero. Applies to both live and backtest uniformly.
 
 ### Operationally Validated
 
@@ -772,7 +776,7 @@ Daily bars are now persisted in `_bar_history["1d"]` (commit 22a8100) and will b
 |---|---|
 | ~~High~~ | ~~Expiry-day blackout~~ — **FIXED** (dual-expiry chain fetch, graceful fallback) |
 | ~~Medium~~ | ~~PositionSizer oversizing~~ — **FIXED** (effective_conf now passed to PositionSizingRequest) |
-| Medium | FVG quality undercounting: volume=0 on all live bars permanently removes the 0.10 volume factor from every FVG score; entries near the 0.40 threshold may be incorrectly hard-blocked |
+| ~~Medium~~ | ~~FVG quality undercounting~~ — **FIXED** (`FVGEngine._detect_gap_from_buffer` now uses `displacement_volume_ratio=1.0` neutral when `left_bar.volume==0`; both live and backtest updated uniformly) |
 | Medium | MCB cold-start latency: only 1m (weight=0.05) ready in early session; directional signal requires strong 20-min trend_score > ±0.0015 |
 | Low | Stale mark-to-market IV: `_last_atm_iv` used when bias=NEUTRAL bars (no chain fetch); IV may be hours stale for open positions |
 | Low | Documentation: §6 warm-start note references min_history_bars=24 (now 20); Priority 6 references 1d not persisted (now fixed) |

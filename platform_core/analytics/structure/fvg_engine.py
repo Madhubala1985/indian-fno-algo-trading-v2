@@ -368,7 +368,18 @@ class FVGEngine:
         # Displacement quality: middle bar body/range and volume vs left bar
         _mid_range = max(middle_bar.range_size, 1e-12)
         _disp_body_ratio = middle_bar.body_size / _mid_range
-        _disp_vol_ratio  = middle_bar.volume / max(left_bar.volume, 1.0)
+        # When left_bar.volume == 0, volume data is structurally absent for this
+        # instrument type (NSE/BSE indices do not carry volume_traded).  Use 1.0
+        # (neutral — equal volume to left bar) so the factor does not falsely
+        # penalise displacement.  When real volume is present (left_bar.volume > 0)
+        # the actual ratio is computed.  Aligns with FairValueGap field default
+        # (displacement_volume_ratio: float = 1.0) and scorer default
+        # (meta.get("displacement_volume_ratio", 1.0)).
+        _disp_vol_ratio = (
+            middle_bar.volume / max(left_bar.volume, 1e-12)
+            if left_bar.volume > 0
+            else 1.0
+        )
 
         bullish_gap_lower = left_bar.high_price
 
