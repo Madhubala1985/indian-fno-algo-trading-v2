@@ -424,7 +424,7 @@ Restored at process startup via `_load_state()`. Parse is all-or-nothing: partia
 2. `_market_ctx_builder.update(bar, timeframe)` is called for every bar in chronological order.
 3. Final `build()` is called and logged with resulting bias, confidence, and ready timeframes.
 
-A corrupt `bar_history` does not block account state restore — it is caught independently. 30 bars > `min_history_bars=24`, so a full warm-start crosses the classifier's history threshold.
+A corrupt `bar_history` does not block account state restore — it is caught independently. 30 bars > `min_history_bars=20` (live pipeline default after commit 22a8100), so a full warm-start crosses the classifier's history threshold. Daily bars are also persisted in `_bar_history["1d"]` (key `"1d"`) since commit 22a8100, enabling the 1d MCB slot to survive restarts once the first day rollover occurs.
 
 Warm-start write interval: every 15 BANKNIFTY 1-min bars (`_MCB_SAVE_INTERVAL=15`).
 
@@ -482,13 +482,12 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 
 | Hash | Message |
 |---|---|
+| (pending) | Close Gap A+B: PositionSizer effective confidence + dual-expiry chain |
+| `22a8100` | Align live MCB with BacktestRunner and restore 1d context feed |
+| `56e4202` | Fix live option-chain retrieval for post-SEBI expiry changes |
 | `eff6a84` | Align live pipeline with backtest filtering logic ← **`paper-trading-ready` tag** |
 | `34d7388` | Add bounded automatic WebSocket reconnection to KiteAdapter |
 | `b32aea5` | Persist open positions to state file for crash recovery |
-| `3a48882` | Add end-to-end live pipeline validation script |
-| `0931b02` | Add state persistence and Kite session handling for operational readiness |
-| `e43737f` | Wire live paper trading with tiered capital model and soft/hard halt protection |
-| `8b7059e` | Initial institutional trading system checkpoint |
 
 ### Recommended Workflow
 
@@ -710,5 +709,81 @@ Wire `ReconciliationEngine` to run at session start. Compare `_option_trader._po
 **Priority 5 — LatencyMonitor and KillSwitches**
 Wire `LatencyMonitor` and `KillSwitches` / `EmergencyShutdown` into the live pipeline. These are operational safety layers required before real-money trading.
 
-**Priority 6 — Daily bar warm-start**
-The live pipeline has a `DailyBarAccumulator` (`_daily_acc`) feeding the PDH/PDL engine, but the `1d` MCB slot is not seeded from it on process restart. The largest MCB weight (0.35) is always cold at startup until a full day accumulates. A daily bar seed from the prior session's closing bar would improve MCB quality immediately after restart.
+**Priority 6 — Dual-expiry live chain** *(FIXED — commit pending)*
+`live_structure_pipeline.py` now calls `adapter.nearest_expiry()` twice to get both the nearest and next-nearest expiry. Both `OptionChainSnapshot` objects are passed to `OptionsContextBuilder.build()`, matching `BacktestRunner`'s `[weekly_snap, biweekly_snap]` pattern. The second fetch is wrapped in `try/except` — if the next expiry is unavailable, the pipeline degrades to single-expiry mode silently.
+
+**Priority 7 — PositionSizer effective confidence** *(FIXED — commit pending)*
+`_size_live_position` now accepts `effective_conf: float` as an explicit parameter and passes it as `confidence_score` to `PositionSizingRequest`. The call site at the entry gate passes `_effective_conf` (MCB × session × PDL × OR × FVG). Matches `BacktestRunner._size_position` exactly.
+
+**Priority 8 — Daily bar warm-start** *(partially resolved)*
+Daily bars are now persisted in `_bar_history["1d"]` (commit 22a8100) and will be replayed on warm-start. The `1d` slot (weight=0.35) remains cold on first-ever start but warms up across sessions. A further improvement would be to seed from the prior session's partial-day bar on startup without waiting for date rollover.
+
+---
+
+## 16. Architecture and Decision-Intelligence Audit (2026-06-01, commit 22a8100)
+
+### Alignment Status: BacktestRunner vs Live Pipeline
+
+| Component | Status |
+|---|---|
+| MCB `min_history_bars=20` | confirmed aligned |
+| MCB `1d` daily bar feed | confirmed aligned |
+| Session / PDL / OR filters | confirmed aligned |
+| FVG quality scoring | confirmed aligned |
+| StrikeSelectionEngine parameters | confirmed aligned |
+| OptionPaperTrader | confirmed aligned |
+| PositionSizer `confidence_score` input | **confirmed aligned** — live now passes effective_conf (post-filters), matching BacktestRunner |
+| Option chain expiry coverage | **confirmed aligned** — live now fetches nearest + next-nearest expiry, matching BacktestRunner |
+| Bar volume (FVG scoring) | not aligned (inherent) — Kite index has volume=0 |
+| LiquiditySweepValidationEngine | not aligned (intentional) — observability-only in backtest; absent in live |
+
+### Entry Gate Sequence (all must pass)
+
+1. `MCB.bias != NEUTRAL and _kite_session_valid` — outer options gate
+2. `options_ctx.strike_candidates` non-empty — after chain build and Greek resolver
+3. `StrikeSelectionEngine._pre_filter`: option type, DTE in [1,45], OI ≥ 500
+4. SSE returns non-None recommendation
+5. No open position, not hard-halted, session allows entry, FVG quality ≥ 0.40
+6. `_effective_conf >= _effective_min_conf` (tier-dependent: 0.35–0.65)
+7. `PositionSizer.tradable=True` and `recommended_lots >= 1`
+8. `premium_cost <= available_cash`
+
+### Strike Selection — Factor Usage
+
+**Used:** Delta (weight 1.20), Liquidity/spread (1.10), IV attractiveness (1.00), OI support (0.90), GEX proximity (0.80), OI activity (0.60), Max pain (0.50), DTE multiplier (multiplicative)
+
+**Not scored:** Gamma, Theta, Vega, Moneyness, Expected move, PCR, IV skew
+
+**Partially used:** Volume (inside liquidity dimension only, 40% of 1.10 weight)
+
+### Greeks Audit Summary
+
+- All Greeks are BSM synthetic in both live and backtest (Kite does not provide Greeks).
+- Greeks are computed by `GreeksEngine` via `OptionsContextBuilder` (`compute_missing_greeks=True`).
+- `StrikeCandidateFactory` requires full Greeks for candidate inclusion (gate).
+- Only delta materially influences strike scoring (Dimension 1).
+- Gamma, theta, vega are stored in `StrikeRecommendation` but not consumed by any scoring, sizing, or exit logic.
+- Exits use BSM `option_price` mark-to-market (premium-based threshold, not Greek-based).
+- `charm_unavailable=True` always — `GreeksEngine` does not implement charm.
+
+### Remaining Blockers for Live Paper Trading
+
+| Severity | Blocker |
+|---|---|
+| ~~High~~ | ~~Expiry-day blackout~~ — **FIXED** (dual-expiry chain fetch, graceful fallback) |
+| ~~Medium~~ | ~~PositionSizer oversizing~~ — **FIXED** (effective_conf now passed to PositionSizingRequest) |
+| Medium | FVG quality undercounting: volume=0 on all live bars permanently removes the 0.10 volume factor from every FVG score; entries near the 0.40 threshold may be incorrectly hard-blocked |
+| Medium | MCB cold-start latency: only 1m (weight=0.05) ready in early session; directional signal requires strong 20-min trend_score > ±0.0015 |
+| Low | Stale mark-to-market IV: `_last_atm_iv` used when bias=NEUTRAL bars (no chain fetch); IV may be hours stale for open positions |
+| Low | Documentation: §6 warm-start note references min_history_bars=24 (now 20); Priority 6 references 1d not persisted (now fixed) |
+
+### Next Validation Steps (market open)
+
+1. Observe `[OPTIONS] bias=SHORT/LONG` — confirms MCB gate opens.
+2. Observe `[STRIKE] BANKNIFTY...` — confirms chain fetch + SSE fires.
+3. Observe `[TIER2] lots=N` — confirms PositionSizer runs and produces lots.
+4. Observe `[ENTRY]` — confirms OptionPaperTrader.open() executes.
+5. Check that `_effective_conf` (printed in `[TIER2]` line) is lower than raw MCB confidence when PDL/OR filters are active — this confirms Gap A is observable.
+6. On Wednesday morning, confirm expiry-day blackout is resolved — `[STRIKE]` line should appear using the next-nearest expiry (DTE ~7) even when nearest is DTE=0.
+7. After first trade, verify `logs/paper_trading_state.json` contains `open_position` and `bar_history` with `"1d"` key populated after first day rollover.
+8. Confirm `[TIER2]` confidence values: `conf=X.XX→eff=Y.YY` where `eff < conf` when PDL/OR filters are active — this confirms effective_conf is being used for sizing.

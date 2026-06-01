@@ -1,5 +1,5 @@
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from platform_core.intelligence.market_context_builder import (
@@ -742,7 +742,7 @@ def _try_resume_trading(current_date: date) -> None:
     _save_state()
 
 
-def _size_live_position(rec, market_ctx, tier: int) -> PositionSizingResult:
+def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> PositionSizingResult:
     """
     Size position using the tier-appropriate PositionSizer.
 
@@ -751,7 +751,9 @@ def _size_live_position(rec, market_ctx, tier: int) -> PositionSizingResult:
       - maximum_lot_count ceiling passed to the request
       - max_allowed_drawdown_fraction on the PortfolioRiskSnapshot
 
-    All other inputs are derived from current account state.
+    effective_conf is the post-filter confidence (MCB × session × PDL × OR × FVG),
+    matching BacktestRunner._size_position which passes effective_confidence to the
+    PositionSizingRequest.confidence_score field.
     """
     _tier_sizers  = {0: _sizer_soft, 1: _sizer_t1, 2: _sizer_t2, 3: _sizer_t3}
     _tier_maxlots = {0: _SOFT_HALT_MAX_LOTS, 1: _TIER1_MAX_LOTS, 2: _TIER2_MAX_LOTS, 3: _TIER3_MAX_LOTS}
@@ -788,7 +790,7 @@ def _size_live_position(rec, market_ctx, tier: int) -> PositionSizingResult:
                 lot_size=rec.lot_size,
                 minimum_lot_count=1,
                 maximum_lot_count=max_lots,
-                confidence_score=min(market_ctx.confidence, 1.0),
+                confidence_score=min(effective_conf, 1.0),
                 actionability_score=min(rec.composite_score, 1.0),
                 realized_volatility_ratio=max(_last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
                 liquidity_score=min(rec.breakdown.liquidity, 1.0),
@@ -956,8 +958,27 @@ def on_ticks(raw_ticks):
                         strike_step=_STRIKE_STEP,
                     )
 
+                    # Fetch next-nearest expiry (mirrors BacktestRunner weekly+biweekly).
+                    # Enables cross-expiry DTE ranking and prevents expiry-day blackout
+                    # when the nearest contract has DTE < dte_min_viable.
+                    _chain_snapshots = [live_chain]
+                    try:
+                        expiry_next = adapter.nearest_expiry(
+                            _OPTION_TARGET, expiry + timedelta(days=1)
+                        )
+                        live_chain_next = adapter.fetch_option_chain(
+                            underlying=_OPTION_TARGET,
+                            expiry_date=expiry_next,
+                            spot_price=spot,
+                            lot_size=_LOT_SIZE,
+                            strike_step=_STRIKE_STEP,
+                        )
+                        _chain_snapshots.append(live_chain_next)
+                    except Exception:
+                        pass  # next expiry unavailable — proceed with nearest only
+
                     options_ctx = _opt_ctx_builder.build(
-                        snapshots=[live_chain],
+                        snapshots=_chain_snapshots,
                         spot_price=spot,
                         lot_size=_LOT_SIZE,
                         valuation_timestamp=datetime.now(timezone.utc),
@@ -1240,7 +1261,8 @@ def on_ticks(raw_ticks):
 
                 if _effective_conf >= _effective_min_conf:
                     _sizing = _size_live_position(
-                        _captured_strike_rec, _captured_market_ctx, _effective_tier
+                        _captured_strike_rec, _captured_market_ctx, _effective_tier,
+                        _effective_conf,
                     )
                     if _sizing.tradable and _sizing.recommended_lots >= 1:
                         _lots = _sizing.recommended_lots
