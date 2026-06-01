@@ -509,11 +509,11 @@ Zerodha access tokens expire daily. Remediation: `python scripts/generate_kite_s
 **Current backtest baseline (post-theta-efficiency, commit pending):** 420 trades · 48.8% win rate · ₹+18,30,321 P&L · 183.03% return · ending equity ₹28,30,321 · max_dd 1.99% · avg_win ₹13,391 · avg_loss ₹−4,255 · expectancy ₹4,358/trade.
 
 Prior baseline progression:
-- vol=0 false-zero (original): 922 trades · 40.6% · ₹+14,87,832 · 148.78%
-- FVG volume neutral fix: 931 trades · 40.1% · ₹+15,29,912 · 152.99%
-- Theta efficiency (8th factor): 420 trades · 48.8% · ₹+18,30,321 · 183.03% · expectancy ₹4,358
+- vol=0 false-zero (original): 922 trades · 40.6% · ₹+14,87,832 · 148.78% · expectancy ₹1,613
+- FVG volume neutral fix: 931 trades · 40.1% · ₹+15,29,912 · 152.99% · avg_win ₹7,078 · avg_loss ₹−1,989 · expectancy ₹1,643 · payoff 3.56:1 · max_dd 1.87%
+- Theta efficiency (8th factor): 420 trades · 48.8% · ₹+18,30,321 · 183.03% · avg_win ₹13,391 · avg_loss ₹−4,255 · expectancy ₹4,358 · payoff 3.15:1 · max_dd 1.99%
 
-Theta efficiency trade-off: 55% fewer trades, +8.7pp win rate, +19.6% total P&L, +165% per-trade P&L. System now selects 14-DTE biweekly options preferentially over 7-DTE weekly within the optimal DTE window. Positions held longer → less time unpositioned → fewer entries, but each entry is a better setup.
+Theta efficiency trade-off: 55% fewer trades, +8.7pp win rate, +19.6% total P&L, +165% per-trade expectancy, payoff ratio 3.56→3.15 (larger absolute ₹ per trade due to higher premium base), max drawdown +0.12pp. System now selects 14-DTE biweekly options preferentially over 7-DTE weekly within the optimal DTE window. Positions held longer → fewer total entries, but each entry is a higher-quality setup with a longer runway for the directional move to develop.
 
 ### Architecture Lessons That Shaped the Current Design
 
