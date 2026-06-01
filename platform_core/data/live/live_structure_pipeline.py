@@ -13,7 +13,6 @@ from platform_core.options.strike_selection import (
     StrikeSelectionEngine,
     StrikeSelectionConfig,
 )
-from platform_core.data.synthetic_chain_builder import ExpiryProvider
 from platform_core.core.constants import REFERENCE_LOT_SIZES, REFERENCE_STRIKE_STEPS
 from platform_core.core.enums import UnderlyingFamily
 
@@ -223,8 +222,6 @@ _opt_ctx_builder = OptionsContextBuilder(
     config=OptionsContextBuilderConfig(compute_missing_greeks=True)
 )
 _strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=3))
-_expiry_provider = ExpiryProvider(_OPTION_TARGET)
-
 # ── Session / PDH-PDL / Opening-Range / FVG-quality filters ──────────────────
 # Identical instances and configuration to BacktestRunner.
 _session_engine   = SessionContextEngine()
@@ -944,7 +941,7 @@ def on_ticks(raw_ticks):
                 try:
                     spot = completed_bar.close_price
                     bar_date = datetime.now(timezone.utc).date()
-                    expiry = _expiry_provider.get_weekly_expiry(bar_date)
+                    expiry = adapter.nearest_expiry(_OPTION_TARGET, bar_date)
 
                     live_chain = adapter.fetch_option_chain(
                         underlying=_OPTION_TARGET,

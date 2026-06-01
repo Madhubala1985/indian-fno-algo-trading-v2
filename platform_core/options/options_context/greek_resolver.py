@@ -25,6 +25,12 @@ from platform_core.options.greeks_engine import (
     OptionGreeksInput,
     GreeksEngineError,
 )
+from platform_core.options.iv_engine import (
+    IVEngine,
+    IVEngineConfig,
+    IVEngineError,
+    IVInput,
+)
 from platform_core.options.options_context.helpers import _ContractData
 from platform_core.options.options_context.models import OptionsContextBuilderConfig
 
@@ -43,6 +49,7 @@ class GreekResolver:
         self._engine = GreeksEngine(
             config=GreeksEngineConfig(theta_scale_per_day=True)
         )
+        self._iv_engine = IVEngine(config=IVEngineConfig())
 
     def resolve(self, cd: _ContractData, warnings: list[str]) -> str:
         """
@@ -50,6 +57,33 @@ class GreekResolver:
 
         Returns "chain", "computed", or "none".
         """
+        # ── Step 0: infer IV from LTP when chain does not carry it ────────────
+        if (
+            cd.iv is None
+            and self._config.compute_missing_greeks
+            and cd.ltp is not None
+            and cd.ltp > 0.0
+            and cd.tte_years > 0.0
+        ):
+            try:
+                iv_result = self._iv_engine.compute(
+                    option_input=IVInput(
+                        instrument_id=cd.contract_symbol,
+                        underlying_symbol=cd.underlying_symbol,
+                        option_symbol=cd.contract_symbol,
+                        option_type=cd.option_type,
+                        market_price=cd.ltp,
+                        spot_price=cd.spot_price,
+                        strike_price=cd.strike_price,
+                        time_to_expiry_years=cd.tte_years,
+                        risk_free_rate=self._config.risk_free_rate,
+                        dividend_yield=self._config.dividend_yield,
+                    )
+                )
+                cd.iv = iv_result.implied_volatility
+            except (IVEngineError, ValueError, ArithmeticError):
+                pass   # cd.iv stays None; Path 3 will apply
+
         chain_has_delta = cd.delta is not None
         chain_has_gamma = cd.gamma is not None
 

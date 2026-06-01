@@ -210,9 +210,9 @@ try:
     )
     expiry_provider = ExpiryProvider("BANKNIFTY")
     today  = date.today()
-    expiry = expiry_provider.get_weekly_expiry(today)
 
     if adapter is not None:
+        expiry = adapter.nearest_expiry("BANKNIFTY", today)
         _ok(f"Mode: LIVE  target_expiry={expiry}  spot=₹{spot_price:,.0f}")
         chain = adapter.fetch_option_chain(
             underlying="BANKNIFTY",
@@ -224,6 +224,7 @@ try:
         )
         source = "kite_live"
     else:
+        expiry = expiry_provider.get_weekly_expiry(today)
         _warn(f"Mode: OFFLINE (synthetic)  expiry={expiry}  spot=₹{spot_price:,.0f}")
         chain_builder = SyntheticOptionChainBuilder(config=SyntheticChainConfig(
             underlying_symbol="BANKNIFTY",
@@ -446,11 +447,13 @@ try:
     _ok(f"Position opened: {rec.contract_symbol if hasattr(rec, 'contract_symbol') else rec.option_symbol}  "
         f"lots={lots}  prem=₹{rec.last_traded_price:.2f}")
 
+    eval_date = date.today()   # same session as entry — avoids spurious time-decay stop
+
     # Evaluate at current market (same prices) — won't close
     closed = trader.evaluate_and_close(
         current_spot=spot_price,
         current_iv=opt_ctx.atm_iv or 0.18 if opt_ctx else 0.18,
-        current_date=expiry - timedelta(days=3) if chain else date.today(),
+        current_date=eval_date,
         bar_index=2,
         stop_loss_pct=0.50,
         take_profit_pct=2.00,
@@ -466,7 +469,7 @@ try:
     closed = trader.evaluate_and_close(
         current_spot=spot_price,
         current_iv=opt_ctx.atm_iv or 0.18 if opt_ctx else 0.18,
-        current_date=expiry - timedelta(days=3) if chain else date.today(),
+        current_date=eval_date,
         bar_index=3,
         stop_loss_pct=0.50,
         take_profit_pct=2.00,

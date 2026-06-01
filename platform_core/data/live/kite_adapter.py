@@ -342,6 +342,47 @@ class KiteAdapter:
             source="kite_live",
         )
 
+    def nearest_expiry(
+        self,
+        underlying: str,
+        from_date: date,
+        *,
+        exchange: str = "NFO",
+    ) -> date:
+        """
+        Return the nearest available option expiry date for `underlying` on or
+        after `from_date`, discovered from the broker's instrument master.
+
+        Uses the same 5-minute instrument cache as fetch_option_chain().
+        Raises ValueError if no expiry is available (e.g. token expired, market
+        not yet listed contracts).
+        """
+        now = time.time()
+        if (
+            self._instruments_cache is None
+            or self._instruments_exchange != exchange
+            or (now - self._instruments_cache_ts) >= _INSTRUMENTS_CACHE_TTL
+        ):
+            self._instruments_cache = self.kite.instruments(exchange)
+            self._instruments_cache_ts = now
+            self._instruments_exchange = exchange
+
+        expiries = sorted(
+            {
+                inst["expiry"]
+                for inst in self._instruments_cache
+                if inst["name"] == underlying
+                and inst["instrument_type"] in ("CE", "PE")
+                and inst["expiry"] >= from_date
+            }
+        )
+        if not expiries:
+            raise ValueError(
+                f"No option expiry found for {underlying} on or after {from_date} "
+                f"in {exchange} instrument master."
+            )
+        return expiries[0]
+
     def check_session(self) -> tuple[bool, str]:
         """
         Verify the current access token with a lightweight profile() call.
