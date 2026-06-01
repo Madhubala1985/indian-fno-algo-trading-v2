@@ -217,7 +217,7 @@ _MTF_KEY_MAP: dict[str, str] = {
     "HOUR_4": "4h",
 }
 
-_market_ctx_builder = MarketContextBuilder(underlying_symbol=_OPTION_TARGET)
+_market_ctx_builder = MarketContextBuilder(underlying_symbol=_OPTION_TARGET, min_history_bars=20)
 _opt_ctx_builder = OptionsContextBuilder(
     config=OptionsContextBuilderConfig(compute_missing_greeks=True)
 )
@@ -902,6 +902,11 @@ def on_ticks(raw_ticks):
             _daily_bar = _daily_acc.update(completed_bar)
             if _daily_bar is not None:
                 _pdl_engine.update_daily_bar(_daily_bar)
+                _market_ctx_builder.update(bar=_daily_bar, timeframe="1d")
+                _h1d = _bar_history.setdefault("1d", [])
+                _h1d.append(_bar_to_dict(_daily_bar))
+                if len(_h1d) > _MCB_HISTORY_BARS:
+                    del _h1d[:-_MCB_HISTORY_BARS]
 
             _market_ctx_builder.update(bar=completed_bar, timeframe="1m")
             _h1m = _bar_history.setdefault("1m", [])

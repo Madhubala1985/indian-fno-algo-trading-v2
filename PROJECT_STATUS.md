@@ -1,6 +1,6 @@
 # PROJECT_STATUS.md
 > Authoritative handoff document for future Claude sessions and future development.
-> Reflects repository state as of 2026-05-30 on branch `paper-trading`.
+> Reflects repository state as of 2026-06-01 on branch `paper-trading`.
 
 ---
 
@@ -554,7 +554,8 @@ Backtest P&L figures cannot be fully trusted because OI, PCR, max pain, and GEX 
 - SessionContextEngine, PreviousDayLevelsEngine, OpeningRangeEngine, FVGQualityScorer wired into live pipeline (commit `eff6a84`)
 - LiquiditySweepValidationEngine (BacktestRunner observability-only)
 - HistoricalOptionChainFeed (reads real recorded chains in backtest when available)
-- DailyBarAccumulator (feeds 1d slot of MCB in backtest; also feeds PDH/PDL in live pipeline)
+- DailyBarAccumulator (feeds 1d slot of MCB in backtest AND live pipeline; also feeds PDH/PDL — fixed 2026-06-01)
+- Live pipeline MCB `1d` gap closed: `_market_ctx_builder.update(bar=_daily_bar, timeframe="1d")` added; `min_history_bars=20` to match BacktestRunner
 - SyntheticOptionChainBuilder with ExpiryProvider
 - 91,934 bars BANKNIFTY 1m historical data (June 2025–May 2026)
 
@@ -583,7 +584,9 @@ Backtest P&L figures cannot be fully trusted because OI, PCR, max pain, and GEX 
 
 1. **Daily Kite access token renewal.** Zerodha tokens expire at the end of each trading day. Before each session: `python scripts/generate_kite_session.py`. The system detects an invalid token at startup and disables the options pipeline with a printed instruction, but the token must be renewed manually before starting.
 
-There are no remaining code-level gaps between the backtest and live entry logic. `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, and `FVGQualityScorer` are now active in the live pipeline.
+There are no remaining code-level gaps between the backtest and live entry logic. `SessionContextEngine`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, `FVGQualityScorer`, and MCB `1d` feed are now active in the live pipeline.
+
+**MCB warmup note:** Within a single fresh session, only the `1m` (weight=0.05) and `15m` (weight=0.15 after ~5h) classifiers are ready. The options gate fires when the 1m RegimeClassifier produces BEARISH/BULLISH — this requires roughly a 0.3–0.5% directional move with moderate efficiency over any 20-minute window. Over multi-day operation with warm-start, the `1h` and `4h` slots also contribute, producing more stable directional signals earlier in the session.
 
 ---
 
