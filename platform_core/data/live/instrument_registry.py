@@ -5,10 +5,6 @@ INSTRUMENTS = {
 
     "BANKNIFTY": 260105,
 
-    "FINNIFTY": 257801,
-
-    "MIDCPNIFTY": 288009,
-
     # BSE INDEXES
     "SENSEX": 265,
 

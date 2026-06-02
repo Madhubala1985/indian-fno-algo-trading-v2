@@ -46,14 +46,12 @@ _SESSION_CLOSE = (15, 30)
 _UNDERLYING_FAMILY = {
     "BANKNIFTY": UnderlyingFamily.BANKNIFTY,
     "NIFTY":     UnderlyingFamily.NIFTY,
-    "FINNIFTY":  UnderlyingFamily.FINNIFTY,
     "SENSEX":    UnderlyingFamily.SENSEX,
 }
 
 _EXCHANGE = {
     "BANKNIFTY": "NFO",
     "NIFTY":     "NFO",
-    "FINNIFTY":  "NFO",
     "SENSEX":    "BFO",
 }
 

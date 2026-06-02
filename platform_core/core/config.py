@@ -152,7 +152,6 @@ class MarketDefaultsConfig(ConfigSection):
     enabled_underlyings: tuple[UnderlyingFamily, ...] = (
         UnderlyingFamily.NIFTY,
         UnderlyingFamily.BANKNIFTY,
-        UnderlyingFamily.FINNIFTY,
         UnderlyingFamily.SENSEX,
     )
     reference_strike_steps: dict[UnderlyingFamily, int] = Field(

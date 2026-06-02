@@ -1,4 +1,7 @@
+import atexit
 import json
+import os
+import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -313,15 +316,63 @@ _consecutive_losses:     int         = 0
 
 # Operational state
 _STATE_FILE:         Path = Path("logs/paper_trading_state.json")
+_PID_FILE:           Path = Path("logs/live_pipeline.pid")
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
 # MCB warm-start: recent bar history persisted for post-restart rehydration
-_MCB_HISTORY_BARS:   int  = 30   # bars per timeframe kept (> min_history_bars=24)
+_MCB_HISTORY_BARS:   int  = 30   # bars per timeframe kept (> min_history_bars=20)
 _MCB_SAVE_INTERVAL:  int  = 15   # write state every N BANKNIFTY 1-min bars
 
 _bar_history: dict          = {}  # {tf: [bar_dict, ...]} — in-place mutated, no global needed
 _bars_since_history_save: int = 0
+
+
+# ── Single-instance lock ───────────────────────────────────────────────────────
+
+def _acquire_pid_lock() -> None:
+    """
+    Write a PID file so that a second invocation of this script detects the
+    running instance and refuses to start.
+
+    Stale PID files (left after SIGKILL or power loss) are handled via
+    os.kill(pid, 0): if the recorded PID no longer exists or belongs to a
+    different user's process, the file is treated as stale and overwritten.
+    """
+    if _PID_FILE.exists():
+        try:
+            existing_pid = int(_PID_FILE.read_text().strip())
+            os.kill(existing_pid, 0)   # signal 0 = existence check, no kill
+            # Reached here: process is alive and we can signal it — same user.
+            print(
+                f"\n{'='*60}\n"
+                f"[PID LOCK] Another instance is already running (PID {existing_pid}).\n"
+                f"  Only one live pipeline process may run at a time.\n"
+                f"  If the previous run crashed without cleanup, delete:\n"
+                f"    {_PID_FILE}\n"
+                f"  then restart.\n"
+                f"{'='*60}"
+            )
+            sys.exit(1)
+        except ProcessLookupError:
+            pass   # recorded PID is dead — stale lock, overwrite
+        except PermissionError:
+            pass   # PID reused by a different user's process — treat as stale
+        except (ValueError, OSError):
+            pass   # unreadable or corrupt PID file — overwrite
+
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PID_FILE.write_text(str(os.getpid()))
+    atexit.register(_release_pid_lock)
+
+
+def _release_pid_lock() -> None:
+    """Remove the PID file on clean exit (atexit handler)."""
+    try:
+        if _PID_FILE.exists() and _PID_FILE.read_text().strip() == str(os.getpid()):
+            _PID_FILE.unlink()
+    except Exception:
+        pass
 
 
 # ── State persistence (defined before ENGINES so startup restore runs first) ──
@@ -362,12 +413,16 @@ def _dict_to_bar(d: dict) -> LiveBar:
     )
 
 
-def _save_state() -> None:
+def _save_state() -> bool:
     """
     Persist mutable account state and recent bar history to disk atomically.
     _open_premium_cost is not stored directly — re-derived from
     open_position.entry_premium × lot_size × lots on restore.
     bar_history is stored as-is for MCB warm-start rehydration.
+
+    Returns True on success, False if the write failed.  Callers that must
+    guarantee persistence (e.g. post-trade logging) should check the return
+    value and skip downstream side-effects if False.
     """
     pos = _option_trader._position
     state = {
@@ -403,8 +458,10 @@ def _save_state() -> None:
         tmp = _STATE_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, indent=2))
         tmp.replace(_STATE_FILE)   # atomic on POSIX
+        return True
     except Exception as exc:
         print(f"[STATE] Write failed: {exc}")
+        return False
 
 
 def _load_state() -> None:
@@ -512,7 +569,8 @@ def _load_state() -> None:
         print(f"[STATE] MCB warm-start skipped ({exc}) — cold start required.")
 
 
-_load_state()   # restore from disk at process startup
+_acquire_pid_lock()   # must run before _load_state so state is never shared by two instances
+_load_state()         # restore from disk at process startup
 
 
 ENGINES = {}
@@ -1132,8 +1190,14 @@ def on_ticks(raw_ticks):
                         _consecutive_losses += 1
                     else:
                         _consecutive_losses = 0
-                    _save_state()
-                    trade_logger.log_trade(trade=_closed.as_paper_trade())
+                    if _save_state():
+                        trade_logger.log_trade(trade=_closed.as_paper_trade())
+                    else:
+                        print(
+                            f"\n[TRADE] WARNING — state save failed; "
+                            f"trade not logged to CSV. "
+                            f"Position closed in memory. Will re-evaluate after restart."
+                        )
                     _summary = performance_tracker.calculate_summary(
                         trades=[t.as_paper_trade() for t in _option_trader.completed_trades]
                     )

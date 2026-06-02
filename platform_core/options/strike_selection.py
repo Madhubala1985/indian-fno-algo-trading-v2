@@ -747,9 +747,22 @@ class StrikeSelectionEngine:
         High recent OI change (regardless of direction) indicates the strike is
         actively engaged by market participants — it is a focus level. A 25%
         change in OI is treated as full score; above 25% is capped.
+
+        Zero change-in-OI is treated as data unavailable (neutral 0.50), not as
+        evidence of disengagement.  In the current pipeline, change_in_oi is
+        always 0 because no prior-snapshot tracking exists to compute the delta.
+        Returning 0.0 would penalise every candidate equally without adding
+        information — inconsistent with every other unavailable-data default in
+        this engine (GEX absent → 0.50, max pain absent → 0.50, OI base=0 →
+        0.50, bid/ask absent → spread_score=0.50).  When real OI delta
+        acquisition is added (see §30e), this branch is bypassed automatically.
         """
         if candidate.open_interest <= 0:
             reasoning.append("OI activity: no base OI → oi_activity=0.50")
+            return 0.5
+
+        if candidate.change_in_open_interest == 0:
+            reasoning.append("OI activity: no change data available → oi_activity=0.50")
             return 0.5
 
         abs_change = fabs(candidate.change_in_open_interest)
