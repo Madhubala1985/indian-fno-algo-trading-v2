@@ -6,6 +6,12 @@ from pathlib import Path
 from platform_core.backtesting.backtest_runner import (
     BacktestRunner,
 )
+from platform_core.paper_trading.terminal_display import (
+    print_batch_header,
+    print_batch_file,
+    print_batch_footer,
+    print_warning_block,
+)
 
 
 class BatchBacktester:
@@ -22,21 +28,20 @@ class BatchBacktester:
         )
 
         if not csv_files:
-
-            print(
-                "\nNo CSV files found.\n"
+            print_warning_block(
+                "NO CSV FILES FOUND",
+                reason=f"directory={directory}",
             )
-
             return
 
-        print(
-            "\nBATCH BACKTEST STARTED\n"
-        )
+        print_batch_header(count=len(csv_files))
 
-        for csv_file in csv_files:
+        for idx, csv_file in enumerate(csv_files, start=1):
 
-            print(
-                f"\nRUNNING: {csv_file.name}\n"
+            print_batch_file(
+                name=csv_file.name,
+                index=idx,
+                total=len(csv_files),
             )
 
             runner = BacktestRunner(
@@ -47,7 +52,5 @@ class BatchBacktester:
                 csv_path=str(csv_file)
             )
 
-        print(
-            "\nBATCH BACKTEST COMPLETED\n"
-        )
+        print_batch_footer()
 

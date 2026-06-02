@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from platform_core.paper_trading.terminal_display import (
+    print_broker_open,
+    print_broker_close,
+)
+
 
 @dataclass(slots=True)
 class PaperPosition:
@@ -64,11 +69,11 @@ class PaperBroker:
             )
         )
 
-        print(
-            f"\n[PAPER] OPENED "
-            f"{direction} "
-            f"{symbol} "
-            f"@ {entry_price}"
+        print_broker_open(
+            direction=direction,
+            symbol=symbol,
+            price=entry_price,
+            quantity=quantity,
         )
 
     def close_position(
@@ -115,10 +120,11 @@ class PaperBroker:
 
         del self.positions[symbol]
 
-        print(
-            f"\n[PAPER] CLOSED "
-            f"{symbol} "
-            f"PnL={pnl:.2f}"
+        print_broker_close(
+            symbol=symbol,
+            pnl=pnl,
+            entry_price=position.entry_price,
+            exit_price=exit_price,
         )
 
     def has_open_position(

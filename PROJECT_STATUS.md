@@ -2666,3 +2666,64 @@ Expectancy:    ₹+4,806.39/trade
 ```
 
 This baseline supersedes §29. The §29 figures are archived in the progression table.
+
+---
+
+## §32. Terminal Observability (2026-06-02)
+
+### Objective
+
+Improve operator visibility during live paper trading. Trade entries, exits,
+active positions, warnings, and performance summaries were buried inside
+large volumes of candle and structure output.
+
+### Implementation
+
+New module: `platform_core/paper_trading/terminal_display.py`
+
+Provides 15 display functions used across the pipeline:
+
+| Function | Used in | Purpose |
+|---|---|---|
+| `print_entry_block` | `backtest_runner`, `live_structure_pipeline` | Green box on trade entry |
+| `print_exit_block` | `backtest_runner`, `live_structure_pipeline` | Green/red box on trade exit |
+| `print_position_snapshot` | `backtest_runner` | Cyan box — periodic open position status |
+| `print_heartbeat` | `backtest_runner` | Dim progress line every 500 bars |
+| `print_warning_block` | all files | Yellow thin box for blocks/rejections/halts |
+| `print_performance_summary` | `backtest_runner`, `live_structure_pipeline` | Magenta box after trade close |
+| `print_backtest_header` | `backtest_runner` | Blue box at run start |
+| `print_backtest_results` | `backtest_runner` | Blue box at run end |
+| `print_batch_header/file/footer` | `batch_backtester` | Blue boxes for batch runs |
+| `print_broker_open/close` | `paper_broker` | Green/red thin box for legacy broker |
+| `print_trade_logged` | `trade_logger` | Dim confirmation line |
+| `print_duplicate_suppressed` | `trade_logger` | Yellow warning for duplicate suppression |
+
+### Design
+
+- Block width: 76 visible columns (fits 80-col terminals with margin)
+- ANSI color: auto-detected via `sys.stdout.isatty()` + `NO_COLOR`/`FORCE_COLOR`
+- Graceful fallback: plain ASCII when ANSI disabled
+- Overflow protection: `_box_row` / `_thin_row` truncate with `…` when content exceeds width
+- Compatible: WSL, Windows Terminal, VS Code Terminal, tmux, SSH
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `platform_core/paper_trading/terminal_display.py` | **New** — all display functions |
+| `platform_core/paper_trading/paper_broker.py` | Replace plain prints with `print_broker_open/close` |
+| `platform_core/paper_trading/trade_logger.py` | Replace plain prints with `print_trade_logged/print_duplicate_suppressed` |
+| `platform_core/backtesting/backtest_runner.py` | Replace all prints; add entry/exit blocks, heartbeat, position snapshot |
+| `platform_core/backtesting/batch_backtester.py` | Replace plain prints with batch header/file/footer |
+| `platform_core/data/live/live_structure_pipeline.py` | Replace key prints with entry/exit/warning/perf blocks |
+
+### Strategy Logic: Unchanged
+
+- No signal changes
+- No sizing changes
+- No strike selection changes
+- No BOS/FVG/MCB changes
+- No risk rule changes
+- No backtest logic changes
+- Authoritative baseline (440 trades, 48.9% WR, ₹+21,14,814, 211.48%) unchanged
+- No backtest rerun required

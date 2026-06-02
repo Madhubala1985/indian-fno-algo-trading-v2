@@ -65,6 +65,16 @@ from platform_core.options.strike_selection import (
 from platform_core.options.greeks_engine import GreeksEngine, GreeksEngineConfig, OptionGreeksInput
 from platform_core.paper_trading.paper_broker import PaperBroker, PaperTrade
 from platform_core.paper_trading.performance_tracker import PerformanceTracker
+from platform_core.paper_trading.terminal_display import (
+    print_entry_block,
+    print_exit_block,
+    print_position_snapshot,
+    print_heartbeat,
+    print_warning_block,
+    print_performance_summary,
+    print_backtest_header,
+    print_backtest_results,
+)
 from platform_core.risk.position_sizing import (
     PositionSizer, PositionSizingConfig,
     PositionSizingRequest, PositionSizingResult,
@@ -328,13 +338,6 @@ class OptionPaperTrader:
             direction=direction,
             bar_index=bar_index,
         )
-        notional = recommendation.last_traded_price * recommendation.lot_size * lots
-        print(
-            f"\n  [ENTRY] {direction} {recommendation.underlying_symbol} "
-            f"{recommendation.strike_price:.0f} {recommendation.option_type}  "
-            f"expiry={recommendation.expiry_date}  lots={lots}  "
-            f"prem={recommendation.last_traded_price:.2f}  notional={notional:,.0f}"
-        )
 
     def evaluate_and_close(
         self,
@@ -405,12 +408,6 @@ class OptionPaperTrader:
         )
         self.completed_trades.append(trade)
         self._position = None
-
-        print(
-            f"\n  [EXIT]  {pos.underlying_symbol} {pos.strike:.0f} {pos.option_type}  "
-            f"lots={pos.lots}  entry={pos.entry_premium:.2f}  exit={current_premium:.2f}  "
-            f"pnl={pnl:+,.2f}  reason={exit_reason}"
-        )
         return trade
 
 
@@ -560,14 +557,14 @@ class BacktestRunner:
             path=csv_path, symbol=self.symbol, timeframe=self.timeframe
         )
 
-        print("\n" + "=" * 72)
-        print(f"  BACKTEST: {self.symbol}  |  {len(bars)} bars  |  {csv_path}")
-        print(
-            f"  Capital: ₹{cfg.initial_equity:,.0f}  "
-            f"risk/trade={cfg.max_risk_fraction_per_trade:.1%}  "
-            f"max_lots={cfg.max_lot_count}"
+        print_backtest_header(
+            symbol=self.symbol,
+            bars=len(bars),
+            csv_path=csv_path,
+            initial_equity=cfg.initial_equity,
+            risk_pct=cfg.max_risk_fraction_per_trade,
+            max_lots=cfg.max_lot_count,
         )
-        print("=" * 72)
 
         daily_bars_fed = 0
         trade_signals = 0
@@ -729,6 +726,20 @@ class BacktestRunner:
                         pnl=closed.pnl,
                         exit_reason=str(closed.exit_reason),
                     )
+                    print_exit_block(
+                        underlying=closed.underlying_symbol,
+                        strike=closed.strike,
+                        option_type=closed.option_type,
+                        direction=closed.direction,
+                        lots=closed.lots,
+                        lot_size=closed.lot_size,
+                        entry_premium=closed.entry_premium,
+                        exit_premium=closed.exit_premium,
+                        pnl=closed.pnl,
+                        bars_held=closed.bars_held,
+                        exit_reason=str(closed.exit_reason),
+                        equity=self._equity,
+                    )
 
             # ── 8. Effective confidence (session × PDH/PDL × OR × FVG) ───
             effective_confidence = market_ctx.confidence * session_ctx.confidence_multiplier
@@ -822,26 +833,49 @@ class BacktestRunner:
                 if not session_ctx.allow_entry and session_ctx.filter_reason:
                     session_blocks += 1
                     if session_blocks <= 3 or bar_index % 100 == 0:
-                        print(f"\n  [SESSION BLOCK] bar={bar_index}  {session_ctx.filter_reason}")
+                        print_warning_block(
+                            "SESSION BLOCK",
+                            bar_index=bar_index,
+                            reason=session_ctx.filter_reason,
+                        )
                 elif not setup_val.is_valid:
                     setup_blocks += 1
                     if setup_blocks <= 5:
                         sv = setup_val
-                        print(f"\n  [SETUP BLOCK] bar={bar_index}  {sv.reason}  "
-                              f"sweep={'Y' if sv.sweep_ok else 'N'}  bos={'Y' if sv.bos_ok else 'N'}  "
-                              f"disp={'Y' if sv.disp_ok else 'N'}")
+                        print_warning_block(
+                            "SETUP BLOCK",
+                            bar_index=bar_index,
+                            reason=sv.reason,
+                            sweep="Y" if sv.sweep_ok else "N",
+                            bos="Y" if sv.bos_ok else "N",
+                            disp="Y" if sv.disp_ok else "N",
+                        )
                 elif fvg_quality_reason:
                     fvg_blocks += 1
                     if fvg_blocks <= 5:
-                        print(f"\n  [FVG BLOCK] bar={bar_index}  {fvg_quality_reason}")
+                        print_warning_block(
+                            "FVG QUALITY BLOCK",
+                            bar_index=bar_index,
+                            reason=fvg_quality_reason,
+                        )
                 elif pdl_reason:
                     pdl_blocks += 1
                     if pdl_blocks <= 5:
-                        print(f"\n  [PDL BLOCK] bar={bar_index}  conf={market_ctx.confidence:.2f}→{effective_confidence:.2f}  {pdl_reason}")
+                        print_warning_block(
+                            "PDL BLOCK",
+                            bar_index=bar_index,
+                            conf=f"{market_ctx.confidence:.2f}→{effective_confidence:.2f}",
+                            reason=pdl_reason,
+                        )
                 elif or_reason:
                     or_blocks += 1
                     if or_blocks <= 5:
-                        print(f"\n  [OR BLOCK] bar={bar_index}  conf={market_ctx.confidence:.2f}→{effective_confidence:.2f}  {or_reason}")
+                        print_warning_block(
+                            "OR BLOCK",
+                            bar_index=bar_index,
+                            conf=f"{market_ctx.confidence:.2f}→{effective_confidence:.2f}",
+                            reason=or_reason,
+                        )
 
             # ── 10. Position sizing and entry ─────────────────────────────
             if strike_rec is not None:
@@ -871,36 +905,69 @@ class BacktestRunner:
                     )
                     pdl_lbl = self.pdl_engine.levels.to_dict() if self.pdl_engine.ready else {}
                     or_lbl  = self.or_engine.current_range.to_dict() if self.or_engine.ready else {}
-                    print(
-                        f"    session={session_ctx.phase}  "
-                        f"conf={market_ctx.confidence:.2f}→eff={effective_confidence:.2f}  "
-                        f"fvg_q={self._fvg_quality:.2f}  "
-                        f"setup={setup_val.setup_score:.2f}  "
-                        f"vol_ratio={_vol_ratio(options_ctx, cfg):.2f}  "
-                        f"liq={strike_rec.breakdown.liquidity:.2f}  "
-                        f"drawdown={self._current_drawdown():.1%}"
-                        + (f"  PDH={pdl_lbl.get('pdh','-'):.0f}/PDL={pdl_lbl.get('pdl','-'):.0f}" if pdl_lbl else "")
-                        + (f"  OR={or_lbl.get('or_low','-'):.0f}-{or_lbl.get('or_high','-'):.0f}" if or_lbl else "")
+                    print_entry_block(
+                        direction=str(market_ctx.bias),
+                        underlying=strike_rec.underlying_symbol,
+                        strike=strike_rec.strike_price,
+                        option_type=strike_rec.option_type,
+                        expiry=strike_rec.expiry_date,
+                        lots=lots,
+                        lot_size=strike_rec.lot_size,
+                        premium=strike_rec.last_traded_price,
+                        notional=premium_cost,
+                        bar_index=bar_index,
+                        session=str(session_ctx.phase),
+                        conf_raw=market_ctx.confidence,
+                        conf_eff=effective_confidence,
+                        fvg_quality=self._fvg_quality,
+                        setup_score=setup_val.setup_score,
+                        vol_ratio=_vol_ratio(options_ctx, cfg),
+                        liquidity=strike_rec.breakdown.liquidity,
+                        drawdown=self._current_drawdown(),
+                        pdh=pdl_lbl.get("pdh"),
+                        pdl=pdl_lbl.get("pdl"),
+                        or_low=or_lbl.get("or_low"),
+                        or_high=or_lbl.get("or_high"),
                     )
                     entries_made += 1
                 else:
                     if not sizing.tradable:
-                        print(
-                            f"\n  [SIZING REJECTED] {sizing.rejection_reason}  "
-                            f"equity={self._equity:,.0f}  "
-                            f"dd={self._current_drawdown():.1%}"
+                        print_warning_block(
+                            "SIZING REJECTED",
+                            bar_index=bar_index,
+                            equity=f"₹{self._equity:,.0f}",
+                            dd=f"{self._current_drawdown():.1%}",
+                            reason=sizing.rejection_reason or "",
                         )
 
-            # ── 11. Progress reporting ───────────────────────────────────
-            if structure_result.emitted_events and bar_index % 50 == 0:
-                daily_ready = market_ctx.daily is not None and market_ctx.daily.history_ready
-                for event in structure_result.emitted_events:
-                    evt = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
-                    side = event.side.value if hasattr(event.side, "value") else str(event.side)
-                    print(
-                        f"  [BAR {bar_index:4d}] {evt:30s} {side:8s}  "
-                        f"bias={market_ctx.bias:7s}  conf={market_ctx.confidence:.2f}  "
-                        f"daily={'ready' if daily_ready else 'warming'}"
+            # ── 11. Progress reporting ────────────────────────────────────
+            if bar_index % 500 == 0 and bar_index > 0:
+                _completed = self.option_trader.completed_trades
+                _wins = sum(1 for t in _completed if t.pnl > 0)
+                print_heartbeat(
+                    bar_index=bar_index,
+                    equity=self._equity,
+                    drawdown=self._current_drawdown(),
+                    trades=len(_completed),
+                    wins=_wins,
+                    bias=str(market_ctx.bias),
+                    confidence=market_ctx.confidence,
+                    session=str(session_ctx.phase),
+                    has_position=self.option_trader.has_open_position(),
+                )
+            if bar_index % 100 == 0 and self.option_trader.has_open_position():
+                pos = self.option_trader._position
+                if pos is not None:
+                    print_position_snapshot(
+                        underlying=pos.underlying_symbol,
+                        strike=pos.strike,
+                        option_type=pos.option_type,
+                        direction=pos.direction,
+                        lots=pos.lots,
+                        entry_premium=pos.entry_premium,
+                        bars_held=bar_index - pos.bar_index,
+                        equity=self._equity,
+                        drawdown=self._current_drawdown(),
                     )
 
         # ── Force-close at end of data ────────────────────────────────────
@@ -919,6 +986,20 @@ class BacktestRunner:
             if closed is not None:
                 self._equity += closed.pnl
                 self._open_premium_cost = 0.0
+                print_exit_block(
+                    underlying=closed.underlying_symbol,
+                    strike=closed.strike,
+                    option_type=closed.option_type,
+                    direction=closed.direction,
+                    lots=closed.lots,
+                    lot_size=closed.lot_size,
+                    entry_premium=closed.entry_premium,
+                    exit_premium=closed.exit_premium,
+                    pnl=closed.pnl,
+                    bars_held=closed.bars_held,
+                    exit_reason=str(closed.exit_reason),
+                    equity=self._equity,
+                )
 
         # ── Flush partial daily bar ───────────────────────────────────────
         partial_daily = self.daily_acc.flush()
@@ -930,34 +1011,27 @@ class BacktestRunner:
         option_trades = [t.as_paper_trade() for t in self.option_trader.completed_trades]
         summary = self.performance_tracker.calculate_summary(trades=option_trades)
 
-        total_pnl = self._equity - cfg.initial_equity
-        max_dd = (cfg.initial_equity - min(
-            cfg.initial_equity + sum(t.pnl for t in self.option_trader.completed_trades[:i+1])
-            for i in range(len(self.option_trader.completed_trades))
-        ) if self.option_trader.completed_trades else 0.0)
-
-        print("\n" + "=" * 72)
-        print("  BACKTEST RESULTS")
-        print("=" * 72)
-        print(f"  Bars processed:           {len(bars)}")
-        print(f"  Daily bars fed to MCB:    {daily_bars_fed}  (1d slot now active)")
-        print(f"  Directional signals:      {trade_signals}")
-        print(f"  Entries made:             {entries_made}")
-        print(f"  -- Session blocks:        {session_blocks}")
-        print(f"  -- PDH/PDL blocks:        {pdl_blocks}")
-        print(f"  -- OR blocks:             {or_blocks}")
-        print(f"  -- FVG quality blocks:    {fvg_blocks}  (hard blocks: quality < {FVG_QUALITY_BLOCK_THRESHOLD})")
-        print(f"  -- FVG quality filters:   {fvg_quality_filters}  (entries with reduced confidence)")
-        print(f"  -- Setup blocks:          {setup_blocks}  (sweep/BOS/displacement incomplete)")
-        print(f"  Completed trades:         {summary.total_trades}")
-        print(f"  Winning / losing:         {summary.winning_trades} / {summary.losing_trades}")
-        print(f"  Win rate:                 {summary.win_rate:.1%}")
-        print(f"  Total P&L:                ₹{summary.total_pnl:+,.2f}")
-        print(f"  Average P&L per trade:    ₹{summary.average_pnl:+,.2f}")
-        print(f"  Starting equity:          ₹{cfg.initial_equity:,.0f}")
-        print(f"  Ending equity:            ₹{self._equity:,.0f}")
-        print(f"  Equity return:            {(self._equity / cfg.initial_equity - 1):.2%}")
-        print("=" * 72)
+        print_backtest_results(
+            bars=len(bars),
+            daily_bars_fed=daily_bars_fed,
+            trade_signals=trade_signals,
+            entries_made=entries_made,
+            session_blocks=session_blocks,
+            pdl_blocks=pdl_blocks,
+            or_blocks=or_blocks,
+            fvg_blocks=fvg_blocks,
+            fvg_filters=fvg_quality_filters,
+            setup_blocks=setup_blocks,
+            total_trades=summary.total_trades,
+            wins=summary.winning_trades,
+            losses=summary.losing_trades,
+            win_rate=summary.win_rate,
+            total_pnl=summary.total_pnl,
+            avg_pnl=summary.average_pnl,
+            equity=self._equity,
+            initial_equity=cfg.initial_equity,
+            fvg_block_threshold=FVG_QUALITY_BLOCK_THRESHOLD,
+        )
         self.strike_validator.print_report()
 
     # ── Private helpers ────────────────────────────────────────────────────

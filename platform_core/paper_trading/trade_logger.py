@@ -6,6 +6,10 @@ from pathlib import Path
 from platform_core.paper_trading.paper_broker import (
     PaperTrade,
 )
+from platform_core.paper_trading.terminal_display import (
+    print_trade_logged,
+    print_duplicate_suppressed,
+)
 
 
 LOG_PATH = (
@@ -63,10 +67,11 @@ class TradeLogger:
         )
 
         if key == self._last_logged_key:
-            print(
-                f"\n[LOGGER] Duplicate suppressed — trade already logged this session: "
-                f"{trade.symbol} {trade.direction} entry={trade.entry_price} "
-                f"exit={trade.exit_price}"
+            print_duplicate_suppressed(
+                symbol=trade.symbol,
+                direction=trade.direction,
+                entry=trade.entry_price,
+                exit_price=trade.exit_price,
             )
             return
 
@@ -91,7 +96,11 @@ class TradeLogger:
                 ]
             )
 
-        print(
-            "\n[LOGGER] Trade persisted."
+        print_trade_logged(
+            symbol=trade.symbol,
+            direction=trade.direction,
+            entry=trade.entry_price,
+            exit_price=trade.exit_price,
+            pnl=trade.pnl,
         )
 

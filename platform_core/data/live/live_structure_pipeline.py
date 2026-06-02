@@ -67,6 +67,14 @@ from platform_core.paper_trading.performance_tracker import (
     PerformanceTracker,
 )
 
+from platform_core.paper_trading.terminal_display import (
+    print_entry_block,
+    print_exit_block,
+    print_warning_block,
+    print_performance_summary,
+    print_heartbeat,
+)
+
 from platform_core.paper_trading.trade_logger import (
     TradeLogger,
 )
@@ -1190,22 +1198,41 @@ def on_ticks(raw_ticks):
                         _consecutive_losses += 1
                     else:
                         _consecutive_losses = 0
+                    print_exit_block(
+                        underlying=_closed.underlying_symbol,
+                        strike=_closed.strike,
+                        option_type=_closed.option_type,
+                        direction=_closed.direction,
+                        lots=_closed.lots,
+                        lot_size=_closed.lot_size,
+                        entry_premium=_closed.entry_premium,
+                        exit_premium=_closed.exit_premium,
+                        pnl=_closed.pnl,
+                        bars_held=_closed.bars_held,
+                        exit_reason=str(_closed.exit_reason),
+                        equity=_equity,
+                    )
                     if _save_state():
                         trade_logger.log_trade(trade=_closed.as_paper_trade())
                     else:
-                        print(
-                            f"\n[TRADE] WARNING — state save failed; "
-                            f"trade not logged to CSV. "
-                            f"Position closed in memory. Will re-evaluate after restart."
+                        print_warning_block(
+                            "STATE SAVE FAILED",
+                            reason=(
+                                "trade not logged to CSV — "
+                                "position closed in memory, will re-evaluate after restart"
+                            ),
                         )
                     _summary = performance_tracker.calculate_summary(
                         trades=[t.as_paper_trade() for t in _option_trader.completed_trades]
                     )
-                    print(
-                        f"\n[PERF] trades={_summary.total_trades}  "
-                        f"win={_summary.win_rate:.1%}  "
-                        f"P&L=₹{_summary.total_pnl:+,.2f}  "
-                        f"equity=₹{_equity:,.2f}"
+                    print_performance_summary(
+                        total_trades=_summary.total_trades,
+                        wins=_summary.winning_trades,
+                        losses=_summary.losing_trades,
+                        total_pnl=_summary.total_pnl,
+                        avg_pnl=_summary.average_pnl,
+                        equity=_equity,
+                        initial_equity=_INITIAL_EQUITY,
                     )
 
             # Session reset + capital protection checks run every BANKNIFTY bar
@@ -1216,7 +1243,11 @@ def on_ticks(raw_ticks):
             if _should_halt and not _trading_halted:
                 _trading_halted = True
                 _halt_reason = _halt_msg
-                print(f"\n[CAPITAL HALT] {_halt_reason}  equity=₹{_equity:,.0f}")
+                print_warning_block(
+                    "CAPITAL HALT",
+                    equity=f"₹{_equity:,.0f}",
+                    reason=_halt_reason,
+                )
                 _save_state()
 
             # ── Soft halt check ──────────────────────────────────────────────
@@ -1224,7 +1255,11 @@ def on_ticks(raw_ticks):
             if _is_soft and not _soft_halted and not _trading_halted:
                 _soft_halted = True
                 _soft_halt_reason = _soft_msg
-                print(f"\n[SOFT HALT] {_soft_halt_reason} — defensive-only mode  equity=₹{_equity:,.0f}")
+                print_warning_block(
+                    "SOFT HALT",
+                    equity=f"₹{_equity:,.0f}",
+                    reason=f"{_soft_halt_reason} — defensive-only mode",
+                )
                 _save_state()
 
             # ── FVG quality + effective confidence (mirrors BacktestRunner step 8) ─
@@ -1297,13 +1332,20 @@ def on_ticks(raw_ticks):
             _effective_conf *= _fvg_quality_for_entry
 
             if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_ctx.allow_entry:
-                print(
-                    f"\n[FILTER] bar={_bar_count}  "
-                    f"conf={_captured_market_ctx.confidence:.2f}→eff={_effective_conf:.2f}"
-                    + (f"  session={_session_ctx.phase}" if not _session_ctx.allow_entry else "")
-                    + (f"  {_pdl_reason}" if _pdl_reason else "")
-                    + (f"  {_or_reason}" if _or_reason else "")
-                    + (f"  {_fvg_quality_reason}" if _fvg_quality_reason else "")
+                _filter_parts = []
+                if not _session_ctx.allow_entry:
+                    _filter_parts.append(f"session={_session_ctx.phase}")
+                if _pdl_reason:
+                    _filter_parts.append(_pdl_reason)
+                if _or_reason:
+                    _filter_parts.append(_or_reason)
+                if _fvg_quality_reason:
+                    _filter_parts.append(_fvg_quality_reason)
+                print_warning_block(
+                    "ENTRY FILTER",
+                    bar_index=_bar_count,
+                    conf=f"{_captured_market_ctx.confidence:.2f}→{_effective_conf:.2f}",
+                    reason="  |  ".join(_filter_parts),
                 )
 
             # ── Entry gate: fresh strike, no open position, not hard-halted ─
@@ -1345,21 +1387,39 @@ def on_ticks(raw_ticks):
                                 lots=_lots,
                             )
                             _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
-                            print(
-                                f"    [TIER{_tier_label}] lots={_lots}  "
-                                f"cost=₹{_cost:,.2f}  equity=₹{_equity:,.2f}  "
-                                f"conf={_captured_market_ctx.confidence:.2f}→eff={_effective_conf:.2f}"
+                            print_entry_block(
+                                direction=str(_captured_market_ctx.bias),
+                                underlying=_captured_strike_rec.underlying_symbol,
+                                strike=_captured_strike_rec.strike_price,
+                                option_type=_captured_strike_rec.option_type,
+                                expiry=_captured_strike_rec.expiry_date,
+                                lots=_lots,
+                                lot_size=_captured_strike_rec.lot_size,
+                                premium=_captured_strike_rec.last_traded_price,
+                                notional=_cost,
+                                bar_index=_bar_count,
+                                session=str(_session_ctx.phase),
+                                conf_raw=_captured_market_ctx.confidence,
+                                conf_eff=_effective_conf,
+                                fvg_quality=_fvg_quality,
+                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                extra_label=f"TIER{_tier_label}",
                             )
                         else:
-                            print(
-                                f"\n[CASH BLOCK] need=₹{_cost:,.2f}  "
-                                f"available=₹{_avail:,.2f}  equity=₹{_equity:,.2f}"
+                            print_warning_block(
+                                "CASH BLOCK",
+                                bar_index=_bar_count,
+                                need=f"₹{_cost:,.2f}",
+                                available=f"₹{_avail:,.2f}",
+                                equity=f"₹{_equity:,.0f}",
                             )
                     elif not _sizing.tradable:
-                        print(
-                            f"\n[SIZING REJECTED] {_sizing.rejection_reason}  "
-                            f"tier={'SOFT' if _soft_halted else _effective_tier}  "
-                            f"equity=₹{_equity:,.0f}"
+                        print_warning_block(
+                            "SIZING REJECTED",
+                            bar_index=_bar_count,
+                            tier=f"{'SOFT' if _soft_halted else _effective_tier}",
+                            equity=f"₹{_equity:,.0f}",
+                            reason=_sizing.rejection_reason or "",
                         )
 
         if result.emitted_events:
@@ -1549,11 +1609,16 @@ def on_ticks(raw_ticks):
                                 )
                             )
 
-                            print(
-                                "\nPERFORMANCE SUMMARY:\n"
+                            print_performance_summary(
+                                total_trades=summary.total_trades,
+                                wins=summary.winning_trades,
+                                losses=summary.losing_trades,
+                                total_pnl=summary.total_pnl,
+                                avg_pnl=summary.average_pnl,
+                                equity=summary.total_pnl,
+                                initial_equity=0.0,
+                                label="LEGACY PERFORMANCE SUMMARY",
                             )
-
-                            print(summary)
 
         else:
 
