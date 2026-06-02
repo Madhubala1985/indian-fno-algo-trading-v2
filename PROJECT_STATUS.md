@@ -2727,3 +2727,71 @@ Provides 15 display functions used across the pipeline:
 - No backtest logic changes
 - Authoritative baseline (440 trades, 48.9% WR, ₹+21,14,814, 211.48%) unchanged
 - No backtest rerun required
+
+---
+
+## §33. Database Layer — Phase A (2026-06-02)
+
+### Objective
+
+Persistent database layer for trades, decisions, structure events, and runtime
+events.  Additive only — no change to any trading, sizing, signal, or execution
+logic.  Existing CSV logs remain operational.
+
+### Technology
+
+**SQLite** (`logs/trades.db`)
+
+Rationale: zero external dependencies, file-based alongside existing CSV,
+single-writer queue pattern, appropriate for paper trading volume, queryable
+with any SQLite tool or Python `sqlite3`.
+
+### Architecture
+
+`platform_core/persistence/trade_database.py` — `TradeDatabase` class
+
+- **Fire-and-forget pattern**: all writes enqueued to a `queue.Queue`, drained
+  by a background daemon thread
+- **Never raises** into calling code — all write paths wrapped in `try/except Exception: pass`
+- **Default off**: `db_writer=None` in `BacktestRunner` → zero overhead, zero behavior change
+- **WAL mode**: SQLite WAL journal for concurrent-safe writes
+
+### Tables
+
+| Table | Purpose | Written from |
+|---|---|---|
+| `pt_trades` | One row per option trade; INSERT at entry, UPDATE at exit | `BacktestRunner`, `live_structure_pipeline` |
+| `pt_decisions` | One row per entry evaluation (pass or filter) | `BacktestRunner`, `live_structure_pipeline` |
+| `pt_structure_events` | Batch INSERT per emitted `StructureEvent` | `BacktestRunner`, `live_structure_pipeline` |
+| `pt_runtime_events` | Pipeline lifecycle, halts, session resets | `live_structure_pipeline` (start/halt/soft-halt), `BacktestRunner` (start/end) |
+
+### Write Points
+
+| Event | File | Trigger |
+|---|---|---|
+| Trade entry | `backtest_runner.py` + `live_structure_pipeline.py` | After `option_trader.open()` |
+| Trade exit | `backtest_runner.py` + `live_structure_pipeline.py` | After `evaluate_and_close()` returns non-None |
+| Decision (filter) | `backtest_runner.py` + `live_structure_pipeline.py` | SESSION/SETUP/FVG/PDL/OR/SIZING/CASH block |
+| Decision (entry) | `backtest_runner.py` + `live_structure_pipeline.py` | After `entries_made += 1` |
+| Structure events | `backtest_runner.py` + `live_structure_pipeline.py` | After `engine.process()` if events exist |
+| PIPELINE_START | `live_structure_pipeline.py` | Startup after `_load_state()` |
+| CAPITAL_HALT | `live_structure_pipeline.py` | `_check_capital_limits()` triggers |
+| SOFT_HALT | `live_structure_pipeline.py` | `_check_soft_halt()` triggers |
+| BACKTEST_START/END | `backtest_runner.py` | Start and end of `run()` |
+
+### Files
+
+**New:**
+- `platform_core/persistence/__init__.py`
+- `platform_core/persistence/trade_database.py`
+
+**Modified (additive only):**
+- `platform_core/backtesting/backtest_runner.py` — optional `db_writer=None` param + fire-and-forget calls
+- `platform_core/data/live/live_structure_pipeline.py` — module-level `_db` init + fire-and-forget calls
+
+### Change-Impact Verification
+
+- Strategy logic: **ZERO CHANGE**
+- Backtest results: **IDENTICAL** — DB writer default is `None`; all calls are after decisions
+- CSV logs: **OPERATIONAL** — CSV write precedes DB write in all paths
+- Terminal output: **OPERATIONAL** — DB calls after all display calls

@@ -74,6 +74,7 @@ from platform_core.paper_trading.terminal_display import (
     print_performance_summary,
     print_heartbeat,
 )
+from platform_core.persistence.trade_database import TradeDatabase
 
 from platform_core.paper_trading.trade_logger import (
     TradeLogger,
@@ -328,6 +329,10 @@ _PID_FILE:           Path = Path("logs/live_pipeline.pid")
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
+# Persistence layer — fire-and-forget, never affects trading logic
+_DB_PATH: Path = Path("logs/trades.db")
+_db: TradeDatabase = TradeDatabase(str(_DB_PATH))
+
 # MCB warm-start: recent bar history persisted for post-restart rehydration
 _MCB_HISTORY_BARS:   int  = 30   # bars per timeframe kept (> min_history_bars=20)
 _MCB_SAVE_INTERVAL:  int  = 15   # write state every N BANKNIFTY 1-min bars
@@ -579,6 +584,19 @@ def _load_state() -> None:
 
 _acquire_pid_lock()   # must run before _load_state so state is never shared by two instances
 _load_state()         # restore from disk at process startup
+
+# Start persistence layer — fire-and-forget, never affects trading logic
+try:
+    _session_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    _db.start(session_id=f"live_{_session_ts}", run_mode="live")
+    _db.write_runtime_event(
+        "PIPELINE_START",
+        severity="INFO",
+        message=f"equity=₹{_equity:,.0f}  halted={_trading_halted}",
+        equity=_equity,
+    )
+except Exception:
+    pass
 
 
 ENGINES = {}
@@ -1172,6 +1190,17 @@ def on_ticks(raw_ticks):
             )
         )
 
+        # ── Persist structure events (fire-and-forget) ───────────────────────
+        if result.emitted_events:
+            try:
+                _db.write_structure_events(
+                    result.emitted_events,
+                    bar_index=_bar_count,
+                    bar_ts=datetime.now(timezone.utc).isoformat(),
+                )
+            except Exception:
+                pass
+
         # ── OptionPaperTrader: exit evaluation + entry (BANKNIFTY only) ──────
         if completed_bar.symbol == _OPTION_TARGET and _captured_market_ctx is not None:
             _bar_date_live = datetime.now(timezone.utc).date()
@@ -1212,6 +1241,17 @@ def on_ticks(raw_ticks):
                         exit_reason=str(_closed.exit_reason),
                         equity=_equity,
                     )
+                    try:
+                        _db.write_trade_exit(
+                            exit_premium=_closed.exit_premium,
+                            pnl=_closed.pnl,
+                            bars_held=_closed.bars_held,
+                            exit_reason=str(_closed.exit_reason),
+                            exit_ts=datetime.now(timezone.utc).isoformat(),
+                            equity_after=_equity,
+                        )
+                    except Exception:
+                        pass
                     if _save_state():
                         trade_logger.log_trade(trade=_closed.as_paper_trade())
                     else:
@@ -1248,6 +1288,17 @@ def on_ticks(raw_ticks):
                     equity=f"₹{_equity:,.0f}",
                     reason=_halt_reason,
                 )
+                try:
+                    _db.write_runtime_event(
+                        "CAPITAL_HALT",
+                        severity="CRITICAL",
+                        message=_halt_reason,
+                        equity=_equity,
+                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                        bar_index=_bar_count,
+                    )
+                except Exception:
+                    pass
                 _save_state()
 
             # ── Soft halt check ──────────────────────────────────────────────
@@ -1260,6 +1311,17 @@ def on_ticks(raw_ticks):
                     equity=f"₹{_equity:,.0f}",
                     reason=f"{_soft_halt_reason} — defensive-only mode",
                 )
+                try:
+                    _db.write_runtime_event(
+                        "SOFT_HALT",
+                        severity="WARNING",
+                        message=f"{_soft_halt_reason} — defensive-only mode",
+                        equity=_equity,
+                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                        bar_index=_bar_count,
+                    )
+                except Exception:
+                    pass
                 _save_state()
 
             # ── FVG quality + effective confidence (mirrors BacktestRunner step 8) ─
@@ -1405,6 +1467,42 @@ def on_ticks(raw_ticks):
                                 drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                 extra_label=f"TIER{_tier_label}",
                             )
+                            try:
+                                _db.write_trade_entry(
+                                    underlying=_captured_strike_rec.underlying_symbol,
+                                    contract_symbol=_captured_strike_rec.option_symbol,
+                                    strike=_captured_strike_rec.strike_price,
+                                    option_type=_captured_strike_rec.option_type,
+                                    expiry_date=_captured_strike_rec.expiry_date.isoformat(),
+                                    direction=str(_captured_market_ctx.bias),
+                                    lots=_lots,
+                                    lot_size=_captured_strike_rec.lot_size,
+                                    entry_premium=_captured_strike_rec.last_traded_price,
+                                    entry_spot=completed_bar.close_price,
+                                    entry_iv=_last_atm_iv,
+                                    entry_bar_index=_bar_count,
+                                    entry_ts=datetime.now(timezone.utc).isoformat(),
+                                    conf_raw=_captured_market_ctx.confidence,
+                                    conf_eff=_effective_conf,
+                                    fvg_quality=_fvg_quality,
+                                    drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                    equity_before=_equity,
+                                )
+                                _db.write_decision(
+                                    bar_index=_bar_count,
+                                    bar_ts=datetime.now(timezone.utc).isoformat(),
+                                    underlying=_captured_strike_rec.underlying_symbol,
+                                    bias=str(_captured_market_ctx.bias),
+                                    conf_raw=_captured_market_ctx.confidence,
+                                    conf_eff=_effective_conf,
+                                    outcome=f"ENTRY_TIER{_tier_label}",
+                                    session_phase=str(_session_ctx.phase),
+                                    fvg_quality=_fvg_quality,
+                                    equity=_equity,
+                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                )
+                            except Exception:
+                                pass
                         else:
                             print_warning_block(
                                 "CASH BLOCK",
@@ -1413,6 +1511,21 @@ def on_ticks(raw_ticks):
                                 available=f"₹{_avail:,.2f}",
                                 equity=f"₹{_equity:,.0f}",
                             )
+                            try:
+                                _db.write_decision(
+                                    bar_index=_bar_count,
+                                    bar_ts=datetime.now(timezone.utc).isoformat(),
+                                    underlying=_captured_strike_rec.underlying_symbol,
+                                    bias=str(_captured_market_ctx.bias),
+                                    conf_raw=_captured_market_ctx.confidence,
+                                    conf_eff=_effective_conf,
+                                    outcome="CASH_BLOCK",
+                                    filter_reason=f"need=₹{_cost:,.0f} available=₹{_avail:,.0f}",
+                                    equity=_equity,
+                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                )
+                            except Exception:
+                                pass
                     elif not _sizing.tradable:
                         print_warning_block(
                             "SIZING REJECTED",
@@ -1421,6 +1534,21 @@ def on_ticks(raw_ticks):
                             equity=f"₹{_equity:,.0f}",
                             reason=_sizing.rejection_reason or "",
                         )
+                        try:
+                            _db.write_decision(
+                                bar_index=_bar_count,
+                                bar_ts=datetime.now(timezone.utc).isoformat(),
+                                underlying=_captured_strike_rec.underlying_symbol,
+                                bias=str(_captured_market_ctx.bias),
+                                conf_raw=_captured_market_ctx.confidence,
+                                conf_eff=_effective_conf,
+                                outcome="SIZING_REJECTED",
+                                filter_reason=_sizing.rejection_reason,
+                                equity=_equity,
+                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                            )
+                        except Exception:
+                            pass
 
         if result.emitted_events:
 

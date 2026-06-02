@@ -65,6 +65,7 @@ from platform_core.options.strike_selection import (
 from platform_core.options.greeks_engine import GreeksEngine, GreeksEngineConfig, OptionGreeksInput
 from platform_core.paper_trading.paper_broker import PaperBroker, PaperTrade
 from platform_core.paper_trading.performance_tracker import PerformanceTracker
+from platform_core.persistence.trade_database import TradeDatabase
 from platform_core.paper_trading.terminal_display import (
     print_entry_block,
     print_exit_block,
@@ -427,10 +428,12 @@ class BacktestRunner:
         symbol: str,
         timeframe: str = "MIN_1",
         config: BacktestConfig | None = None,
+        db_writer: TradeDatabase | None = None,
     ) -> None:
         self.config = config or BacktestConfig.for_symbol(symbol, timeframe)
         self.symbol = self.config.symbol
         self.timeframe = self.config.timeframe
+        self._db: TradeDatabase | None = db_writer
 
         lot_size = self.config.effective_lot_size()
         strike_step = self.config.effective_strike_step()
@@ -566,6 +569,16 @@ class BacktestRunner:
             max_lots=cfg.max_lot_count,
         )
 
+        if self._db is not None:
+            try:
+                self._db.write_runtime_event(
+                    "BACKTEST_START",
+                    severity="INFO",
+                    message=f"symbol={self.symbol}  bars={len(bars)}  csv={csv_path}",
+                )
+            except Exception:
+                pass
+
         daily_bars_fed = 0
         trade_signals = 0
         entries_made = 0
@@ -608,6 +621,16 @@ class BacktestRunner:
                 )
             )
             _liq_levels = self.engine.active_liquidity_levels  # update for next bar
+
+            if self._db is not None and structure_result.emitted_events:
+                try:
+                    self._db.write_structure_events(
+                        structure_result.emitted_events,
+                        bar_index=bar_index,
+                        bar_ts=bar_ts.isoformat(),
+                    )
+                except Exception:
+                    pass
 
             # ── 3b. FVG quality scoring ───────────────────────────────────
             fvg_events = [
@@ -740,6 +763,18 @@ class BacktestRunner:
                         exit_reason=str(closed.exit_reason),
                         equity=self._equity,
                     )
+                    if self._db is not None:
+                        try:
+                            self._db.write_trade_exit(
+                                exit_premium=closed.exit_premium,
+                                pnl=closed.pnl,
+                                bars_held=closed.bars_held,
+                                exit_reason=str(closed.exit_reason),
+                                exit_ts=bar_ts.isoformat(),
+                                equity_after=self._equity,
+                            )
+                        except Exception:
+                            pass
 
             # ── 8. Effective confidence (session × PDH/PDL × OR × FVG) ───
             effective_confidence = market_ctx.confidence * session_ctx.confidence_multiplier
@@ -830,8 +865,12 @@ class BacktestRunner:
                     strike_rec = None
             elif market_ctx.bias != MarketBias.NEUTRAL and not self.option_trader.has_open_position():
                 # Log which filter fired
+                _db_decision_outcome: str | None = None
+                _db_decision_reason: str | None = None
                 if not session_ctx.allow_entry and session_ctx.filter_reason:
                     session_blocks += 1
+                    _db_decision_outcome = "SESSION_BLOCK"
+                    _db_decision_reason = session_ctx.filter_reason
                     if session_blocks <= 3 or bar_index % 100 == 0:
                         print_warning_block(
                             "SESSION BLOCK",
@@ -840,6 +879,8 @@ class BacktestRunner:
                         )
                 elif not setup_val.is_valid:
                     setup_blocks += 1
+                    _db_decision_outcome = "SETUP_BLOCK"
+                    _db_decision_reason = setup_val.reason
                     if setup_blocks <= 5:
                         sv = setup_val
                         print_warning_block(
@@ -852,6 +893,8 @@ class BacktestRunner:
                         )
                 elif fvg_quality_reason:
                     fvg_blocks += 1
+                    _db_decision_outcome = "FVG_BLOCK"
+                    _db_decision_reason = fvg_quality_reason
                     if fvg_blocks <= 5:
                         print_warning_block(
                             "FVG QUALITY BLOCK",
@@ -860,6 +903,8 @@ class BacktestRunner:
                         )
                 elif pdl_reason:
                     pdl_blocks += 1
+                    _db_decision_outcome = "PDL_BLOCK"
+                    _db_decision_reason = pdl_reason
                     if pdl_blocks <= 5:
                         print_warning_block(
                             "PDL BLOCK",
@@ -869,6 +914,8 @@ class BacktestRunner:
                         )
                 elif or_reason:
                     or_blocks += 1
+                    _db_decision_outcome = "OR_BLOCK"
+                    _db_decision_reason = or_reason
                     if or_blocks <= 5:
                         print_warning_block(
                             "OR BLOCK",
@@ -876,6 +923,24 @@ class BacktestRunner:
                             conf=f"{market_ctx.confidence:.2f}→{effective_confidence:.2f}",
                             reason=or_reason,
                         )
+                if self._db is not None and _db_decision_outcome is not None:
+                    try:
+                        self._db.write_decision(
+                            bar_index=bar_index,
+                            bar_ts=bar_ts.isoformat(),
+                            underlying=self.symbol,
+                            bias=str(market_ctx.bias),
+                            conf_raw=market_ctx.confidence,
+                            conf_eff=effective_confidence,
+                            outcome=_db_decision_outcome,
+                            filter_reason=_db_decision_reason,
+                            session_phase=str(session_ctx.phase),
+                            fvg_quality=self._fvg_quality,
+                            equity=self._equity,
+                            drawdown=self._current_drawdown(),
+                        )
+                    except Exception:
+                        pass
 
             # ── 10. Position sizing and entry ─────────────────────────────
             if strike_rec is not None:
@@ -929,6 +994,43 @@ class BacktestRunner:
                         or_low=or_lbl.get("or_low"),
                         or_high=or_lbl.get("or_high"),
                     )
+                    if self._db is not None:
+                        try:
+                            self._db.write_trade_entry(
+                                underlying=strike_rec.underlying_symbol,
+                                contract_symbol=strike_rec.option_symbol,
+                                strike=strike_rec.strike_price,
+                                option_type=strike_rec.option_type,
+                                expiry_date=strike_rec.expiry_date.isoformat(),
+                                direction=str(market_ctx.bias),
+                                lots=lots,
+                                lot_size=strike_rec.lot_size,
+                                entry_premium=strike_rec.last_traded_price,
+                                entry_spot=bar.close_price,
+                                entry_iv=options_ctx.atm_iv or 0.18,
+                                entry_bar_index=bar_index,
+                                entry_ts=bar_ts.isoformat(),
+                                conf_raw=market_ctx.confidence,
+                                conf_eff=effective_confidence,
+                                fvg_quality=self._fvg_quality,
+                                drawdown_at_entry=self._current_drawdown(),
+                                equity_before=self._equity,
+                            )
+                            self._db.write_decision(
+                                bar_index=bar_index,
+                                bar_ts=bar_ts.isoformat(),
+                                underlying=self.symbol,
+                                bias=str(market_ctx.bias),
+                                conf_raw=market_ctx.confidence,
+                                conf_eff=effective_confidence,
+                                outcome="ENTRY",
+                                session_phase=str(session_ctx.phase),
+                                fvg_quality=self._fvg_quality,
+                                equity=self._equity,
+                                drawdown=self._current_drawdown(),
+                            )
+                        except Exception:
+                            pass
                     entries_made += 1
                 else:
                     if not sizing.tradable:
@@ -939,6 +1041,24 @@ class BacktestRunner:
                             dd=f"{self._current_drawdown():.1%}",
                             reason=sizing.rejection_reason or "",
                         )
+                        if self._db is not None:
+                            try:
+                                self._db.write_decision(
+                                    bar_index=bar_index,
+                                    bar_ts=bar_ts.isoformat(),
+                                    underlying=self.symbol,
+                                    bias=str(market_ctx.bias),
+                                    conf_raw=market_ctx.confidence,
+                                    conf_eff=effective_confidence,
+                                    outcome="SIZING_REJECTED",
+                                    filter_reason=sizing.rejection_reason,
+                                    session_phase=str(session_ctx.phase),
+                                    fvg_quality=self._fvg_quality,
+                                    equity=self._equity,
+                                    drawdown=self._current_drawdown(),
+                                )
+                            except Exception:
+                                pass
 
             # ── 11. Progress reporting ────────────────────────────────────
             if bar_index % 500 == 0 and bar_index > 0:
@@ -1000,6 +1120,19 @@ class BacktestRunner:
                     exit_reason=str(closed.exit_reason),
                     equity=self._equity,
                 )
+                if self._db is not None:
+                    try:
+                        _last_ts = _bar_timestamp(bars[-1]).isoformat()
+                        self._db.write_trade_exit(
+                            exit_premium=closed.exit_premium,
+                            pnl=closed.pnl,
+                            bars_held=closed.bars_held,
+                            exit_reason=str(closed.exit_reason),
+                            exit_ts=_last_ts,
+                            equity_after=self._equity,
+                        )
+                    except Exception:
+                        pass
 
         # ── Flush partial daily bar ───────────────────────────────────────
         partial_daily = self.daily_acc.flush()
@@ -1033,6 +1166,23 @@ class BacktestRunner:
             fvg_block_threshold=FVG_QUALITY_BLOCK_THRESHOLD,
         )
         self.strike_validator.print_report()
+
+        if self._db is not None:
+            try:
+                self._db.write_runtime_event(
+                    "BACKTEST_END",
+                    severity="INFO",
+                    message=(
+                        f"trades={summary.total_trades}  "
+                        f"win_rate={summary.win_rate:.1%}  "
+                        f"pnl={summary.total_pnl:+,.0f}  "
+                        f"equity={self._equity:,.0f}"
+                    ),
+                    equity=self._equity,
+                )
+                self._db.flush()
+            except Exception:
+                pass
 
     # ── Private helpers ────────────────────────────────────────────────────
 
