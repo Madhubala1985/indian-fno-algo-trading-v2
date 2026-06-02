@@ -149,6 +149,7 @@ class TradeDatabase:
         self._run_mode: str = "live"
         self._started: bool = False
         self._open_trade_rowid: int | None = None   # rowid of the currently open trade row
+        self._drops_since_last_warn: int = 0        # writes dropped since last stderr warning
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -165,7 +166,13 @@ class TradeDatabase:
             conn.commit()
             conn.close()
         except Exception as exc:
-            print(f"[DB] Schema init failed ({exc}) — persistence disabled", file=sys.stderr)
+            print(
+                f"\n[DB WARNING] Schema init failed — persistence DISABLED for this session.\n"
+                f"  Path: {self._db_path}\n"
+                f"  Reason: {exc}\n"
+                f"  Trading continues unaffected; trades still logged to CSV.\n",
+                file=sys.stderr,
+            )
             return
         self._thread.start()
         self._started = True
@@ -184,6 +191,33 @@ class TradeDatabase:
         if not self._started:
             return
         self._queue.put(_STOP_SENTINEL)
+
+    # ── Internal: thread-health guard ─────────────────────────────────────────
+
+    def _is_operational(self) -> bool:
+        """
+        Return True if writes should proceed.
+
+        Checks both that start() succeeded and that the background thread is
+        still alive.  When the thread has died, emits a rate-limited stderr
+        warning (first occurrence + every 50 subsequent dropped writes) so an
+        operator watching the terminal sees the problem without being flooded.
+        The trading loop is never interrupted.
+        """
+        if not self._started:
+            return False
+        if self._thread.is_alive():
+            return True
+        # Thread is dead — emit a rate-limited warning, then drop the write.
+        self._drops_since_last_warn += 1
+        if self._drops_since_last_warn == 1 or self._drops_since_last_warn % 50 == 0:
+            print(
+                f"\n[DB WARNING] Writer thread is not alive — DB write dropped "
+                f"(total dropped: {self._drops_since_last_warn}).  "
+                f"Trading continues; trades still logged to CSV.\n",
+                file=sys.stderr,
+            )
+        return False
 
     # ── Public write API ───────────────────────────────────────────────────────
 
@@ -209,7 +243,7 @@ class TradeDatabase:
         drawdown_at_entry: float | None = None,
         equity_before: float | None = None,
     ) -> None:
-        if not self._started:
+        if not self._is_operational():
             return
         self._queue.put(("trade_entry", {
             "session_id":        self._session_id,
@@ -245,7 +279,7 @@ class TradeDatabase:
         exit_ts: str,
         equity_after: float,
     ) -> None:
-        if not self._started:
+        if not self._is_operational():
             return
         self._queue.put(("trade_exit", {
             "exit_premium":  exit_premium,
@@ -273,7 +307,7 @@ class TradeDatabase:
         equity: float,
         drawdown: float,
     ) -> None:
-        if not self._started:
+        if not self._is_operational():
             return
         self._queue.put(("decision", {
             "session_id":    self._session_id,
@@ -301,7 +335,7 @@ class TradeDatabase:
         bar_ts: str,
     ) -> None:
         """Batch-write a tuple of StructureEvent objects."""
-        if not self._started or not events:
+        if not self._is_operational() or not events:
             return
         rows = []
         now = _utc_now()
@@ -338,7 +372,7 @@ class TradeDatabase:
         drawdown: float | None = None,
         bar_index: int | None = None,
     ) -> None:
-        if not self._started:
+        if not self._is_operational():
             return
         self._queue.put(("runtime_event", {
             "session_id":  self._session_id,
@@ -361,7 +395,20 @@ class TradeDatabase:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
         except Exception as exc:
-            print(f"[DB] Worker failed to open DB ({exc})", file=sys.stderr)
+            print(
+                f"\n[DB WARNING] Worker thread failed to open DB — persistence DISABLED.\n"
+                f"  Path: {self._db_path}\n"
+                f"  Reason: {exc}\n"
+                f"  Trading continues unaffected; trades still logged to CSV.\n",
+                file=sys.stderr,
+            )
+            # Drain the queue so task_done() stays balanced and flush() doesn't deadlock.
+            while True:
+                try:
+                    self._queue.get_nowait()
+                    self._queue.task_done()
+                except queue.Empty:
+                    break
             return
 
         while True:
@@ -404,6 +451,16 @@ class TradeDatabase:
     # ── DB insert/update helpers ───────────────────────────────────────────────
 
     def _insert_trade_entry(self, conn: sqlite3.Connection, p: dict) -> None:
+        if self._open_trade_rowid is not None:
+            # An OPEN row already exists for this session — unexpected duplicate entry.
+            # This should not happen in normal operation; log a prominent warning so
+            # the operator can investigate, then continue (overwrite the rowid pointer).
+            print(
+                f"\n[DB WARNING] write_trade_entry called while rowid={self._open_trade_rowid} "
+                f"is still OPEN.  Possible duplicate entry or missed exit write.  "
+                f"Old OPEN row will remain unresolved in pt_trades.\n",
+                file=sys.stderr,
+            )
         cur = conn.execute(
             """
             INSERT INTO pt_trades (
@@ -431,6 +488,17 @@ class TradeDatabase:
 
     def _update_trade_exit(self, conn: sqlite3.Connection, p: dict) -> None:
         if self._open_trade_rowid is None:
+            # No rowid recorded for this session — most likely a crash-recovery scenario
+            # where the position was restored from the JSON state file but the DB entry
+            # belongs to a previous session.  The exit is not recorded in pt_trades for
+            # this session.  The CSV log (paper_trades.csv) remains authoritative.
+            print(
+                f"\n[DB WARNING] write_trade_exit called with no open trade rowid.  "
+                f"Likely crash-recovery: position restored from state file, DB entry "
+                f"belongs to a previous session.  Exit not written to pt_trades.  "
+                f"CSV log is unaffected and remains authoritative.\n",
+                file=sys.stderr,
+            )
             return
         conn.execute(
             """
