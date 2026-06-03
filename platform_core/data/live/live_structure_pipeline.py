@@ -313,32 +313,51 @@ _INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000 — aligns with backtest ba
 _REFERENCE_IV:   float = 0.18         # baseline IV for vol-ratio scaling
 
 # ── Per-underlying runtime state ───────────────────────────────────────────────
-# One UnderlyingRuntimeState per entry.  Only BANKNIFTY is enabled.
-# NIFTY and SENSEX are in _OPTION_TARGETS_AVAILABLE but NOT instantiated here —
-# they require option-chain validation + backtest parity before activation.
-_runtime_by_underlying: dict[str, UnderlyingRuntimeState] = {
-    "BANKNIFTY": UnderlyingRuntimeState(
-        feed_symbol       = OPTION_CHAIN_CONFIG["BANKNIFTY"].feed_symbol,
-        option_underlying = OPTION_CHAIN_CONFIG["BANKNIFTY"].option_underlying,
-        exchange          = OPTION_CHAIN_CONFIG["BANKNIFTY"].exchange,
-        lot_size          = OPTION_CHAIN_CONFIG["BANKNIFTY"].lot_size,
-        strike_step       = OPTION_CHAIN_CONFIG["BANKNIFTY"].strike_step,
+# All three prepared underlyings are instantiated.  Only BANKNIFTY is in
+# _OPTION_TARGETS_ENABLED — NIFTY and SENSEX build inert context (MCB/OR/PDL/FVG)
+# but never fetch chains, run strike selection, or open trades.
+#
+# Execution guard: is_option_target_enabled(state.option_underlying) must return
+# True before any execution path (chain fetch / sizing / trade open/close) runs.
+
+
+def _build_underlying_state(key: str) -> UnderlyingRuntimeState:
+    """Instantiate one UnderlyingRuntimeState from OPTION_CHAIN_CONFIG."""
+    cfg = OPTION_CHAIN_CONFIG[key]
+    return UnderlyingRuntimeState(
+        feed_symbol       = cfg.feed_symbol,
+        option_underlying = cfg.option_underlying,
+        exchange          = cfg.exchange,
+        lot_size          = cfg.lot_size,
+        strike_step       = cfg.strike_step,
         market_ctx_builder = MarketContextBuilder(
-            underlying_symbol=_PRIMARY_OPTION_TARGET, min_history_bars=20
+            underlying_symbol=cfg.option_underlying, min_history_bars=20
         ),
         option_trader = OptionPaperTrader(),
-        daily_acc     = DailyBarAccumulator(symbol=_PRIMARY_OPTION_TARGET),
+        daily_acc     = DailyBarAccumulator(symbol=cfg.feed_symbol),
         pdl_engine    = PreviousDayLevelsEngine(),
         or_engine     = OpeningRangeEngine(),
         fvg_15m       = FVGEngine(config=FVGEngineConfig(
-            instrument_id=_PRIMARY_OPTION_TARGET, timeframe="MIN_15"
+            instrument_id=cfg.feed_symbol, timeframe="MIN_15"
         )),
         fvg_1h        = FVGEngine(config=FVGEngineConfig(
-            instrument_id=_PRIMARY_OPTION_TARGET, timeframe="HOUR_1"
+            instrument_id=cfg.feed_symbol, timeframe="HOUR_1"
         )),
-        last_atm_iv   = _REFERENCE_IV,
+        last_atm_iv     = _REFERENCE_IV,
         fvg_quality_bar = -FVG_QUALITY_STALENESS_BARS - 1,
-    ),
+    )
+
+
+_runtime_by_underlying: dict[str, UnderlyingRuntimeState] = {
+    key: _build_underlying_state(key)
+    for key in _OPTION_TARGETS_AVAILABLE   # BANKNIFTY, NIFTY, SENSEX
+}
+
+# Reverse lookup: feed_symbol ("NIFTY50", "BANKNIFTY", "SENSEX") → state
+# Allows per-bar state routing without string manipulation in the hot path.
+_state_by_feed: dict[str, UnderlyingRuntimeState] = {
+    state.feed_symbol: state
+    for state in _runtime_by_underlying.values()
 }
 
 # Risk tier parameters — tier is selected at runtime from account state
@@ -1112,10 +1131,14 @@ def on_ticks(raw_ticks):
 
         _bar_count += 1
 
-        # Reset per-bar state for the enabled target
-        _bnk_state = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]
-        _bnk_state.captured_strike_rec = None
-        _bnk_state.captured_market_ctx = None
+        # Reset per-bar captures for all enabled targets
+        for _st in _runtime_by_underlying.values():
+            if is_option_target_enabled(_st.option_underlying):
+                _st.captured_strike_rec = None
+                _st.captured_market_ctx = None
+
+        # Resolve state for this bar's feed symbol (None = unknown feed)
+        _current_state = _state_by_feed.get(completed_bar.symbol)
 
         print(
             "\n======================"
@@ -1163,151 +1186,158 @@ def on_ticks(raw_ticks):
 
             print(mtf_bar)
 
-        # ── Options pipeline (runs only for enabled execution targets) ──────────
-        # is_option_target_enabled() is the single gate that prevents NIFTY/SENSEX
-        # from entering this path while they are in _OPTION_TARGETS_AVAILABLE.
-        if is_option_target_enabled(feed_symbol_to_option_underlying(completed_bar.symbol)):
-            # Session / Opening-Range / PDH-PDL — same update sequence as BacktestRunner
+        # ── Options context update ────────────────────────────────────────────────
+        # Inert context (MCB / OR / PDL / FVG / bar_history) runs for ALL prepared
+        # underlyings so each builds price history before execution is enabled.
+        # Execution-only paths (chain fetch, strike selection, entry/exit) are
+        # gated on is_option_target_enabled() inside this block.
+        if _current_state is not None:
+            # Session classification — shared stateless engine, safe to call per-bar
             _session_ctx = _session_engine.classify(completed_bar.start_timestamp)
-            _bnk_state.or_engine.update_bar(completed_bar)
-            _daily_bar = _bnk_state.daily_acc.update(completed_bar)
+            _current_state.or_engine.update_bar(completed_bar)
+            _daily_bar = _current_state.daily_acc.update(completed_bar)
             if _daily_bar is not None:
-                _bnk_state.pdl_engine.update_daily_bar(_daily_bar)
-                _bnk_state.market_ctx_builder.update(bar=_daily_bar, timeframe="1d")
-                _h1d = _bnk_state.bar_history.setdefault("1d", [])
+                _current_state.pdl_engine.update_daily_bar(_daily_bar)
+                _current_state.market_ctx_builder.update(bar=_daily_bar, timeframe="1d")
+                _h1d = _current_state.bar_history.setdefault("1d", [])
                 _h1d.append(_bar_to_dict(_daily_bar))
                 if len(_h1d) > _MCB_HISTORY_BARS:
                     del _h1d[:-_MCB_HISTORY_BARS]
 
-            _bnk_state.market_ctx_builder.update(bar=completed_bar, timeframe="1m")
-            _h1m = _bnk_state.bar_history.setdefault("1m", [])
+            _current_state.market_ctx_builder.update(bar=completed_bar, timeframe="1m")
+            _h1m = _current_state.bar_history.setdefault("1m", [])
             _h1m.append(_bar_to_dict(completed_bar))
             if len(_h1m) > _MCB_HISTORY_BARS:
                 del _h1m[:-_MCB_HISTORY_BARS]
 
             for tf_key, tf_bar in mtf_bars.items():
                 tf_name = _MTF_KEY_MAP.get(tf_key, tf_key.lower())
-                _bnk_state.market_ctx_builder.update(bar=tf_bar, timeframe=tf_name)
-                _htf = _bnk_state.bar_history.setdefault(tf_name, [])
+                _current_state.market_ctx_builder.update(bar=tf_bar, timeframe=tf_name)
+                _htf = _current_state.bar_history.setdefault(tf_name, [])
                 _htf.append(_bar_to_dict(tf_bar))
                 if len(_htf) > _MCB_HISTORY_BARS:
                     del _htf[:-_MCB_HISTORY_BARS]
-                # Feed completed MTF bars to dedicated FVGEngine instances (HTF confluence)
+                # HTF FVG confluence — per-underlying engines
                 if tf_key == "MIN_15":
-                    _bnk_state.fvg_15m.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
+                    _current_state.fvg_15m.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
                 elif tf_key == "HOUR_1":
-                    _bnk_state.fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
+                    _current_state.fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
 
-            _bnk_state.bars_since_save += 1
-            if _bnk_state.bars_since_save >= _MCB_SAVE_INTERVAL:
-                _bnk_state.bars_since_save = 0
-                _save_state()
+            # ── Periodic state save — BANKNIFTY only ───────────────────────────
+            # TODO Phase B3B: extend persistence to NIFTY/SENSEX bar_history.
+            if is_option_target_enabled(_current_state.option_underlying):
+                _current_state.bars_since_save += 1
+                if _current_state.bars_since_save >= _MCB_SAVE_INTERVAL:
+                    _current_state.bars_since_save = 0
+                    _save_state()
 
-            market_ctx = _bnk_state.market_ctx_builder.build(
+            market_ctx = _current_state.market_ctx_builder.build(
                 valuation_timestamp=datetime.now(timezone.utc)
             )
-            print(
-                f"\n[OPTIONS] bias={market_ctx.bias}  "
-                f"conf={market_ctx.confidence:.2f}"
-            )
 
-            _bnk_state.captured_market_ctx = market_ctx
+            # ── Chain fetch + strike selection — enabled targets only ───────────
+            if is_option_target_enabled(_current_state.option_underlying):
+                print(
+                    f"\n[OPTIONS] bias={market_ctx.bias}  "
+                    f"conf={market_ctx.confidence:.2f}"
+                )
+                _current_state.captured_market_ctx = market_ctx
 
-            if str(market_ctx.bias) != "NEUTRAL" and _kite_session_valid:
-                try:
-                    spot = completed_bar.close_price
-                    bar_date = datetime.now(timezone.utc).date()
-                    expiry = adapter.nearest_expiry(
-                        _bnk_state.option_underlying, bar_date,
-                        exchange=_bnk_state.exchange,
-                    )
-
-                    live_chain = adapter.fetch_option_chain(
-                        underlying=_bnk_state.option_underlying,
-                        expiry_date=expiry,
-                        spot_price=spot,
-                        lot_size=_bnk_state.lot_size,
-                        strike_step=_bnk_state.strike_step,
-                        exchange=_bnk_state.exchange,
-                    )
-
-                    # Fetch next-nearest expiry (mirrors BacktestRunner weekly+biweekly).
-                    # Enables cross-expiry DTE ranking and prevents expiry-day blackout
-                    # when the nearest contract has DTE < dte_min_viable.
-                    _chain_snapshots = [live_chain]
+                if str(market_ctx.bias) != "NEUTRAL" and _kite_session_valid:
                     try:
-                        expiry_next = adapter.nearest_expiry(
-                            _bnk_state.option_underlying,
-                            expiry + timedelta(days=1),
-                            exchange=_bnk_state.exchange,
+                        spot = completed_bar.close_price
+                        bar_date = datetime.now(timezone.utc).date()
+                        expiry = adapter.nearest_expiry(
+                            _current_state.option_underlying, bar_date,
+                            exchange=_current_state.exchange,
                         )
-                        live_chain_next = adapter.fetch_option_chain(
-                            underlying=_bnk_state.option_underlying,
-                            expiry_date=expiry_next,
+    
+                        live_chain = adapter.fetch_option_chain(
+                            underlying=_current_state.option_underlying,
+                            expiry_date=expiry,
                             spot_price=spot,
-                            lot_size=_bnk_state.lot_size,
-                            strike_step=_bnk_state.strike_step,
-                            exchange=_bnk_state.exchange,
+                            lot_size=_current_state.lot_size,
+                            strike_step=_current_state.strike_step,
+                            exchange=_current_state.exchange,
                         )
-                        _chain_snapshots.append(live_chain_next)
-                    except Exception:
-                        pass  # next expiry unavailable — proceed with nearest only
-
-                    options_ctx = _opt_ctx_builder.build(
-                        snapshots=_chain_snapshots,
-                        spot_price=spot,
-                        lot_size=_bnk_state.lot_size,
-                        valuation_timestamp=datetime.now(timezone.utc),
-                    )
-
-                    if options_ctx.atm_iv:
-                        _bnk_state.last_atm_iv = options_ctx.atm_iv
-
-                    if options_ctx.strike_candidates:
-                        _candidates_list = list(options_ctx.strike_candidates)
-                        _selection_result = _strike_engine.select(
-                            bias=market_ctx.bias,
-                            candidates=_candidates_list,
+    
+                        # Fetch next-nearest expiry (mirrors BacktestRunner weekly+biweekly).
+                        # Enables cross-expiry DTE ranking and prevents expiry-day blackout
+                        # when the nearest contract has DTE < dte_min_viable.
+                        _chain_snapshots = [live_chain]
+                        try:
+                            expiry_next = adapter.nearest_expiry(
+                                _current_state.option_underlying,
+                                expiry + timedelta(days=1),
+                                exchange=_current_state.exchange,
+                            )
+                            live_chain_next = adapter.fetch_option_chain(
+                                underlying=_current_state.option_underlying,
+                                expiry_date=expiry_next,
+                                spot_price=spot,
+                                lot_size=_current_state.lot_size,
+                                strike_step=_current_state.strike_step,
+                                exchange=_current_state.exchange,
+                            )
+                            _chain_snapshots.append(live_chain_next)
+                        except Exception:
+                            pass  # next expiry unavailable — proceed with nearest only
+    
+                        options_ctx = _opt_ctx_builder.build(
+                            snapshots=_chain_snapshots,
+                            spot_price=spot,
+                            lot_size=_current_state.lot_size,
                             valuation_timestamp=datetime.now(timezone.utc),
-                            oi_snapshot=options_ctx.oi_snapshot,
-                            gex_snapshot=options_ctx.gex_snapshot,
-                            atm_iv=options_ctx.atm_iv,
                         )
-                        best = _selection_result.best()
-                        if best is not None:
-                            _bnk_state.captured_strike_rec = best
-                            print(
-                                f"[STRIKE] {best.option_symbol}  "
-                                f"δ={best.delta:.2f}  "
-                                f"score={best.composite_score:.2f}  "
-                                f"iv={best.implied_volatility:.1%}"
-                            )
-                            # Observability only — never raises, never affects behavior
-                            _audit_selection(
-                                result=_selection_result,
+    
+                        if options_ctx.atm_iv:
+                            _current_state.last_atm_iv = options_ctx.atm_iv
+    
+                        if options_ctx.strike_candidates:
+                            _candidates_list = list(options_ctx.strike_candidates)
+                            _selection_result = _strike_engine.select(
+                                bias=market_ctx.bias,
                                 candidates=_candidates_list,
-                                feed_symbol=completed_bar.symbol,
-                                strike_step=_bnk_state.strike_step,
+                                valuation_timestamp=datetime.now(timezone.utc),
+                                oi_snapshot=options_ctx.oi_snapshot,
+                                gex_snapshot=options_ctx.gex_snapshot,
+                                atm_iv=options_ctx.atm_iv,
                             )
-                except Exception as exc:
-                    _err_str = str(exc)
-                    _is_auth = any(
-                        kw in _err_str.lower()
-                        for kw in ("token", "forbidden", "access denied", "invalid api", "401", "403")
-                    )
-                    if _is_auth and _kite_session_valid:
-                        _kite_session_valid = False
-                        _kite_session_error = _err_str
-                        print(
-                            f"\n{'='*60}\n"
-                            f"[KITE SESSION EXPIRED] Token rejected by Kite API.\n"
-                            f"  Details: {_err_str}\n"
-                            f"  Action: run `python scripts/generate_kite_session.py` and restart.\n"
-                            f"  Options pipeline DISABLED — structure analysis continues.\n"
-                            f"{'='*60}"
+                            best = _selection_result.best()
+                            if best is not None:
+                                _current_state.captured_strike_rec = best
+                                print(
+                                    f"[STRIKE] {best.option_symbol}  "
+                                    f"δ={best.delta:.2f}  "
+                                    f"score={best.composite_score:.2f}  "
+                                    f"iv={best.implied_volatility:.1%}"
+                                )
+                                # Observability only — never raises, never affects behavior
+                                _audit_selection(
+                                    result=_selection_result,
+                                    candidates=_candidates_list,
+                                    feed_symbol=completed_bar.symbol,
+                                    strike_step=_current_state.strike_step,
+                                )
+                    except Exception as exc:
+                        _err_str = str(exc)
+                        _is_auth = any(
+                            kw in _err_str.lower()
+                            for kw in ("token", "forbidden", "access denied", "invalid api", "401", "403")
                         )
-                    elif _kite_session_valid:
-                        print(f"[OPTIONS] Pipeline error: {exc}")
+                        if _is_auth and _kite_session_valid:
+                            _kite_session_valid = False
+                            _kite_session_error = _err_str
+                            print(
+                                f"\n{'='*60}\n"
+                                f"[KITE SESSION EXPIRED] Token rejected by Kite API.\n"
+                                f"  Details: {_err_str}\n"
+                                f"  Action: run `python scripts/generate_kite_session.py` and restart.\n"
+                                f"  Options pipeline DISABLED — structure analysis continues.\n"
+                                f"{'='*60}"
+                            )
+                        elif _kite_session_valid:
+                            print(f"[OPTIONS] Pipeline error: {exc}")
         # ─────────────────────────────────────────────────────────────────────
 
         h4_bar = LATEST_HTF_BARS.get(
@@ -1402,16 +1432,17 @@ def on_ticks(raw_ticks):
                 pass
 
         # ── OptionPaperTrader: exit evaluation + entry (enabled targets only) ───
-        if (is_option_target_enabled(feed_symbol_to_option_underlying(completed_bar.symbol))
-                and _bnk_state.captured_market_ctx is not None):
+        if (_current_state is not None
+                and is_option_target_enabled(_current_state.option_underlying)
+                and _current_state.captured_market_ctx is not None):
             _bar_date_live = datetime.now(timezone.utc).date()
 
             # Exit evaluation runs on every bar while a position is open
-            if _bnk_state.option_trader.has_open_position():
-                _exit_sig = _option_exit_signal(result.emitted_events, _bnk_state.option_trader)
-                _closed = _bnk_state.option_trader.evaluate_and_close(
+            if _current_state.option_trader.has_open_position():
+                _exit_sig = _option_exit_signal(result.emitted_events, _current_state.option_trader)
+                _closed = _current_state.option_trader.evaluate_and_close(
                     current_spot=completed_bar.close_price,
-                    current_iv=_bnk_state.last_atm_iv,
+                    current_iv=_current_state.last_atm_iv,
                     current_date=_bar_date_live,
                     bar_index=_bar_count,
                     stop_loss_pct=_STOP_LOSS_PCT,
@@ -1464,7 +1495,7 @@ def on_ticks(raw_ticks):
                             ),
                         )
                     _summary = performance_tracker.calculate_summary(
-                        trades=[t.as_paper_trade() for t in _bnk_state.option_trader.completed_trades]
+                        trades=[t.as_paper_trade() for t in _current_state.option_trader.completed_trades]
                     )
                     print_performance_summary(
                         total_trades=_summary.total_trades,
@@ -1531,29 +1562,29 @@ def on_ticks(raw_ticks):
                 if e.event_type == StructureEventType.FVG_CREATED
             ]
             _recent_sweeps_live = tuple(
-                ENGINES[_PRIMARY_OPTION_TARGET]._liquidity_sweep_detector.recent_sweeps
+                ENGINES[_current_state.feed_symbol]._liquidity_sweep_detector.recent_sweeps
             )
             _htf_fvgs_live = {
-                "MIN_15": _bnk_state.fvg_15m.active_gaps,
-                "HOUR_1": _bnk_state.fvg_1h.active_gaps,
+                "MIN_15": _current_state.fvg_15m.active_gaps,
+                "HOUR_1": _current_state.fvg_1h.active_gaps,
             }
 
-            _mctx = _bnk_state.captured_market_ctx
+            _mctx = _current_state.captured_market_ctx
             _effective_conf = (
                 _mctx.confidence * _session_ctx.confidence_multiplier
             )
 
             _pdl_mult, _pdl_reason = 1.0, ""
-            if _bnk_state.pdl_engine.ready and str(_mctx.bias) != "NEUTRAL":
-                _pdl_mult, _pdl_reason = _bnk_state.pdl_engine.levels.confidence_multiplier(
+            if _current_state.pdl_engine.ready and str(_mctx.bias) != "NEUTRAL":
+                _pdl_mult, _pdl_reason = _current_state.pdl_engine.levels.confidence_multiplier(
                     spot=completed_bar.close_price,
                     bias=str(_mctx.bias),
                 )
             _effective_conf *= _pdl_mult
 
             _or_mult, _or_reason = 1.0, ""
-            if _bnk_state.or_engine.ready and str(_mctx.bias) != "NEUTRAL":
-                _or_mult, _or_reason = _bnk_state.or_engine.current_range.confidence_multiplier(
+            if _current_state.or_engine.ready and str(_mctx.bias) != "NEUTRAL":
+                _or_mult, _or_reason = _current_state.or_engine.current_range.confidence_multiplier(
                     spot=completed_bar.close_price,
                     bias=str(_mctx.bias),
                 )
@@ -1573,8 +1604,8 @@ def on_ticks(raw_ticks):
                     for e in _fvg_events
                 ]
                 _best_q = max(_rescored, key=lambda s: s.total)
-                _bnk_state.fvg_quality = _best_q.total
-                _bnk_state.fvg_quality_bar = _bar_count
+                _current_state.fvg_quality = _best_q.total
+                _current_state.fvg_quality_bar = _bar_count
                 _fvg_quality_for_entry = _best_q.confidence_multiplier()
                 if _best_q.blocks_entry:
                     _fvg_quality_reason = (
@@ -1584,15 +1615,15 @@ def on_ticks(raw_ticks):
                         f"sweep={_best_q.sweep_origin:.2f} "
                         f"htf={_best_q.htf_alignment:.2f})"
                     )
-            elif _bar_count - _bnk_state.fvg_quality_bar <= FVG_QUALITY_STALENESS_BARS:
+            elif _bar_count - _current_state.fvg_quality_bar <= FVG_QUALITY_STALENESS_BARS:
                 _stored_q = FVGQualityScore(
-                    total=_bnk_state.fvg_quality,
+                    total=_current_state.fvg_quality,
                     displacement=0.0, session=0.0, sweep_origin=0.0,
                     htf_alignment=0.0, freshness=0.0, volume=0.0,
                 )
                 _fvg_quality_for_entry = _stored_q.confidence_multiplier()
-                if _bnk_state.fvg_quality < FVG_QUALITY_BLOCK_THRESHOLD:
-                    _fvg_quality_reason = f"stored low FVG quality={_bnk_state.fvg_quality:.2f}"
+                if _current_state.fvg_quality < FVG_QUALITY_BLOCK_THRESHOLD:
+                    _fvg_quality_reason = f"stored low FVG quality={_current_state.fvg_quality:.2f}"
             _effective_conf *= _fvg_quality_for_entry
 
             if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_ctx.allow_entry:
@@ -1613,10 +1644,10 @@ def on_ticks(raw_ticks):
                 )
 
             # ── Entry gate: fresh strike, no open position, not hard-halted ─
-            _srec = _bnk_state.captured_strike_rec
+            _srec = _current_state.captured_strike_rec
             if (
                 _srec is not None
-                and not _bnk_state.option_trader.has_open_position()
+                and not _current_state.option_trader.has_open_position()
                 and not _trading_halted
                 and _session_ctx.allow_entry
                 and not _fvg_quality_reason
@@ -1644,7 +1675,7 @@ def on_ticks(raw_ticks):
                         _avail = max(_equity - _open_premium_cost, 0.0)
                         if _cost <= _avail:
                             _open_premium_cost = _cost
-                            _bnk_state.option_trader.open(
+                            _current_state.option_trader.open(
                                 recommendation=_srec,
                                 direction=str(_mctx.bias),
                                 bar_index=_bar_count,
@@ -1665,7 +1696,7 @@ def on_ticks(raw_ticks):
                                 session=str(_session_ctx.phase),
                                 conf_raw=_mctx.confidence,
                                 conf_eff=_effective_conf,
-                                fvg_quality=_bnk_state.fvg_quality,
+                                fvg_quality=_current_state.fvg_quality,
                                 drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                 extra_label=f"TIER{_tier_label}",
                             )
@@ -1681,12 +1712,12 @@ def on_ticks(raw_ticks):
                                     lot_size=_srec.lot_size,
                                     entry_premium=_srec.last_traded_price,
                                     entry_spot=completed_bar.close_price,
-                                    entry_iv=_bnk_state.last_atm_iv,
+                                    entry_iv=_current_state.last_atm_iv,
                                     entry_bar_index=_bar_count,
                                     entry_ts=datetime.now(timezone.utc).isoformat(),
                                     conf_raw=_mctx.confidence,
                                     conf_eff=_effective_conf,
-                                    fvg_quality=_bnk_state.fvg_quality,
+                                    fvg_quality=_current_state.fvg_quality,
                                     drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                     equity_before=_equity,
                                 )
@@ -1699,7 +1730,7 @@ def on_ticks(raw_ticks):
                                     conf_eff=_effective_conf,
                                     outcome=f"ENTRY_TIER{_tier_label}",
                                     session_phase=str(_session_ctx.phase),
-                                    fvg_quality=_bnk_state.fvg_quality,
+                                    fvg_quality=_current_state.fvg_quality,
                                     equity=_equity,
                                     drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                 )
