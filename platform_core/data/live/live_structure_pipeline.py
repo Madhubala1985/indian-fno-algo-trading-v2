@@ -16,6 +16,7 @@ from platform_core.options.strike_selection import (
     StrikeSelectionEngine,
     StrikeSelectionConfig,
 )
+from platform_core.options.strike_selection_audit import log_selection as _audit_selection
 from platform_core.core.constants import REFERENCE_LOT_SIZES, REFERENCE_STRIKE_STEPS
 from platform_core.core.enums import UnderlyingFamily
 
@@ -124,6 +125,9 @@ from platform_core.data.bar_builder import (
 
 from platform_core.data.live.instrument_registry import (
     INSTRUMENTS,
+    OPTION_CHAIN_CONFIG,
+    FEED_TO_OPTION_UNDERLYING,
+    OPTION_UNDERLYING_TO_FEED,
 )
 
 from platform_core.data.live.kite_adapter import (
@@ -174,16 +178,52 @@ multi_timeframe_builder = (
 )
 
 # ── Options pipeline ──────────────────────────────────────────────────────────
-# _PRIMARY_OPTION_TARGET is the single active execution target.
-# _PRIMARY_OPTION_TARGETS is the set of enabled underlyings; currently contains only
-# BANKNIFTY.  Phase B will extend this set when per-underlying state
-# containers and exchange routing are in place.  Adding a symbol here without
-# those prerequisites is intentionally blocked.
+# _PRIMARY_OPTION_TARGET   — the single active BANKNIFTY execution target (unchanged).
+# _OPTION_TARGETS_ENABLED  — set of underlyings currently allowed to enter positions.
+#                            Contains only BANKNIFTY until Phase B2 validation passes.
+# _OPTION_TARGETS_AVAILABLE — all underlyings with complete option-chain config.
+#
+# NIFTY and SENSEX are PREPARED but DISABLED.
+# Before enabling either, the following must pass:
+#   1. validate_option_chain_support.py PASS for the target
+#   2. BacktestRunner(symbol=target).run() produces valid trades on historical data
+#   3. Per-underlying state containers (MCB, OptionPaperTrader, DailyBarAccumulator,
+#      PDL, OR, FVG engines, last_atm_iv) must be instantiated and wired
+#   4. DB/state persistence extended to open_positions dict (not single open_position)
+#   5. KiteAdapter BFO cache proven live for SENSEX (market-hours test required)
 
-_PRIMARY_OPTION_TARGET: str          = "BANKNIFTY"
-_PRIMARY_OPTION_TARGETS:        frozenset    = frozenset({"BANKNIFTY"})
+_PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"
+_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY"})
+_OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
 _LOT_SIZE  = REFERENCE_LOT_SIZES[UnderlyingFamily.BANKNIFTY]
 _STRIKE_STEP = float(REFERENCE_STRIKE_STEPS[UnderlyingFamily.BANKNIFTY])
+
+
+def feed_symbol_to_option_underlying(feed_symbol: str) -> str:
+    """
+    Translate a WebSocket feed symbol (BarBuilder key) to the Kite option-chain
+    underlying name.  Example: "NIFTY50" → "NIFTY".
+    Returns feed_symbol unchanged if no mapping is defined.
+    """
+    return FEED_TO_OPTION_UNDERLYING.get(feed_symbol, feed_symbol)
+
+
+def option_underlying_to_feed_symbol(option_underlying: str) -> str:
+    """
+    Inverse of feed_symbol_to_option_underlying.
+    Example: "NIFTY" → "NIFTY50".
+    Returns option_underlying unchanged if no mapping is defined.
+    """
+    return OPTION_UNDERLYING_TO_FEED.get(option_underlying, option_underlying)
+
+
+def get_option_chain_config(option_underlying: str):
+    """
+    Return OptionChainMeta for option_underlying, or None if not configured.
+    Use this instead of hardcoding exchange/lot_size/strike_step per target.
+    """
+    return OPTION_CHAIN_CONFIG.get(option_underlying)
+
 
 # MTF key normalisation (matches BacktestRunner convention)
 _MTF_KEY_MAP: dict[str, str] = {
@@ -197,7 +237,8 @@ _market_ctx_builder = MarketContextBuilder(underlying_symbol=_PRIMARY_OPTION_TAR
 _opt_ctx_builder = OptionsContextBuilder(
     config=OptionsContextBuilderConfig(compute_missing_greeks=True)
 )
-_strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=3))
+# top_n=5 so the audit logger has rank-2..5 margin and top-candidate analysis
+_strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=5))
 # ── Session / PDH-PDL / Opening-Range / FVG-quality filters ──────────────────
 # Identical instances and configuration to BacktestRunner.
 _session_engine   = SessionContextEngine()
@@ -1131,9 +1172,10 @@ def on_ticks(raw_ticks):
                         _last_atm_iv = options_ctx.atm_iv
 
                     if options_ctx.strike_candidates:
+                        _candidates_list = list(options_ctx.strike_candidates)
                         _selection_result = _strike_engine.select(
                             bias=market_ctx.bias,
-                            candidates=list(options_ctx.strike_candidates),
+                            candidates=_candidates_list,
                             valuation_timestamp=datetime.now(timezone.utc),
                             oi_snapshot=options_ctx.oi_snapshot,
                             gex_snapshot=options_ctx.gex_snapshot,
@@ -1147,6 +1189,13 @@ def on_ticks(raw_ticks):
                                 f"δ={best.delta:.2f}  "
                                 f"score={best.composite_score:.2f}  "
                                 f"iv={best.implied_volatility:.1%}"
+                            )
+                            # Observability only — never raises, never affects behavior
+                            _audit_selection(
+                                result=_selection_result,
+                                candidates=_candidates_list,
+                                feed_symbol=completed_bar.symbol,
+                                strike_step=_STRIKE_STEP,
                             )
                 except Exception as exc:
                     _err_str = str(exc)

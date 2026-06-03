@@ -4,12 +4,12 @@ scripts/validate_option_chain_support.py
 Pre-flight validation of Kite option-chain support for each target
 underlying (BANKNIFTY, NIFTY, SENSEX).
 
-Checks:
-  1. Kite session is valid
-  2. Nearest expiry can be discovered
-  3. Option chain is non-empty (correct exchange, correct underlying name)
-  4. OptionsContextBuilder produces a valid OptionsContext
-  5. StrikeSelectionEngine returns a scored LONG and SHORT candidate
+For each symbol prints:
+  1. Instrument metadata (from Kite master: lot sizes, expiries, steps)
+  2. Chain fetch result (contracts, candidates, CALL/PUT counts)
+  3. Strike intelligence — top-5 CALL and PUT candidates with full
+     factor breakdowns (delta, gamma, theta, IV, OI, spread, score)
+  4. Repeated-strike analysis — explains why a strike dominates
 
 Does NOT:
   - Open a WebSocket connection
@@ -29,10 +29,8 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date, datetime, timezone
-from typing import NamedTuple
+from datetime import date, datetime, timedelta, timezone
 
-# ── Path bootstrap ─────────────────────────────────────────────────────────────
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -45,22 +43,18 @@ from platform_core.options.options_context import (
 from platform_core.options.strike_selection import (
     StrikeSelectionEngine,
     StrikeSelectionConfig,
+    StrikeRecommendation,
 )
 
+_W = 74
 
-# ── Spot-price lookup ──────────────────────────────────────────────────────────
-# Kite LTP symbol for each underlying (exchange:tradingsymbol format).
-# Used to fetch current spot for the ATM window in chain retrieval.
-# Falls back to FALLBACK_SPOTS if the LTP call fails (e.g. outside hours).
+# ── Spot-price helpers ─────────────────────────────────────────────────────────
 
 _LTP_SYMBOL: dict[str, str] = {
     "BANKNIFTY": "NSE:NIFTY BANK",
     "NIFTY":     "NSE:NIFTY 50",
     "SENSEX":    "BSE:SENSEX",
 }
-
-# Reasonable mid-range fallbacks — only used when the market is closed or
-# the LTP call fails.  Accurate enough to retrieve ATM ±10 strikes.
 _FALLBACK_SPOTS: dict[str, float] = {
     "BANKNIFTY": 52_000.0,
     "NIFTY":     24_000.0,
@@ -68,9 +62,8 @@ _FALLBACK_SPOTS: dict[str, float] = {
 }
 
 
-def _fetch_spot(adapter: KiteAdapter, option_underlying: str) -> float:
-    """Return the current index level, or a hardcoded fallback."""
-    ltp_sym = _LTP_SYMBOL.get(option_underlying)
+def _fetch_spot(adapter: KiteAdapter, underlying: str) -> float:
+    ltp_sym = _LTP_SYMBOL.get(underlying)
     if ltp_sym:
         try:
             result = adapter.kite.ltp([ltp_sym])
@@ -79,41 +72,123 @@ def _fetch_spot(adapter: KiteAdapter, option_underlying: str) -> float:
                 return float(price)
         except Exception:
             pass
-    fallback = _FALLBACK_SPOTS.get(option_underlying, 50_000.0)
+    fb = _FALLBACK_SPOTS.get(underlying, 50_000.0)
+    print(f"  [spot] LTP unavailable — using fallback ₹{fb:,.0f}")
+    return fb
+
+
+# ── Print helpers ──────────────────────────────────────────────────────────────
+
+def _hdr(text: str, ch: str = "─") -> None:
+    print(f"\n{ch * _W}")
+    print(f"  {text}")
+    print(ch * _W)
+
+
+def _row(label: str, value: str, indent: int = 2) -> None:
+    sp = " " * indent
+    print(f"{sp}{label:<30}{value}")
+
+
+def _print_candidate(rank: int, r: StrikeRecommendation, atm: float) -> None:
+    dist = r.strike_price - atm
+    bd   = r.breakdown
     print(
-        f"  [spot] LTP unavailable for {option_underlying} — "
-        f"using fallback ₹{fallback:,.0f}"
+        f"    #{rank}  {r.option_symbol:<28}  "
+        f"strike={r.strike_price:.0f}  dist={dist:+.0f}  "
+        f"DTE={r.days_to_expiry}"
     )
-    return fallback
+    print(
+        f"         prem={r.last_traded_price:.1f}  "
+        f"δ={r.delta:+.3f}  γ={r.gamma:.6f}  "
+        f"θ={r.theta:.2f}/day  "
+        f"IV={r.implied_volatility:.1%}  OI={r.open_interest:,}"
+    )
+    print(
+        f"         score={r.composite_score:.4f}  "
+        f"liq={bd.liquidity:.3f}  θ_eff={bd.theta_efficiency:.3f}  "
+        f"iv_attr={bd.iv_attractiveness:.3f}  "
+        f"Δfit={bd.delta_fitness:.3f}"
+    )
+    print(
+        f"         oi_supp={bd.oi_support:.3f}  oi_act={bd.oi_activity:.3f}  "
+        f"gex={bd.gex_proximity:.3f}  maxpain={bd.max_pain_distance:.3f}  "
+        f"grade={r.liquidity_grade}  oi_class={r.oi_classification}"
+    )
 
 
-# ── Result container ──────────────────────────────────────────────────────────
+def _repeated_strike_analysis(
+    call_recs: list[StrikeRecommendation],
+    put_recs:  list[StrikeRecommendation],
+    atm: float,
+    step: float,
+) -> None:
+    if not call_recs:
+        return
+    best_call = call_recs[0]
+    best_put  = put_recs[0] if put_recs else None
 
-class ValidationResult(NamedTuple):
-    symbol:              str
-    option_underlying:   str
-    exchange:            str
-    expiry:              date | None
-    spot:                float | None
-    contracts_fetched:   int
-    candidates_built:    int
-    best_call_symbol:    str | None
-    best_call_delta:     float | None
-    best_call_iv:        float | None
-    best_call_oi:        int | None
-    best_call_spread_pct: float | None
-    best_call_theta:     float | None
-    best_call_gamma:     float | None
-    best_call_score:     float | None
-    best_put_symbol:     str | None
-    best_put_delta:      float | None
-    best_put_iv:         float | None
-    best_put_oi:         int | None
-    best_put_spread_pct: float | None
-    best_put_theta:      float | None
-    best_put_gamma:      float | None
-    best_put_score:      float | None
-    error:               str | None
+    same = (
+        best_put is not None
+        and abs(best_call.strike_price - best_put.strike_price) < 1e-6
+    )
+
+    print("\n  Repeated-strike analysis:")
+
+    if same:
+        print(f"    CALL and PUT both select strike {best_call.strike_price:.0f}")
+    else:
+        print(f"    CALL winner: {best_call.strike_price:.0f}  "
+              f"PUT winner: {best_put.strike_price:.0f if best_put else 'n/a'}")
+
+    dist_atm = abs(best_call.strike_price - atm)
+    atm_label = "ATM" if dist_atm < step * 0.5 else (
+        f"NEAR-ATM (+{dist_atm:.0f})" if best_call.strike_price > atm
+        else f"NEAR-ATM (-{dist_atm:.0f})"
+    )
+    print(f"    Winner position: {atm_label}")
+
+    # Score margin
+    margin = (
+        call_recs[0].composite_score - call_recs[1].composite_score
+        if len(call_recs) >= 2 else None
+    )
+    if margin is not None:
+        margin_label = "SCORE_DRIVEN" if margin >= 0.05 else "CLOSE_RACE"
+        print(f"    Score margin vs rank-2: {margin:.4f} → {margin_label}")
+
+    # Adjacent strikes in top-5
+    top5_strikes = {r.strike_price for r in call_recs[:5]}
+    adj_up   = best_call.strike_price + step
+    adj_down = best_call.strike_price - step
+    if adj_up in top5_strikes or adj_down in top5_strikes:
+        print(f"    Adjacent strike also ranked (±{step:.0f}) — ADJACENT_STRIKE_SCORED")
+    else:
+        print(f"    No adjacent strike in top-5 — winner is clearly dominant in window")
+
+    # Dominant factor classification
+    bd = best_call.breakdown
+    scores = {
+        "delta_fitness":      bd.delta_fitness,
+        "liquidity":          bd.liquidity,
+        "oi_support":         bd.oi_support,
+        "oi_activity":        bd.oi_activity,
+        "gex_proximity":      bd.gex_proximity,
+        "iv_attractiveness":  bd.iv_attractiveness,
+        "max_pain_distance":  bd.max_pain_distance,
+        "theta_efficiency":   bd.theta_efficiency,
+    }
+    total = sum(scores.values())
+    if total > 0:
+        fracs = {k: v / total for k, v in scores.items()}
+        top_factor, top_frac = max(fracs.items(), key=lambda kv: kv[1])
+        classification = (
+            "DELTA_DOMINATED"    if top_factor == "delta_fitness" and top_frac > 0.5 else
+            "LIQUIDITY_DOMINATED" if top_factor == "liquidity" and top_frac > 0.45 else
+            "DATA_DEAD"          if bd.oi_support < 0.05 and bd.oi_activity < 0.05 else
+            "SCORE_DRIVEN"
+        )
+        print(f"    Dominant factor: {top_factor} ({top_frac:.1%}) → {classification}")
 
 
 # ── Per-symbol validation ─────────────────────────────────────────────────────
@@ -123,40 +198,56 @@ def _validate_one(
     opt_ctx_builder: OptionsContextBuilder,
     strike_engine: StrikeSelectionEngine,
     config_key: str,
-) -> ValidationResult:
+) -> bool:
     meta = OPTION_CHAIN_CONFIG[config_key]
     underlying = meta.option_underlying
     exchange   = meta.exchange
     lot_size   = meta.lot_size
     step       = meta.strike_step
 
-    expiry: date | None = None
-    spot:   float | None = None
+    _hdr(f"INSTRUMENT METADATA — {config_key}")
+    _row("feed_symbol:",      meta.feed_symbol)
+    _row("option_underlying:", underlying)
+    _row("exchange:",         exchange)
+    _row("ref lot_size:",     str(lot_size))
+    _row("ref strike_step:",  f"{step:.0f}")
 
-    def _fail(reason: str) -> ValidationResult:
-        return ValidationResult(
-            symbol=config_key, option_underlying=underlying, exchange=exchange,
-            expiry=expiry, spot=spot,
-            contracts_fetched=0, candidates_built=0,
-            best_call_symbol=None, best_call_delta=None, best_call_iv=None,
-            best_call_oi=None, best_call_spread_pct=None, best_call_theta=None,
-            best_call_gamma=None, best_call_score=None,
-            best_put_symbol=None, best_put_delta=None, best_put_iv=None,
-            best_put_oi=None, best_put_spread_pct=None, best_put_theta=None,
-            best_put_gamma=None, best_put_score=None,
-            error=reason,
-        )
+    # Metadata from instrument master
+    meta_info = adapter.resolve_option_metadata(
+        underlying=underlying,
+        exchange=exchange,
+        reference_lot_size=lot_size,
+        reference_strike_step=step,
+    )
+    if "error" in meta_info:
+        print(f"  [FAIL] Metadata: {meta_info['error']}")
+        return False
 
-    # 1. Nearest expiry
+    _row("instruments found:", str(meta_info.get("num_option_instruments", "?")))
+    _row("nearest 3 expiries:", str(meta_info.get("nearest_3_expiries", [])))
+    _row("observed lot sizes:", str(meta_info.get("observed_lot_sizes", [])))
+    _row("inferred step:",      str(meta_info.get("inferred_strike_step", "?")))
+    _row("sample CE:",          str(meta_info.get("sample_ce", "?")))
+    _row("sample PE:",          str(meta_info.get("sample_pe", "?")))
+    for w in meta_info.get("warnings", []):
+        print(f"  ⚠  {w}")
+
+    # Spot
+    spot = _fetch_spot(adapter, underlying)
+    atm  = round(spot / step) * step
+    _row("spot (live/fallback):", f"₹{spot:,.2f}")
+    _row("ATM strike:",          f"{atm:.0f}")
+
+    # Nearest expiry
     try:
         expiry = adapter.nearest_expiry(underlying, date.today(), exchange=exchange)
     except Exception as exc:
-        return _fail(f"nearest_expiry failed: {exc}")
+        print(f"  [FAIL] nearest_expiry: {exc}")
+        return False
+    _row("nearest expiry:", str(expiry))
 
-    # 2. Spot price
-    spot = _fetch_spot(adapter, underlying)
-
-    # 3. Option chain (nearest expiry)
+    # Chain fetch
+    _hdr(f"CHAIN FETCH — {config_key}")
     try:
         chain = adapter.fetch_option_chain(
             underlying=underlying,
@@ -167,16 +258,11 @@ def _validate_one(
             strike_step=step,
         )
     except Exception as exc:
-        return _fail(f"fetch_option_chain failed: {exc}")
+        print(f"  [FAIL] fetch_option_chain: {exc}")
+        return False
 
-    contracts_fetched = len(chain.contracts)
-    if contracts_fetched == 0:
-        return _fail("chain returned 0 contracts")
-
-    # Try also fetching next expiry for dual-chain context (mirrors live pipeline)
     chains = [chain]
     try:
-        from datetime import timedelta
         expiry_next = adapter.nearest_expiry(
             underlying, expiry + timedelta(days=1), exchange=exchange
         )
@@ -189,127 +275,79 @@ def _validate_one(
             strike_step=step,
         )
         chains.append(chain_next)
+        _row("second expiry fetched:", str(expiry_next))
     except Exception:
-        pass  # dual-chain optional
+        pass
 
-    # 4. OptionsContext
+    calls = [c for c in chain.contracts if c.option_side == "CALL"]
+    puts  = [c for c in chain.contracts if c.option_side == "PUT"]
+    _row("contracts (nearest):", str(len(chain.contracts)))
+    _row("  CALL:", str(len(calls)))
+    _row("  PUT:",  str(len(puts)))
+
+    if not chain.contracts:
+        print("  [FAIL] 0 contracts — chain empty")
+        return False
+
+    # OptionsContext + candidates
     try:
-        options_ctx = opt_ctx_builder.build(
+        ctx = opt_ctx_builder.build(
             snapshots=chains,
             spot_price=spot,
             lot_size=lot_size,
             valuation_timestamp=datetime.now(timezone.utc),
         )
     except Exception as exc:
-        return _fail(f"OptionsContextBuilder.build failed: {exc}")
+        print(f"  [FAIL] OptionsContextBuilder: {exc}")
+        return False
 
-    candidates = list(options_ctx.strike_candidates) if options_ctx.strike_candidates else []
-    candidates_built = len(candidates)
+    cands = list(ctx.strike_candidates) if ctx.strike_candidates else []
+    _row("candidates built:", str(len(cands)))
+    _row("ATM IV:",           f"{ctx.atm_iv:.1%}" if ctx.atm_iv else "n/a")
 
-    if candidates_built == 0:
-        return _fail("0 strike candidates produced")
+    if not cands:
+        print("  [FAIL] 0 candidates — OptionsContextBuilder produced nothing")
+        return False
 
+    # Strike selection — top 5 CALL and PUT
     ts = datetime.now(timezone.utc)
 
-    def _best_for(bias: str):
+    def _top5(bias: str) -> list[StrikeRecommendation]:
         try:
-            result = strike_engine.select(
+            r = strike_engine.select(
                 bias=bias,
-                candidates=candidates,
+                candidates=cands,
                 valuation_timestamp=ts,
-                oi_snapshot=options_ctx.oi_snapshot,
-                gex_snapshot=options_ctx.gex_snapshot,
-                atm_iv=options_ctx.atm_iv,
+                oi_snapshot=ctx.oi_snapshot,
+                gex_snapshot=ctx.gex_snapshot,
+                atm_iv=ctx.atm_iv,
             )
-            return result.best()
-        except Exception:
-            return None
+            return list(r.recommendations)
+        except Exception as exc:
+            print(f"  [WARN] select({bias}) error: {exc}")
+            return []
 
-    best_call = _best_for("LONG")
-    best_put  = _best_for("SHORT")
+    call_recs = _top5("LONG")
+    put_recs  = _top5("SHORT")
 
-    def _spread_pct(rec) -> float | None:
-        if rec is None or rec.bid_price is None or rec.ask_price is None:
-            return None
-        mid = (float(rec.bid_price) + float(rec.ask_price)) / 2.0
-        if mid <= 0:
-            return None
-        return (float(rec.ask_price) - float(rec.bid_price)) / mid * 100.0
+    _hdr(f"TOP-5 CALL CANDIDATES — {config_key}")
+    if not call_recs:
+        print("  No CALL candidates passed filters")
+    for r in call_recs[:5]:
+        _print_candidate(r.rank, r, atm)
 
-    return ValidationResult(
-        symbol=config_key,
-        option_underlying=underlying,
-        exchange=exchange,
-        expiry=expiry,
-        spot=spot,
-        contracts_fetched=contracts_fetched,
-        candidates_built=candidates_built,
-        best_call_symbol=best_call.option_symbol if best_call else None,
-        best_call_delta=best_call.delta if best_call else None,
-        best_call_iv=best_call.implied_volatility if best_call else None,
-        best_call_oi=best_call.open_interest if best_call else None,
-        best_call_spread_pct=_spread_pct(best_call),
-        best_call_theta=best_call.theta if best_call else None,
-        best_call_gamma=best_call.gamma if best_call else None,
-        best_call_score=best_call.composite_score if best_call else None,
-        best_put_symbol=best_put.option_symbol if best_put else None,
-        best_put_delta=best_put.delta if best_put else None,
-        best_put_iv=best_put.implied_volatility if best_put else None,
-        best_put_oi=best_put.open_interest if best_put else None,
-        best_put_spread_pct=_spread_pct(best_put),
-        best_put_theta=best_put.theta if best_put else None,
-        best_put_gamma=best_put.gamma if best_put else None,
-        best_put_score=best_put.composite_score if best_put else None,
-        error=None,
-    )
+    _hdr(f"TOP-5 PUT CANDIDATES — {config_key}")
+    if not put_recs:
+        print("  No PUT candidates passed filters")
+    for r in put_recs[:5]:
+        _print_candidate(r.rank, r, atm)
 
+    _repeated_strike_analysis(call_recs, put_recs, atm, step)
 
-# ── Print helpers ──────────────────────────────────────────────────────────────
-
-_W = 72
-
-def _hdr(text: str) -> None:
-    print(f"\n{'─' * _W}")
-    print(f"  {text}")
-    print('─' * _W)
-
-
-def _print_result(r: ValidationResult) -> None:
-    status = "FAIL" if r.error else "PASS"
-    label  = f"{r.symbol} ({r.option_underlying}, {r.exchange})"
-    print(f"\n  [{status}] {label}")
-
-    if r.error:
-        print(f"         Error: {r.error}")
-        return
-
-    print(f"         Expiry:              {r.expiry}")
-    print(f"         Spot:               ₹{r.spot:,.2f}")
-    print(f"         Contracts fetched:   {r.contracts_fetched}")
-    print(f"         Candidates scored:   {r.candidates_built}")
-
-    for side, sym, delta, iv, oi, spread, theta, gamma, score in [
-        ("CALL/LONG",
-         r.best_call_symbol, r.best_call_delta, r.best_call_iv,
-         r.best_call_oi, r.best_call_spread_pct, r.best_call_theta,
-         r.best_call_gamma, r.best_call_score),
-        ("PUT/SHORT",
-         r.best_put_symbol, r.best_put_delta, r.best_put_iv,
-         r.best_put_oi, r.best_put_spread_pct, r.best_put_theta,
-         r.best_put_gamma, r.best_put_score),
-    ]:
-        if sym is None:
-            print(f"\n         Best {side}: no candidate passed filters")
-            continue
-        print(f"\n         Best {side}:")
-        print(f"           Contract:   {sym}")
-        print(f"           Delta:      {delta:+.3f}" if delta is not None else "           Delta:      n/a")
-        print(f"           IV:         {iv:.1%}" if iv is not None else "           IV:         n/a")
-        print(f"           OI:         {oi:,}" if oi is not None else "           OI:         n/a")
-        print(f"           Spread:     {spread:.2f}%" if spread is not None else "           Spread:     n/a")
-        print(f"           Theta/day: ₹{theta:.2f}" if theta is not None else "           Theta/day:  n/a")
-        print(f"           Gamma:      {gamma:.6f}" if gamma is not None else "           Gamma:      n/a")
-        print(f"           Score:      {score:.4f}" if score is not None else "           Score:      n/a")
+    print(f"\n  [PASS] {config_key}  underlying={underlying}  "
+          f"exchange={exchange}  contracts={len(chain.contracts)}  "
+          f"candidates={len(cands)}")
+    return True
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -332,12 +370,11 @@ def main() -> None:
         else [args.symbol]
     )
 
-    _hdr("OPTION CHAIN VALIDATION")
+    _hdr("OPTION CHAIN VALIDATION SUITE", "═")
     print(f"  Targets: {', '.join(targets)}")
     print(f"  Date:    {date.today()}")
 
-    # Session check
-    _hdr("KITE SESSION CHECK")
+    _hdr("KITE SESSION CHECK", "─")
     adapter = KiteAdapter()
     valid, err = adapter.check_session()
     if not valid:
@@ -346,38 +383,29 @@ def main() -> None:
         sys.exit(1)
     print("  [PASS] Access token valid")
 
-    # Shared stateless engines
     opt_ctx_builder = OptionsContextBuilder(
         config=OptionsContextBuilderConfig(compute_missing_greeks=True)
     )
     strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=5))
 
-    results: list[ValidationResult] = []
-    for config_key in targets:
-        _hdr(f"TESTING: {config_key}")
-        meta = OPTION_CHAIN_CONFIG[config_key]
-        print(
-            f"  feed_symbol={meta.feed_symbol}  "
-            f"option_underlying={meta.option_underlying}  "
-            f"exchange={meta.exchange}  "
-            f"lot_size={meta.lot_size}  "
-            f"strike_step={meta.strike_step:.0f}"
-        )
-        r = _validate_one(adapter, opt_ctx_builder, strike_engine, config_key)
-        _print_result(r)
-        results.append(r)
+    results: dict[str, bool] = {}
+    for key in targets:
+        try:
+            ok = _validate_one(adapter, opt_ctx_builder, strike_engine, key)
+        except Exception as exc:
+            print(f"\n  [FAIL] {key} unexpected error: {exc}")
+            ok = False
+        results[key] = ok
 
-    # Summary
-    _hdr("SUMMARY")
-    passed = [r for r in results if r.error is None]
-    failed = [r for r in results if r.error is not None]
+    _hdr("SUMMARY", "═")
+    passed = [k for k, v in results.items() if v]
+    failed = [k for k, v in results.items() if not v]
     print(f"  Passed: {len(passed)}/{len(results)}")
-    for r in failed:
-        print(f"  FAIL [{r.symbol}]: {r.error}")
+    for k in failed:
+        print(f"  FAIL: {k}")
     print()
 
-    if failed:
-        sys.exit(1)
+    sys.exit(0 if not failed else 1)
 
 
 if __name__ == "__main__":

@@ -54,10 +54,9 @@ class KiteAdapter:
         self._tick_callbacks: list[Callable] = []
         self._connected = False
 
-        # Instrument master cache — keyed by exchange
-        self._instruments_cache: list[dict] | None = None
-        self._instruments_cache_ts: float = 0.0
-        self._instruments_exchange: str | None = None
+        # Instrument master cache — keyed per exchange so NFO and BFO never
+        # evict each other.  Each entry is (instruments_list, fetch_timestamp).
+        self._instruments_cache: dict[str, tuple[list[dict], float]] = {}
 
         # Reconnect state
         self._instrument_tokens: list[int] = []
@@ -229,6 +228,19 @@ class KiteAdapter:
 
     # ── REST helpers ───────────────────────────────────────────────────────────
 
+    def _get_instruments(self, exchange: str) -> list[dict]:
+        """
+        Return the Kite instrument master for `exchange`, using a per-exchange
+        5-minute cache.  NFO and BFO are cached independently so fetching one
+        never evicts the other.
+        """
+        now = time.time()
+        cached = self._instruments_cache.get(exchange)
+        if cached is None or (now - cached[1]) >= _INSTRUMENTS_CACHE_TTL:
+            instruments = self.kite.instruments(exchange)
+            self._instruments_cache[exchange] = (instruments, now)
+        return self._instruments_cache[exchange][0]
+
     def fetch_option_chain(
         self,
         *,
@@ -250,14 +262,7 @@ class KiteAdapter:
         OptionsContextBuilder.GreekResolver via BSM.
         """
         now = time.time()
-        if (
-            self._instruments_cache is None
-            or self._instruments_exchange != exchange
-            or (now - self._instruments_cache_ts) >= _INSTRUMENTS_CACHE_TTL
-        ):
-            self._instruments_cache = self.kite.instruments(exchange)
-            self._instruments_cache_ts = now
-            self._instruments_exchange = exchange
+        instruments = self._get_instruments(exchange)
 
         # Filter to target underlying, expiry, option type, and ATM ± N strikes
         atm = round(spot_price / strike_step) * strike_step
@@ -265,7 +270,7 @@ class KiteAdapter:
         max_strike = atm + strikes_around_atm * strike_step
 
         eligible = [
-            inst for inst in self._instruments_cache
+            inst for inst in instruments
             if inst["name"] == underlying
             and inst["expiry"] == expiry_date
             and inst["instrument_type"] in ("CE", "PE")
@@ -357,20 +362,11 @@ class KiteAdapter:
         Raises ValueError if no expiry is available (e.g. token expired, market
         not yet listed contracts).
         """
-        now = time.time()
-        if (
-            self._instruments_cache is None
-            or self._instruments_exchange != exchange
-            or (now - self._instruments_cache_ts) >= _INSTRUMENTS_CACHE_TTL
-        ):
-            self._instruments_cache = self.kite.instruments(exchange)
-            self._instruments_cache_ts = now
-            self._instruments_exchange = exchange
-
+        instruments = self._get_instruments(exchange)
         expiries = sorted(
             {
                 inst["expiry"]
-                for inst in self._instruments_cache
+                for inst in instruments
                 if inst["name"] == underlying
                 and inst["instrument_type"] in ("CE", "PE")
                 and inst["expiry"] >= from_date
@@ -382,6 +378,118 @@ class KiteAdapter:
                 f"in {exchange} instrument master."
             )
         return expiries[0]
+
+    def resolve_option_metadata(
+        self,
+        *,
+        underlying: str,
+        exchange: str,
+        reference_lot_size: int | None = None,
+        reference_strike_step: float | None = None,
+    ) -> dict:
+        """
+        Query the Kite instrument master and return metadata for `underlying`.
+
+        Returns a dict with:
+          num_option_instruments  — total CE+PE instruments in master
+          nearest_3_expiries      — up to 3 nearest available expiries
+          observed_lot_sizes      — set of lot_size values seen in master
+          inferred_strike_step    — minimum gap between consecutive strikes
+          sample_ce               — first CE tradingsymbol found (or None)
+          sample_pe               — first PE tradingsymbol found (or None)
+          lot_size_matches_ref    — True/None (None when reference_lot_size absent)
+          strike_step_matches_ref — True/None (None when reference_strike_step absent)
+          warnings                — list of human-readable warning strings
+
+        Never raises — on any failure returns a dict with 'error' key.
+        """
+        try:
+            instruments = self._get_instruments(exchange)
+        except Exception as exc:
+            return {"error": f"instrument master fetch failed: {exc}"}
+
+        today = date.today()
+        option_insts = [
+            inst for inst in instruments
+            if inst.get("name") == underlying
+            and inst.get("instrument_type") in ("CE", "PE")
+        ]
+
+        if not option_insts:
+            return {
+                "error": f"no CE/PE instruments found for {underlying} in {exchange}",
+                "num_option_instruments": 0,
+            }
+
+        # Available expiries (future only)
+        all_expiries = sorted({
+            inst["expiry"] for inst in option_insts if inst["expiry"] >= today
+        })
+        nearest_3 = all_expiries[:3]
+
+        # Lot sizes seen in master
+        observed_lot_sizes: set[int] = {
+            int(inst["lot_size"]) for inst in option_insts if inst.get("lot_size")
+        }
+
+        # Infer strike step from nearest expiry
+        inferred_step: float | None = None
+        if nearest_3:
+            near_expiry = nearest_3[0]
+            strikes = sorted({
+                float(inst["strike"])
+                for inst in option_insts
+                if inst["expiry"] == near_expiry
+            })
+            if len(strikes) >= 2:
+                gaps = [strikes[i+1] - strikes[i] for i in range(len(strikes)-1)]
+                min_gap = min(gaps)
+                inferred_step = min_gap if min_gap > 0 else None
+
+        # Sample symbols
+        sample_ce = next(
+            (inst["tradingsymbol"] for inst in option_insts if inst["instrument_type"] == "CE"),
+            None,
+        )
+        sample_pe = next(
+            (inst["tradingsymbol"] for inst in option_insts if inst["instrument_type"] == "PE"),
+            None,
+        )
+
+        # Warnings
+        warnings: list[str] = []
+        lot_matches: bool | None = None
+        step_matches: bool | None = None
+
+        if reference_lot_size is not None and observed_lot_sizes:
+            lot_matches = reference_lot_size in observed_lot_sizes
+            if not lot_matches:
+                warnings.append(
+                    f"CONSTANT_LOT_MISMATCH: reference={reference_lot_size} "
+                    f"master={sorted(observed_lot_sizes)}"
+                )
+
+        if reference_strike_step is not None and inferred_step is not None:
+            step_matches = abs(inferred_step - reference_strike_step) < 1e-6
+            if not step_matches:
+                warnings.append(
+                    f"CONSTANT_STEP_MISMATCH: reference={reference_strike_step} "
+                    f"inferred={inferred_step}"
+                )
+
+        return {
+            "underlying": underlying,
+            "exchange": exchange,
+            "num_option_instruments": len(option_insts),
+            "nearest_3_expiries": [e.isoformat() for e in nearest_3],
+            "observed_lot_sizes": sorted(observed_lot_sizes),
+            "inferred_strike_step": inferred_step,
+            "sample_ce": sample_ce,
+            "sample_pe": sample_pe,
+            "lot_size_matches_ref": lot_matches,
+            "strike_step_matches_ref": step_matches,
+            "warnings": warnings,
+        }
 
     def check_session(self) -> tuple[bool, str]:
         """
