@@ -2868,3 +2868,312 @@ same expected behaviour.
 - **Risk model**: ZERO — all fractions, stops, and scales unchanged
 - **Strategy logic**: ZERO — no signal, sizing formula, or exit logic changed
 - **Live sizing**: Now matches backtest-validated lot counts exactly
+
+---
+
+## 32. Phase A Safety Fixes — 2026-06-03 (commit `d597ae0`)
+
+### 32a. Summary
+
+Three production safety fixes. Zero behavior change to BANKNIFTY institutional
+options execution. NIFTY50, BANKNIFTY, and SENSEX WebSocket feeds unchanged.
+
+### 32b. Fix 1 — Cross-session DB open-trade recovery (P0)
+
+**Problem:** `TradeDatabase._open_trade_rowid` is a runtime-only scalar. On
+process restart, `_load_state()` restores `_option_trader._position` from
+`paper_trading_state.json` but `_open_trade_rowid` resets to `None`. Subsequent
+`write_trade_exit()` call detects `rowid is None` and returns without writing,
+leaving the pt_trades row permanently at `state='OPEN'`.
+
+**Fix:** Added `TradeDatabase.recover_open_trade_row()`. Called from `_load_state()`
+immediately after the open position is restored. Opens a direct synchronous SQLite
+connection (safe before `start()` — no worker thread yet), queries pt_trades for a
+`state='OPEN'` row matching `contract_symbol`, `direction`, `entry_premium`, and
+`entry_bar_index`, and sets `_open_trade_rowid` to the found row id.
+
+If no matching row exists (e.g. position entered in a previous session before DB
+layer was deployed), prints a clear stderr warning and returns False. CSV log is
+unaffected.
+
+**Files:** `platform_core/persistence/trade_database.py`,
+`platform_core/data/live/live_structure_pipeline.py`
+
+### 32c. Fix 2 — Legacy PaperBroker / SignalEngine execution path removed (P0)
+
+**Problem:** `live_structure_pipeline.py` contained a second, fully active execution
+path (lines 1640–1836 in the pre-fix file) that fired on every bar with structure
+events — regardless of symbol. This path called:
+
+- `SignalEngine.generate_signals()` — using `HTFBiasEngine` context (not MCB)
+- `PaperBroker.open_position()` / `PaperBroker.close_position()` — unit-quantity
+  index trades, no lot size, no option contracts
+- `MarketMemory.remember_trade()`, `ReflectionEngine.reflect()`,
+  `AdaptivePolicyEngine.reinforce()` — all receiving wrong PnL (index points × 1)
+- `print_performance_summary(..., label="LEGACY PERFORMANCE SUMMARY")`
+
+The path had no symbol guard. It opened fake SENSEX LONG/SHORT spot trades and
+fake NIFTY50/BANKNIFTY spot trades whenever structure events fired. PnL was
+computed as `(exit_price - entry_price) × 1`, which is index points with no lot
+multiplication — meaningless and confusing.
+
+SENSEX appeared in terminal as "PAPER OPEN ▶ LONG │ SENSEX │ @74492.00 │ qty=1".
+
+**Fix:** Removed the entire block. Removed all six associated imports
+(`MarketMemory`, `MarketMemoryRecord`, `ReflectionEngine`, `AdaptivePolicyEngine`,
+`RegimeEngine`, `SignalEngine`, `PaperBroker`) and their six module-level
+instantiations. Structure event printing retained. DB write for structure events
+retained.
+
+`PerformanceTracker`, `BiasDetector`, `HTFBiasEngine` kept — still used by the
+options path and diagnostic prints respectively.
+
+**Files:** `platform_core/data/live/live_structure_pipeline.py`,
+`platform_core/paper_trading/terminal_display.py` (no change — functions remain
+but callers removed)
+
+### 32d. Fix 3 — HTFBiasEngine neutral-vote bug (P1)
+
+**Problem:** `HTFBiasEngine.build_context()` computed `liquidity_direction` as
+`"BULLISH" if bullish_count > bearish_count else "BEARISH"`. When all four
+timeframes return NEUTRAL (bullish_count=0, bearish_count=0), the else branch
+fired, returning `"BEARISH"`.
+
+**Fix:** Three-way condition: BULLISH when bullish > bearish, BEARISH when
+bearish > bullish, NEUTRAL on tie. Note: HTFBiasEngine is now diagnostic/print
+only — the legacy signal execution path that consumed it has been removed.
+
+**File:** `platform_core/intelligence/htf_bias_engine.py`
+
+### 32e. Evidence
+
+DB confirmed one BANKNIFTY26JUN54000CE entry row (`pt_trades id=1`) stuck at
+`state='OPEN'` with no exit row — exactly the scenario `recover_open_trade_row()`
+resolves on the next restart.
+
+---
+
+## 33. Phase B0/B1 — Three-Index Option-Chain Preparation — 2026-06-03 (commit `50aff9c`)
+
+### 33a. Summary
+
+Configuration and validation scaffolding only. No NIFTY or SENSEX live execution
+enabled. BANKNIFTY-only behavior fully preserved.
+
+### 33b. instrument_registry.py additions
+
+`INSTRUMENTS` dict unchanged — NIFTY50, BANKNIFTY, SENSEX tokens intact.
+
+Added `OptionChainMeta` frozen dataclass and `OPTION_CHAIN_CONFIG` dict:
+
+| Key | feed_symbol | option_underlying | exchange | lot_size | strike_step |
+|---|---|---|---|---|---|
+| BANKNIFTY | BANKNIFTY | BANKNIFTY | NFO | 15 | 100 |
+| NIFTY | NIFTY50 | NIFTY | NFO | 75 | 50 |
+| SENSEX | SENSEX | SENSEX | BFO | 10 | 100 |
+
+Critical translation: `"NIFTY50"` (WebSocket key in INSTRUMENTS) maps to `"NIFTY"`
+(Kite instrument master `name` field for NFO options). Calling
+`fetch_option_chain(underlying="NIFTY50")` would return zero contracts.
+`FEED_TO_OPTION_UNDERLYING` and `OPTION_UNDERLYING_TO_FEED` dicts encode this.
+
+SENSEX options trade on BSE F&O segment — `exchange="BFO"`, not NFO. This is
+distinct from the SENSEX spot index WebSocket subscription (token 265).
+
+### 33c. live_structure_pipeline.py — `_OPTION_TARGET` rename
+
+`_OPTION_TARGET = "BANKNIFTY"` (scalar) replaced with:
+- `_PRIMARY_OPTION_TARGET: str = "BANKNIFTY"` — used in all 13 downstream sites
+- `_OPTION_TARGETS: frozenset = frozenset({"BANKNIFTY"})` — future extension point
+
+Zero behavior change. Pure rename with comment explaining the extension intent.
+
+### 33d. validate_option_chain_support.py (new)
+
+Standalone REST validation script. Checks, per symbol:
+1. Nearest expiry discoverable from instrument master
+2. `fetch_option_chain()` returns non-empty contracts
+3. `OptionsContextBuilder` produces valid OptionsContext
+4. `StrikeSelectionEngine.select()` returns a scored LONG and PUT candidate
+
+Passes correct exchange per underlying (BFO for SENSEX, NFO for others).
+No WebSocket, no trades, no DB/state/CSV writes.
+
+Usage: `PYTHONPATH=. python3 scripts/validate_option_chain_support.py --symbol ALL`
+
+---
+
+## 34. Phase B2A/B2B — Strike Intelligence Audit + Metadata Validation — 2026-06-03 (commit `2b7f9c5`)
+
+### 34a. Summary
+
+Observability improvements and multi-index skeleton. No NIFTY/SENSEX execution
+enabled. BANKNIFTY options path behavior unchanged. All 13 offline sanity tests pass.
+
+### 34b. KiteAdapter — per-exchange instrument cache
+
+**Problem:** Single `_instruments_cache: list[dict] | None` keyed by one exchange
+string. NFO→BFO→NFO alternation would evict the cache on every call, causing
+2–3 × 3 MB instrument master downloads per minute in a live three-index session —
+hitting Kite rate limits and corrupting chain results.
+
+**Fix:** `_instruments_cache: dict[str, tuple[list[dict], float]]` keyed by
+exchange. NFO and BFO cached independently, each with a 5-minute TTL. Extracted
+`_get_instruments(exchange)` private helper used by `fetch_option_chain()` and
+`nearest_expiry()`. Existing BANKNIFTY-only NFO behavior is functionally identical.
+
+**File:** `platform_core/data/live/kite_adapter.py`
+
+### 34c. KiteAdapter — `resolve_option_metadata()`
+
+New public method. Queries the instrument master for a given underlying+exchange
+and returns:
+- `num_option_instruments` — total CE+PE count
+- `nearest_3_expiries` — up to 3 nearest future expiries
+- `observed_lot_sizes` — lot sizes seen in master (validates vs constants)
+- `inferred_strike_step` — minimum gap between consecutive strikes
+- `sample_ce` / `sample_pe` — representative tradingsymbols
+- `warnings` — `CONSTANT_LOT_MISMATCH` or `CONSTANT_STEP_MISMATCH` if Kite
+  master disagrees with `REFERENCE_LOT_SIZES` / `REFERENCE_STRIKE_STEPS`
+
+Never raises — failures return a dict with an `"error"` key.
+
+### 34d. strike_selection_audit.py (new)
+
+`platform_core/options/strike_selection_audit.py`. Observability layer for every
+live strike selection decision.
+
+**Output:**
+- Terminal: one concise line per bar, e.g.
+  `[STRIKE AUDIT] BANKNIFTY LONG selected BANKNIFTY...54000CE score=0.782 margin=0.041 ATM=53900 dist=+100 reason=delta+liquidity`
+- File: `logs/strike_selection_audit.jsonl` — full JSONL record appended per bar
+
+**Warning flags:**
+
+| Flag | Condition |
+|---|---|
+| `SAME_STRIKE_AS_PREVIOUS` | Winner matches previous bar's winner for same underlying |
+| `SCORE_MARGIN_LOW` | Margin between rank-1 and rank-2 < 0.05 |
+| `FACTOR_DATA_MISSING` | Bid/ask absent on winner |
+| `OI_ZERO_OR_MISSING` | Winner OI is 0 |
+| `BID_ASK_WIDE` | Spread > 6% of mid |
+| `SELECTOR_EFFECTIVELY_DELTA_ONLY` | delta_fitness accounts for > 60% of total factor weight |
+| `TOP_CANDIDATES_TOO_CLOSE` | Top-5 scores within 0.03 of each other |
+| `ADJACENT_STRIKE_SCORED` | A strike ±1 step from winner also appears in top-5 |
+
+**Important:** `StrikeRecommendation` does not carry `bid_price`, `ask_price`, or
+`volume`. The audit logger performs a reverse lookup from the `candidates` list by
+`option_symbol` to recover these fields. The `StrikeScoreBreakdown` (all 8 factor
+scores) is available directly on `StrikeRecommendation.breakdown`.
+
+**Execution safety:** The outer `log()` method is wrapped in `try/except`. Any
+audit failure is silently swallowed — it cannot interrupt the live trading loop.
+
+**Integration:** `_audit_selection()` is called in `live_structure_pipeline.py`
+immediately after `_strike_engine.select()` returns and `.best()` is non-None.
+`_candidates_list` was already materialized for the engine call, so no extra
+work is done. `top_n` raised from 3 → 5 to give the audit rank-2..5 data;
+`.best()` returns `recommendations[0]` regardless.
+
+### 34e. Multi-index execution skeleton
+
+`live_structure_pipeline.py` additions (none enable live trading):
+
+```python
+_PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"          # unchanged
+_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY"})
+_OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
+
+def feed_symbol_to_option_underlying(feed_symbol: str) -> str: ...
+def option_underlying_to_feed_symbol(option_underlying: str) -> str: ...
+def get_option_chain_config(option_underlying: str) -> OptionChainMeta | None: ...
+```
+
+A comment block in the source lists the 5 prerequisites that must pass before
+any symbol can be added to `_OPTION_TARGETS_ENABLED`.
+
+### 34f. validate_option_chain_support.py (enhanced)
+
+Complete rewrite. Now shows, per symbol:
+1. Instrument metadata from `resolve_option_metadata()` — expiries, lot sizes,
+   inferred step, sample symbols, constant-vs-master mismatch warnings
+2. Chain fetch result — contract counts, CALL/PUT split
+3. Top-5 CALL and top-5 PUT candidates with full 8-factor score breakdown
+   (delta, gamma, theta, IV, OI, spread, score, grades)
+4. Repeated-strike analysis with classification:
+   `SCORE_DRIVEN` / `DELTA_DOMINATED` / `LIQUIDITY_DOMINATED` / `DATA_DEAD`
+
+This is the tool to run before enabling any new underlying.
+
+### 34g. test_strike_selector_sanity.py (new, offline)
+
+`scripts/test_strike_selector_sanity.py`. No Kite token required.
+Builds `StrikeCandidate` objects directly (no `SyntheticChainBuilder`).
+
+| Test | What it proves |
+|---|---|
+| 1. Spot shift | Winner tracks ATM correctly across ₹52k/₹54k/₹56k |
+| 2. Spread quality | Tight spread (1.5%) beats wide spread (17.7%) |
+| 3. Theta efficiency | Optimal DTE (14d) beats near-expiry (1d) — theta_eff 0.937 vs 0.000 |
+| 4. OI zero | Zero-OI candidate is filtered; not promoted to winner |
+| 5. IV attractiveness | Cheap IV (17%) beats expensive IV (28%) — iv_attr 1.000 vs 0.076 |
+| 6. Greeks reporting | gamma and theta preserved in recommendation and scored correctly |
+
+Result: **13/13 passed** (2026-06-03).
+
+**Note on repeated 54000 selection (live observation):** The 54000 CE was selected
+repeatedly in the 2026-06-03 session. This is now explainable via the audit JSONL:
+the audit will show whether the selection is SCORE_DRIVEN (genuine dominance),
+SAME_STRIKE_AS_PREVIOUS (persistence), DELTA_DOMINATED (delta overwhelming other
+factors), or DATA_DEAD (OI/liquidity data absent). Do not force strike diversity
+artificially. The 8-factor selector must be the arbiter.
+
+---
+
+## 35. Current Live Execution Status — 2026-06-03
+
+### 35a. Active execution
+
+| Underlying | Status | Exchange | Chain fetch | State tracking |
+|---|---|---|---|---|
+| BANKNIFTY | **ENABLED** | NFO | Live, proven | Full |
+| NIFTY | Prepared, disabled | NFO | Not yet validated live | Not yet |
+| SENSEX | Prepared, disabled | BFO | Not yet validated live | Not yet |
+
+### 35b. What is running
+
+- BANKNIFTY 1m bar → MCB bias → option chain (NFO) → 8-factor strike selection → `OptionPaperTrader` entry/exit
+- Structure analysis for NIFTY50, BANKNIFTY, SENSEX — all three generate `StructureEvents` and write to `pt_structure_events`
+- Strike selection audit → `logs/strike_selection_audit.jsonl` (observability only)
+- DB: `pt_trades`, `pt_decisions`, `pt_structure_events`, `pt_runtime_events`
+- State: `logs/paper_trading_state.json` with MCB warm-start bar history
+
+### 35c. Pending before NIFTY can be enabled
+
+1. `validate_option_chain_support.py --symbol NIFTY` passes during market hours
+2. `BacktestRunner(symbol="NIFTY").run(csv_path=...)` produces valid trades on NIFTY OHLCV data
+3. Per-underlying state containers instantiated: `MarketContextBuilder`, `OptionPaperTrader`, `DailyBarAccumulator`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, `FVGEngine` (15m, 1h), `last_atm_iv`
+4. State file format extended: `open_position` (singular) → `open_positions: {underlying: {...}}`
+5. `TradeDatabase._open_trade_rowid` extended to `dict[str, int | None]` per underlying
+6. `PositionSizer` sets instantiated per underlying (single-underlying-per-instance constraint)
+
+### 35d. Pending before SENSEX can be enabled
+
+All of the above, plus:
+
+7. `validate_option_chain_support.py --symbol SENSEX` passes during market hours (BFO chain)
+8. `BacktestRunner(symbol="SENSEX").run(...)` produces valid trades
+9. KiteAdapter BFO live chain confirmed to return non-empty contracts with valid LTP, OI, and bid/ask
+
+### 35e. Non-negotiable rule
+
+> **NIFTY and SENSEX must not be added to `_OPTION_TARGETS_ENABLED` until
+> option-chain validation, per-underlying state containers, DB/state persistence
+> extension, and backtest/live parity are all proven for that specific underlying.**
+>
+> Adding a symbol to `_OPTION_TARGETS_ENABLED` without completing the above
+> prerequisite checklist will cause incorrect MCB bias (no history for the new
+> underlying), wrong lot sizes from a stale constant, wrong DB rowid linkage
+> (single rowid cannot track two simultaneous positions), and wrong equity
+> accounting (_open_premium_cost is a single scalar not keyed to underlying).
+
