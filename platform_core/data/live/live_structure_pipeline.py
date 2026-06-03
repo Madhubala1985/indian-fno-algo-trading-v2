@@ -481,6 +481,8 @@ _soft_halt_reason:       str         = ""
 _consecutive_losses:     int         = 0
 _shutdown_triggered:     bool        = False  # set True by _handle_market_close_shutdown
 _shadow_last_bar:        dict        = {}     # {underlying: _bar_count} — shadow rate-limit
+_shadow_counters:        dict        = {}     # {underlying: {attempts,success,no_candidate,failures,last_symbol,last_score}}
+_SHADOW_SUMMARY_EVERY:   int         = 10     # print [SHADOW SUMMARY] every N attempts per underlying
 
 # Operational state
 _STATE_FILE:         Path = Path("logs/paper_trading_state.json")
@@ -1230,6 +1232,44 @@ def _size_live_position(
         )
 
 
+def _shadow_counter(underlying: str) -> dict:
+    """Return (and lazily initialise) the shadow counter dict for this underlying."""
+    if underlying not in _shadow_counters:
+        _shadow_counters[underlying] = {
+            "attempts":     0,
+            "success":      0,
+            "no_candidate": 0,
+            "failures":     0,
+            "last_symbol":  None,
+            "last_score":   None,
+        }
+    return _shadow_counters[underlying]
+
+
+def _maybe_print_shadow_summary(underlying: str) -> None:
+    """Print a one-line [SHADOW SUMMARY] every _SHADOW_SUMMARY_EVERY attempts. Never raises."""
+    try:
+        c = _shadow_counters.get(underlying)
+        if c is None or c["attempts"] == 0:
+            return
+        if c["attempts"] % _SHADOW_SUMMARY_EVERY != 0:
+            return
+        last_str = (
+            f"  last={c['last_symbol']}  score={c['last_score']:.3f}"
+            if c["last_symbol"] else ""
+        )
+        print(
+            f"[SHADOW SUMMARY] {underlying}"
+            f"  attempts={c['attempts']}"
+            f"  success={c['success']}"
+            f"  no_candidate={c['no_candidate']}"
+            f"  failures={c['failures']}"
+            f"{last_str}"
+        )
+    except Exception:
+        pass
+
+
 def _classify_shadow_error(exc: Exception) -> str:
     """Map an exception from shadow option intelligence to a failure reason code."""
     msg = str(exc).lower()
@@ -1282,11 +1322,20 @@ def _run_shadow_option_intelligence(
     """
     Fetch option chain and run strike selection for a shadow underlying.
 
-    Writes to logs/strike_selection_shadow.jsonl.  Never sizes or opens a
-    position. Never writes DB trade rows. Never raises (all exceptions caught).
-    Never affects BANKNIFTY execution.
+    Permitted:  chain fetch, strike scoring, JSONL audit, counter updates.
+    Forbidden:  position sizing, open/exit calls, pt_trades DB writes,
+                equity/risk state changes, any effect on BANKNIFTY execution.
+
+    Enabling execution for a shadow underlying requires a separate commit that
+    moves it from _OPTION_TARGETS_SHADOW into _OPTION_TARGETS_ENABLED.
+
+    Writes to logs/strike_selection_shadow.jsonl.  Never raises.
     """
+    c    = _shadow_counter(state.option_underlying)
+    c["attempts"] += 1
     spot = completed_bar.close_price
+    _outcome = "failure"  # updated in finally block via the local var below
+    _outcome_bucket = ["failure"]  # mutable cell so inner scopes can update it
     try:
         bar_date = datetime.now(timezone.utc).date()
 
@@ -1341,6 +1390,7 @@ def _run_shadow_option_intelligence(
             state.last_atm_iv = options_ctx.atm_iv
 
         if not options_ctx.strike_candidates:
+            _outcome_bucket[0] = "no_candidate"
             _write_shadow_failure_record(state, market_ctx, spot, "CANDIDATES_EMPTY")
             return
 
@@ -1355,6 +1405,7 @@ def _run_shadow_option_intelligence(
         )
 
         if _selection_result.best() is None:
+            _outcome_bucket[0] = "no_candidate"
             _write_shadow_failure_record(state, market_ctx, spot, "STRIKE_SELECTION_EMPTY")
             return
 
@@ -1365,12 +1416,25 @@ def _run_shadow_option_intelligence(
             feed_symbol=state.feed_symbol,
             strike_step=state.strike_step,
         )
+        _outcome_bucket[0] = "success"
+        _best = _selection_result.best()
+        c["last_symbol"] = _best.option_symbol
+        c["last_score"]  = _best.composite_score
 
     except Exception as exc:
         try:
             _write_shadow_failure_record(state, market_ctx, spot, _classify_shadow_error(exc))
         except Exception:
             pass
+    finally:
+        bucket = _outcome_bucket[0]
+        if bucket == "success":
+            c["success"] += 1
+        elif bucket == "no_candidate":
+            c["no_candidate"] += 1
+        else:
+            c["failures"] += 1
+        _maybe_print_shadow_summary(state.option_underlying)
 
 
 def _handle_market_close_shutdown(reason: str) -> None:
@@ -1666,8 +1730,17 @@ def on_ticks(raw_ticks):
                             print(f"[OPTIONS] Pipeline error: {exc}")
 
             # ── Shadow option intelligence — observe chain/strike, no execution ──
-            # Runs for NIFTY/SENSEX only: chain fetch + strike scoring + JSONL audit.
-            # No sizing, no position open, no equity change, no DB trade rows.
+            # Runs for NIFTY/SENSEX only: chain fetch, strike scoring, JSONL audit,
+            # and per-underlying attempt/success/no_candidate/failure counters.
+            #
+            # SAFETY BOUNDARY — this elif branch may NEVER:
+            #   • call _size_live_position() or any sizing helper
+            #   • call option_trader.open_position() / close_position()
+            #   • call _db.write_trade_entry() / write_trade_exit()
+            #   • modify _equity, _peak_equity, _consecutive_losses, or _soft_halted
+            #
+            # To enable execution for a shadow underlying, move it from
+            # _OPTION_TARGETS_SHADOW to _OPTION_TARGETS_ENABLED in a separate commit.
             elif (is_option_target_shadow(_current_state.option_underlying)
                     and str(market_ctx.bias) != "NEUTRAL"
                     and _kite_session_valid
