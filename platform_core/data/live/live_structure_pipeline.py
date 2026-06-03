@@ -343,30 +343,112 @@ _bars_since_history_save: int = 0
 
 # ── Single-instance lock ───────────────────────────────────────────────────────
 
+def _proc_start_time(pid: int) -> float | None:
+    """
+    Return the Unix epoch start time for *pid* using /proc/{pid}/stat.
+
+    /proc/{pid}/stat field 22 (starttime) is in clock ticks since boot.
+    Boot time is read from /proc/stat btime.  This method is reliable on
+    Linux and WSL where /proc/{pid} directory ctime is not trustworthy.
+
+    Returns None if any read fails.
+    """
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text()
+        # Format: pid (comm) state ppid pgrp session tty_nr tpgid flags
+        #         minflt cminflt majflt cmajflt utime stime cutime cstime
+        #         priority nice num_threads itrealvalue starttime ...
+        # starttime is the 22nd field (1-indexed).  The (comm) field may
+        # contain spaces/brackets, so split after the closing ')'.
+        after_name = stat_text[stat_text.rfind(")") + 2:]
+        fields = after_name.split()
+        starttime_ticks = int(fields[19])   # 0-indexed within after_name portion
+
+        btime: int | None = None
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime"):
+                btime = int(line.split()[1])
+                break
+        if btime is None:
+            return None
+
+        clk_tck = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        return btime + starttime_ticks / clk_tck
+    except Exception:
+        return None
+
+
+def _pid_is_live_pipeline(pid: int) -> bool:
+    """
+    Return True only if the process at *pid* could be a live pipeline that
+    legitimately owns the PID file.
+
+    Uses a temporal check: a genuine running pipeline must have started
+    BEFORE the PID file was last written (the pipeline starts, then writes
+    the PID file as module-level code runs).  If the process started more
+    than 60 s AFTER the PID file was written, the OS reused the PID after
+    an earlier pipeline exited without cleanup — the lock is stale and
+    startup should proceed.
+
+    The 60 s tolerance absorbs time between process start and module-level
+    _acquire_pid_lock() execution.
+
+    Falls back to True (conservative — block startup) when:
+      - /proc is unavailable or unreadable (non-Linux, permission error)
+      - process start time cannot be determined for any other reason
+    This ensures the single-instance guarantee is never weakened by an
+    exception path.
+    """
+    try:
+        proc_start = _proc_start_time(pid)
+        if proc_start is None:
+            return True    # cannot determine — conservative: block
+        pid_file_mtime = _PID_FILE.stat().st_mtime
+        # If the process started more than 60 s after the PID file was
+        # written, it cannot be the process that wrote the file → stale.
+        if proc_start > pid_file_mtime + 60.0:
+            return False
+        return True
+    except FileNotFoundError:
+        return False   # /proc/{pid}/stat absent → process is gone
+    except Exception:
+        return True    # unreadable — conservative: block startup
+
+
 def _acquire_pid_lock() -> None:
     """
     Write a PID file so that a second invocation of this script detects the
     running instance and refuses to start.
 
-    Stale PID files (left after SIGKILL or power loss) are handled via
-    os.kill(pid, 0): if the recorded PID no longer exists or belongs to a
-    different user's process, the file is treated as stale and overwritten.
+    Stale PID files (left after SIGKILL or power loss) are handled via:
+      1. os.kill(pid, 0) — if the PID is dead, overwrite immediately.
+      2. _pid_is_live_pipeline() — if the PID is alive but belongs to an
+         unrelated process (PID reused by the OS after the pipeline exited
+         without cleaning up), overwrite and continue.  This prevents import-
+         time writes (e.g. "from live_structure_pipeline import X" in test
+         scripts) from permanently blocking restarts when those processes exit
+         without running their atexit handler.
     """
     if _PID_FILE.exists():
         try:
             existing_pid = int(_PID_FILE.read_text().strip())
             os.kill(existing_pid, 0)   # signal 0 = existence check, no kill
-            # Reached here: process is alive and we can signal it — same user.
-            print(
-                f"\n{'='*60}\n"
-                f"[PID LOCK] Another instance is already running (PID {existing_pid}).\n"
-                f"  Only one live pipeline process may run at a time.\n"
-                f"  If the previous run crashed without cleanup, delete:\n"
-                f"    {_PID_FILE}\n"
-                f"  then restart.\n"
-                f"{'='*60}"
-            )
-            sys.exit(1)
+            # PID is alive — verify it is actually live_structure_pipeline.py.
+            if not _pid_is_live_pipeline(existing_pid):
+                # PID reused by an unrelated process — stale lock, overwrite.
+                pass
+            else:
+                # Genuine live pipeline instance — refuse to start.
+                print(
+                    f"\n{'='*60}\n"
+                    f"[PID LOCK] Another instance is already running (PID {existing_pid}).\n"
+                    f"  Only one live pipeline process may run at a time.\n"
+                    f"  If the previous run crashed without cleanup, delete:\n"
+                    f"    {_PID_FILE}\n"
+                    f"  then restart.\n"
+                    f"{'='*60}"
+                )
+                sys.exit(1)
         except ProcessLookupError:
             pass   # recorded PID is dead — stale lock, overwrite
         except PermissionError:
