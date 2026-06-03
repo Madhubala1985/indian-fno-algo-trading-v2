@@ -654,6 +654,15 @@ def _save_state() -> bool:
             "bar_index":         pos.bar_index,
         } if pos is not None else None,
         "bar_history": _bnk.bar_history,
+        # Phase B3B: multi-underlying context persistence (BANKNIFTY compat preserved above)
+        "bar_history_by_underlying": {
+            und: und_state.bar_history
+            for und, und_state in _runtime_by_underlying.items()
+        },
+        "last_atm_iv_by_underlying": {
+            und: und_state.last_atm_iv
+            for und, und_state in _runtime_by_underlying.items()
+        },
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -729,6 +738,16 @@ def _load_state() -> None:
     _session_opening_equity = seq
     _session_date           = sdate
     _runtime_by_underlying[_PRIMARY_OPTION_TARGET].last_atm_iv = iv
+    # Phase B3B: per-underlying IV restore — overwrites BANKNIFTY if new field present
+    _iv_by_und = s.get("last_atm_iv_by_underlying")
+    if _iv_by_und is not None:
+        for _und, _und_state in _runtime_by_underlying.items():
+            _raw_iv = _iv_by_und.get(_und)
+            if _raw_iv is not None:
+                try:
+                    _und_state.last_atm_iv = float(_raw_iv)
+                except (TypeError, ValueError):
+                    pass  # keep default for this underlying
     print(
         f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
@@ -755,30 +774,68 @@ def _load_state() -> None:
             entry_bar_index=pos_data["bar_index"],
         )
     # Rehydrate MarketContextBuilder from persisted bar history.
-    # Parsed and fed separately so a corrupt bar_history never blocks account state restore.
-    try:
-        hist_raw = s.get("bar_history", {})
-        if hist_raw:
-            bars_by_tf: dict[str, list[LiveBar]] = {}
-            for tf, raw_bars in hist_raw.items():
-                bars_by_tf[tf] = [_dict_to_bar(b) for b in raw_bars]
-            # Restore in-memory history dict (as dicts, ready for next save)
-            _bnk.bar_history.clear()
-            for tf, raw_bars in hist_raw.items():
-                _bnk.bar_history[tf] = list(raw_bars)
-            # Replay into MCB — each timeframe's classifier is independent
-            total = sum(len(v) for v in bars_by_tf.values())
-            for tf in sorted(bars_by_tf.keys()):
-                for bar in bars_by_tf[tf]:
-                    _bnk.market_ctx_builder.update(bar=bar, timeframe=tf)
-            ctx = _bnk.market_ctx_builder.build()
+    # Separated from account-state restore so corrupt bar history never blocks position restore.
+    # Phase B3B: supports both new per-underlying format and legacy BANKNIFTY-only format.
+    _hist_by_und = s.get("bar_history_by_underlying")
+    if _hist_by_und is not None:
+        # New format — restore each underlying independently; failures are isolated
+        _restore_summary: dict[str, str] = {}
+        for _und, _und_state in _runtime_by_underlying.items():
+            _hist_raw = _hist_by_und.get(_und)
+            if not _hist_raw:
+                _restore_summary[_und] = "tf=0"
+                continue
+            try:
+                _bars_by_tf: dict[str, list[LiveBar]] = {
+                    tf: [_dict_to_bar(b) for b in raw_bars]
+                    for tf, raw_bars in _hist_raw.items()
+                }
+                _und_state.bar_history.clear()
+                for tf, raw_bars in _hist_raw.items():
+                    _und_state.bar_history[tf] = list(raw_bars)
+                for tf in sorted(_bars_by_tf.keys()):
+                    for bar in _bars_by_tf[tf]:
+                        _und_state.market_ctx_builder.update(bar=bar, timeframe=tf)
+                _restore_summary[_und] = f"tf={len(_bars_by_tf)}"
+            except Exception as exc:
+                print(f"[STATE] {_und} history restore failed ({exc}) — cold start for {_und}.")
+                _restore_summary[_und] = "FAILED"
+        _summary_parts = ", ".join(f"{u} {info}" for u, info in _restore_summary.items())
+        print(f"[STATE] Multi-underlying history restored: {_summary_parts}")
+        try:
+            _bnk_ctx = _runtime_by_underlying[_PRIMARY_OPTION_TARGET].market_ctx_builder.build()
             print(
-                f"[STATE] MCB rehydrated: {total} bars across {len(bars_by_tf)} timeframe(s)  "
-                f"bias={ctx.bias}  conf={ctx.confidence:.2f}  "
-                f"ready={list(ctx.timeframes_with_history)}"
+                f"[STATE] BANKNIFTY MCB: bias={_bnk_ctx.bias}  "
+                f"conf={_bnk_ctx.confidence:.2f}  "
+                f"ready={list(_bnk_ctx.timeframes_with_history)}"
             )
-    except Exception as exc:
-        print(f"[STATE] MCB warm-start skipped ({exc}) — cold start required.")
+        except Exception:
+            pass
+    else:
+        # Legacy format — BANKNIFTY-only bar_history; NIFTY/SENSEX start cold
+        try:
+            _hist_raw_legacy = s.get("bar_history", {})
+            if _hist_raw_legacy:
+                _bars_by_tf_legacy: dict[str, list[LiveBar]] = {
+                    tf: [_dict_to_bar(b) for b in raw_bars]
+                    for tf, raw_bars in _hist_raw_legacy.items()
+                }
+                _bnk.bar_history.clear()
+                for tf, raw_bars in _hist_raw_legacy.items():
+                    _bnk.bar_history[tf] = list(raw_bars)
+                _total = sum(len(v) for v in _bars_by_tf_legacy.values())
+                for tf in sorted(_bars_by_tf_legacy.keys()):
+                    for bar in _bars_by_tf_legacy[tf]:
+                        _bnk.market_ctx_builder.update(bar=bar, timeframe=tf)
+                _ctx_legacy = _bnk.market_ctx_builder.build()
+                print(
+                    f"[STATE] Legacy BANKNIFTY history restored: {_total} bars "
+                    f"across {len(_bars_by_tf_legacy)} timeframe(s)  "
+                    f"bias={_ctx_legacy.bias}  conf={_ctx_legacy.confidence:.2f}  "
+                    f"ready={list(_ctx_legacy.timeframes_with_history)}"
+                )
+        except Exception as exc:
+            print(f"[STATE] MCB warm-start skipped ({exc}) — cold start required.")
 
 
 _acquire_pid_lock()   # must run before _load_state so state is never shared by two instances
@@ -1223,8 +1280,8 @@ def on_ticks(raw_ticks):
                 elif tf_key == "HOUR_1":
                     _current_state.fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
 
-            # ── Periodic state save — BANKNIFTY only ───────────────────────────
-            # TODO Phase B3B: extend persistence to NIFTY/SENSEX bar_history.
+            # ── Periodic state save — triggered by BANKNIFTY bars, writes all underlyings ──
+            # _save_state() now includes bar_history_by_underlying for all prepared targets.
             if is_option_target_enabled(_current_state.option_underlying):
                 _current_state.bars_since_save += 1
                 if _current_state.bars_since_save >= _MCB_SAVE_INTERVAL:
