@@ -2,6 +2,7 @@ import atexit
 import json
 import os
 import sys
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -225,6 +226,66 @@ def get_option_chain_config(option_underlying: str):
     return OPTION_CHAIN_CONFIG.get(option_underlying)
 
 
+def is_option_target_enabled(option_underlying: str) -> bool:
+    """
+    Return True only when option_underlying is in the live-enabled set.
+
+    This is the single authoritative gate that prevents NIFTY and SENSEX
+    from entering the options execution path.  Both are in
+    _OPTION_TARGETS_AVAILABLE (prepared) but not in _OPTION_TARGETS_ENABLED
+    (active) until all Phase B prerequisites pass for that underlying.
+    """
+    return option_underlying in _OPTION_TARGETS_ENABLED
+
+
+# ── Per-underlying runtime state ───────────────────────────────────────────────
+
+@dataclass
+class UnderlyingRuntimeState:
+    """
+    All per-underlying runtime objects for one options execution target.
+
+    One instance exists per entry in _runtime_by_underlying.
+    Currently only BANKNIFTY is instantiated.
+
+    Static config fields (feed_symbol … strike_step) are set once at
+    startup from OPTION_CHAIN_CONFIG.  Stateful engine fields are
+    instantiated per-underlying so each target has its own price history,
+    PDL levels, opening range, and FVG state.
+
+    Per-bar capture fields (captured_market_ctx, captured_strike_rec) are
+    reset to None at the top of every bar tick and set within the options
+    pipeline block.  They must be None-checked before any downstream use.
+    """
+
+    # ── Static config ──────────────────────────────────────────────────────
+    feed_symbol:       str    # key in INSTRUMENTS / BarBuilder output
+    option_underlying: str    # Kite instrument master name for chain queries
+    exchange:          str    # "NFO" or "BFO"
+    lot_size:          int
+    strike_step:       float
+
+    # ── Stateful engines ───────────────────────────────────────────────────
+    market_ctx_builder: MarketContextBuilder
+    option_trader:      OptionPaperTrader
+    daily_acc:          DailyBarAccumulator
+    pdl_engine:         PreviousDayLevelsEngine
+    or_engine:          OpeningRangeEngine
+    fvg_15m:            FVGEngine
+    fvg_1h:             FVGEngine
+
+    # ── Mutable per-underlying state ───────────────────────────────────────
+    last_atm_iv:      float                     # updated each bar from live chain
+    bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
+    bars_since_save:  int  = 0                  # bars since last state-file write
+    fvg_quality:      float = 1.0
+    fvg_quality_bar:  int   = 0                 # set to -FVG_QUALITY_STALENESS_BARS-1
+
+    # ── Per-bar captures — reset to None each bar ──────────────────────────
+    captured_market_ctx:  object | None = None
+    captured_strike_rec:  object | None = None
+
+
 # MTF key normalisation (matches BacktestRunner convention)
 _MTF_KEY_MAP: dict[str, str] = {
     "MIN_5":  "5m",
@@ -233,23 +294,14 @@ _MTF_KEY_MAP: dict[str, str] = {
     "HOUR_4": "4h",
 }
 
-_market_ctx_builder = MarketContextBuilder(underlying_symbol=_PRIMARY_OPTION_TARGET, min_history_bars=20)
+# ── Stateless shared engines (safe to share across all underlyings) ──────────
 _opt_ctx_builder = OptionsContextBuilder(
     config=OptionsContextBuilderConfig(compute_missing_greeks=True)
 )
 # top_n=5 so the audit logger has rank-2..5 margin and top-candidate analysis
 _strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=5))
-# ── Session / PDH-PDL / Opening-Range / FVG-quality filters ──────────────────
-# Identical instances and configuration to BacktestRunner.
-_session_engine   = SessionContextEngine()
-_pdl_engine       = PreviousDayLevelsEngine()
-_or_engine        = OpeningRangeEngine()
-_fvg_scorer       = FVGQualityScorer()
-_fvg_15m = FVGEngine(config=FVGEngineConfig(instrument_id=_PRIMARY_OPTION_TARGET, timeframe="MIN_15"))
-_fvg_1h  = FVGEngine(config=FVGEngineConfig(instrument_id=_PRIMARY_OPTION_TARGET, timeframe="HOUR_1"))
-_fvg_quality:     float = 1.0
-_fvg_quality_bar: int   = -FVG_QUALITY_STALENESS_BARS - 1
-_daily_acc = DailyBarAccumulator(symbol=_PRIMARY_OPTION_TARGET)
+_session_engine = SessionContextEngine()
+_fvg_scorer     = FVGQualityScorer()
 
 # ── Virtual account — ₹10,00,000 capital model ───────────────────────────────
 # Set to match BacktestConfig.initial_equity (₹10,00,000) so live paper trading
@@ -258,7 +310,36 @@ _daily_acc = DailyBarAccumulator(symbol=_PRIMARY_OPTION_TARGET)
 # BANKNIFTY 15-unit lot threshold (≥₹3,000 needed) → INSUFFICIENT_RISK_BUDGET
 # on every bar.  See PROJECT_STATUS §34 for full mathematical proof.
 _INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000 — aligns with backtest baseline
-_REFERENCE_IV:   float = 0.18       # baseline IV for vol-ratio scaling
+_REFERENCE_IV:   float = 0.18         # baseline IV for vol-ratio scaling
+
+# ── Per-underlying runtime state ───────────────────────────────────────────────
+# One UnderlyingRuntimeState per entry.  Only BANKNIFTY is enabled.
+# NIFTY and SENSEX are in _OPTION_TARGETS_AVAILABLE but NOT instantiated here —
+# they require option-chain validation + backtest parity before activation.
+_runtime_by_underlying: dict[str, UnderlyingRuntimeState] = {
+    "BANKNIFTY": UnderlyingRuntimeState(
+        feed_symbol       = OPTION_CHAIN_CONFIG["BANKNIFTY"].feed_symbol,
+        option_underlying = OPTION_CHAIN_CONFIG["BANKNIFTY"].option_underlying,
+        exchange          = OPTION_CHAIN_CONFIG["BANKNIFTY"].exchange,
+        lot_size          = OPTION_CHAIN_CONFIG["BANKNIFTY"].lot_size,
+        strike_step       = OPTION_CHAIN_CONFIG["BANKNIFTY"].strike_step,
+        market_ctx_builder = MarketContextBuilder(
+            underlying_symbol=_PRIMARY_OPTION_TARGET, min_history_bars=20
+        ),
+        option_trader = OptionPaperTrader(),
+        daily_acc     = DailyBarAccumulator(symbol=_PRIMARY_OPTION_TARGET),
+        pdl_engine    = PreviousDayLevelsEngine(),
+        or_engine     = OpeningRangeEngine(),
+        fvg_15m       = FVGEngine(config=FVGEngineConfig(
+            instrument_id=_PRIMARY_OPTION_TARGET, timeframe="MIN_15"
+        )),
+        fvg_1h        = FVGEngine(config=FVGEngineConfig(
+            instrument_id=_PRIMARY_OPTION_TARGET, timeframe="HOUR_1"
+        )),
+        last_atm_iv   = _REFERENCE_IV,
+        fvg_quality_bar = -FVG_QUALITY_STALENESS_BARS - 1,
+    ),
+}
 
 # Risk tier parameters — tier is selected at runtime from account state
 # Tier 1 (Defensive): entered when drawdown is elevated
@@ -297,8 +378,7 @@ _HARD_HALT_DAILY_LOSS_FRAC: float = 0.040   # hard-halt trigger: daily loss >= 4
 _HARD_HALT_CONSEC_LOSSES:   int   = 3       # hard-halt trigger: 3 consecutive losses
 _MAX_ACCOUNT_DD:            float = 0.150   # hard-halt trigger: account drawdown >= 15%
 
-# ── Per-tier PositionSizer instances (same class, different risk configs) ──────
-_option_trader = OptionPaperTrader()
+# ── Per-tier PositionSizer instances (portfolio-level, shared across underlyings) ─
 _sizer_t1 = PositionSizer(config=PositionSizingConfig(
     max_risk_fraction_per_trade=_TIER1_RISK_FRAC,
     max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
@@ -316,12 +396,11 @@ _sizer_soft = PositionSizer(config=PositionSizingConfig(
     max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
 ))
 
-# ── Mutable account state ──────────────────────────────────────────────────────
+# ── Mutable account state (portfolio-level) ───────────────────────────────────
 _equity:            float = _INITIAL_EQUITY
 _peak_equity:       float = _INITIAL_EQUITY
 _open_premium_cost: float = 0.0
 _bar_count:         int   = 0
-_last_atm_iv:       float = _REFERENCE_IV
 
 # Capital protection state
 _session_date:           date | None = None
@@ -343,12 +422,10 @@ _kite_session_error: str  = ""
 _DB_PATH: Path = Path("logs/trades.db")
 _db: TradeDatabase = TradeDatabase(str(_DB_PATH))
 
-# MCB warm-start: recent bar history persisted for post-restart rehydration
-_MCB_HISTORY_BARS:   int  = 30   # bars per timeframe kept (> min_history_bars=20)
-_MCB_SAVE_INTERVAL:  int  = 15   # write state every N BANKNIFTY 1-min bars
-
-_bar_history: dict          = {}  # {tf: [bar_dict, ...]} — in-place mutated, no global needed
-_bars_since_history_save: int = 0
+# MCB warm-start constants
+_MCB_HISTORY_BARS:  int = 30   # bars per timeframe kept (> min_history_bars=20)
+_MCB_SAVE_INTERVAL: int = 15   # write state every N BANKNIFTY 1-min bars
+# Note: bar_history and bars_since_save are now per-underlying in UnderlyingRuntimeState.
 
 
 # ── Single-instance lock ───────────────────────────────────────────────────────
@@ -529,7 +606,8 @@ def _save_state() -> bool:
     guarantee persistence (e.g. post-trade logging) should check the return
     value and skip downstream side-effects if False.
     """
-    pos = _option_trader._position
+    _bnk = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]
+    pos = _bnk.option_trader._position
     state = {
         "equity":                _equity,
         "peak_equity":           _peak_equity,
@@ -541,7 +619,7 @@ def _save_state() -> bool:
         "soft_halt_reason":      _soft_halt_reason,
         "session_date":          _session_date.isoformat() if _session_date else None,
         "session_opening_equity": _session_opening_equity,
-        "last_atm_iv":           _last_atm_iv,
+        "last_atm_iv":           _bnk.last_atm_iv,
         "open_position": {
             "underlying_symbol": pos.underlying_symbol,
             "contract_symbol":   pos.contract_symbol,
@@ -556,7 +634,7 @@ def _save_state() -> bool:
             "direction":         pos.direction,
             "bar_index":         pos.bar_index,
         } if pos is not None else None,
-        "bar_history": _bar_history,
+        "bar_history": _bnk.bar_history,
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -577,8 +655,9 @@ def _load_state() -> None:
     """
     global _equity, _peak_equity, _daily_pnl, _consecutive_losses
     global _trading_halted, _halt_reason, _soft_halted, _soft_halt_reason
-    global _session_date, _session_opening_equity, _last_atm_iv
+    global _session_date, _session_opening_equity
     global _open_premium_cost
+    # last_atm_iv, bar_history, option_trader are on the BANKNIFTY runtime state
 
     if not _STATE_FILE.exists():
         print(f"[STATE] No state file — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
@@ -595,7 +674,7 @@ def _load_state() -> None:
         soft   = bool(s["soft_halted"])
         sreason= str(s["soft_halt_reason"])
         seq    = float(s["session_opening_equity"])
-        iv     = float(s.get("last_atm_iv", _REFERENCE_IV))
+        iv     = float(s.get("last_atm_iv", _REFERENCE_IV))  # routed to runtime state below
         sd     = s.get("session_date")
         sdate  = date.fromisoformat(sd) if sd else None
         # Parse open position if present (optional key — absent in older state files)
@@ -629,16 +708,17 @@ def _load_state() -> None:
     _soft_halted            = soft
     _soft_halt_reason       = sreason
     _session_opening_equity = seq
-    _last_atm_iv            = iv
     _session_date           = sdate
+    _runtime_by_underlying[_PRIMARY_OPTION_TARGET].last_atm_iv = iv
     print(
         f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
         f"halted={_trading_halted}  soft={_soft_halted}  session={_session_date}"
     )
     # Restore open position — re-derive _open_premium_cost from position data
+    _bnk = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]
     if pos_data is not None:
-        _option_trader._position = OptionPosition(**pos_data)
+        _bnk.option_trader._position = OptionPosition(**pos_data)
         _open_premium_cost = (
             pos_data["entry_premium"] * pos_data["lot_size"] * pos_data["lots"]
         )
@@ -664,15 +744,15 @@ def _load_state() -> None:
             for tf, raw_bars in hist_raw.items():
                 bars_by_tf[tf] = [_dict_to_bar(b) for b in raw_bars]
             # Restore in-memory history dict (as dicts, ready for next save)
-            _bar_history.clear()
+            _bnk.bar_history.clear()
             for tf, raw_bars in hist_raw.items():
-                _bar_history[tf] = list(raw_bars)
+                _bnk.bar_history[tf] = list(raw_bars)
             # Replay into MCB — each timeframe's classifier is independent
             total = sum(len(v) for v in bars_by_tf.values())
             for tf in sorted(bars_by_tf.keys()):
                 for bar in bars_by_tf[tf]:
-                    _market_ctx_builder.update(bar=bar, timeframe=tf)
-            ctx = _market_ctx_builder.build()
+                    _bnk.market_ctx_builder.update(bar=bar, timeframe=tf)
+            ctx = _bnk.market_ctx_builder.build()
             print(
                 f"[STATE] MCB rehydrated: {total} bars across {len(bars_by_tf)} timeframe(s)  "
                 f"bias={ctx.bias}  conf={ctx.confidence:.2f}  "
@@ -958,7 +1038,7 @@ def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> Po
         current_drawdown_fraction=drawdown,
         max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
         correlation_exposure_fraction=0.0,
-        open_position_count=1 if _option_trader.has_open_position() else 0,
+        open_position_count=1 if _runtime_by_underlying[_PRIMARY_OPTION_TARGET].option_trader.has_open_position() else 0,
     )
 
     try:
@@ -976,7 +1056,7 @@ def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> Po
                 maximum_lot_count=max_lots,
                 confidence_score=min(effective_conf, 1.0),
                 actionability_score=min(rec.composite_score, 1.0),
-                realized_volatility_ratio=max(_last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
+                realized_volatility_ratio=max(_runtime_by_underlying[_PRIMARY_OPTION_TARGET].last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
                 liquidity_score=min(rec.breakdown.liquidity, 1.0),
                 spread_bps=50.0,
                 slippage_bps_estimate=10.0,
@@ -1010,12 +1090,12 @@ def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> Po
 
 
 def on_ticks(raw_ticks):
-    global _equity, _peak_equity, _open_premium_cost, _bar_count, _last_atm_iv
+    global _equity, _peak_equity, _open_premium_cost, _bar_count
     global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
     global _soft_halted, _soft_halt_reason, _consecutive_losses
     global _kite_session_valid, _kite_session_error
-    global _bars_since_history_save
-    global _fvg_quality, _fvg_quality_bar
+    # Note: last_atm_iv, bar_history, bars_since_save, fvg_quality, fvg_quality_bar,
+    #       captured_market_ctx, captured_strike_rec are now on UnderlyingRuntimeState.
 
     for raw_tick in raw_ticks:
 
@@ -1031,8 +1111,11 @@ def on_ticks(raw_ticks):
             continue
 
         _bar_count += 1
-        _captured_strike_rec = None
-        _captured_market_ctx = None
+
+        # Reset per-bar state for the enabled target
+        _bnk_state = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]
+        _bnk_state.captured_strike_rec = None
+        _bnk_state.captured_market_ctx = None
 
         print(
             "\n======================"
@@ -1080,45 +1163,47 @@ def on_ticks(raw_ticks):
 
             print(mtf_bar)
 
-        # ── Options pipeline (runs only for the designated target symbol) ─────
-        if completed_bar.symbol == _PRIMARY_OPTION_TARGET:
+        # ── Options pipeline (runs only for enabled execution targets) ──────────
+        # is_option_target_enabled() is the single gate that prevents NIFTY/SENSEX
+        # from entering this path while they are in _OPTION_TARGETS_AVAILABLE.
+        if is_option_target_enabled(feed_symbol_to_option_underlying(completed_bar.symbol)):
             # Session / Opening-Range / PDH-PDL — same update sequence as BacktestRunner
             _session_ctx = _session_engine.classify(completed_bar.start_timestamp)
-            _or_engine.update_bar(completed_bar)
-            _daily_bar = _daily_acc.update(completed_bar)
+            _bnk_state.or_engine.update_bar(completed_bar)
+            _daily_bar = _bnk_state.daily_acc.update(completed_bar)
             if _daily_bar is not None:
-                _pdl_engine.update_daily_bar(_daily_bar)
-                _market_ctx_builder.update(bar=_daily_bar, timeframe="1d")
-                _h1d = _bar_history.setdefault("1d", [])
+                _bnk_state.pdl_engine.update_daily_bar(_daily_bar)
+                _bnk_state.market_ctx_builder.update(bar=_daily_bar, timeframe="1d")
+                _h1d = _bnk_state.bar_history.setdefault("1d", [])
                 _h1d.append(_bar_to_dict(_daily_bar))
                 if len(_h1d) > _MCB_HISTORY_BARS:
                     del _h1d[:-_MCB_HISTORY_BARS]
 
-            _market_ctx_builder.update(bar=completed_bar, timeframe="1m")
-            _h1m = _bar_history.setdefault("1m", [])
+            _bnk_state.market_ctx_builder.update(bar=completed_bar, timeframe="1m")
+            _h1m = _bnk_state.bar_history.setdefault("1m", [])
             _h1m.append(_bar_to_dict(completed_bar))
             if len(_h1m) > _MCB_HISTORY_BARS:
                 del _h1m[:-_MCB_HISTORY_BARS]
 
             for tf_key, tf_bar in mtf_bars.items():
                 tf_name = _MTF_KEY_MAP.get(tf_key, tf_key.lower())
-                _market_ctx_builder.update(bar=tf_bar, timeframe=tf_name)
-                _htf = _bar_history.setdefault(tf_name, [])
+                _bnk_state.market_ctx_builder.update(bar=tf_bar, timeframe=tf_name)
+                _htf = _bnk_state.bar_history.setdefault(tf_name, [])
                 _htf.append(_bar_to_dict(tf_bar))
                 if len(_htf) > _MCB_HISTORY_BARS:
                     del _htf[:-_MCB_HISTORY_BARS]
                 # Feed completed MTF bars to dedicated FVGEngine instances (HTF confluence)
                 if tf_key == "MIN_15":
-                    _fvg_15m.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
+                    _bnk_state.fvg_15m.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
                 elif tf_key == "HOUR_1":
-                    _fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
+                    _bnk_state.fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
 
-            _bars_since_history_save += 1
-            if _bars_since_history_save >= _MCB_SAVE_INTERVAL:
-                _bars_since_history_save = 0
+            _bnk_state.bars_since_save += 1
+            if _bnk_state.bars_since_save >= _MCB_SAVE_INTERVAL:
+                _bnk_state.bars_since_save = 0
                 _save_state()
 
-            market_ctx = _market_ctx_builder.build(
+            market_ctx = _bnk_state.market_ctx_builder.build(
                 valuation_timestamp=datetime.now(timezone.utc)
             )
             print(
@@ -1126,20 +1211,24 @@ def on_ticks(raw_ticks):
                 f"conf={market_ctx.confidence:.2f}"
             )
 
-            _captured_market_ctx = market_ctx
+            _bnk_state.captured_market_ctx = market_ctx
 
             if str(market_ctx.bias) != "NEUTRAL" and _kite_session_valid:
                 try:
                     spot = completed_bar.close_price
                     bar_date = datetime.now(timezone.utc).date()
-                    expiry = adapter.nearest_expiry(_PRIMARY_OPTION_TARGET, bar_date)
+                    expiry = adapter.nearest_expiry(
+                        _bnk_state.option_underlying, bar_date,
+                        exchange=_bnk_state.exchange,
+                    )
 
                     live_chain = adapter.fetch_option_chain(
-                        underlying=_PRIMARY_OPTION_TARGET,
+                        underlying=_bnk_state.option_underlying,
                         expiry_date=expiry,
                         spot_price=spot,
-                        lot_size=_LOT_SIZE,
-                        strike_step=_STRIKE_STEP,
+                        lot_size=_bnk_state.lot_size,
+                        strike_step=_bnk_state.strike_step,
+                        exchange=_bnk_state.exchange,
                     )
 
                     # Fetch next-nearest expiry (mirrors BacktestRunner weekly+biweekly).
@@ -1148,14 +1237,17 @@ def on_ticks(raw_ticks):
                     _chain_snapshots = [live_chain]
                     try:
                         expiry_next = adapter.nearest_expiry(
-                            _PRIMARY_OPTION_TARGET, expiry + timedelta(days=1)
+                            _bnk_state.option_underlying,
+                            expiry + timedelta(days=1),
+                            exchange=_bnk_state.exchange,
                         )
                         live_chain_next = adapter.fetch_option_chain(
-                            underlying=_PRIMARY_OPTION_TARGET,
+                            underlying=_bnk_state.option_underlying,
                             expiry_date=expiry_next,
                             spot_price=spot,
-                            lot_size=_LOT_SIZE,
-                            strike_step=_STRIKE_STEP,
+                            lot_size=_bnk_state.lot_size,
+                            strike_step=_bnk_state.strike_step,
+                            exchange=_bnk_state.exchange,
                         )
                         _chain_snapshots.append(live_chain_next)
                     except Exception:
@@ -1164,12 +1256,12 @@ def on_ticks(raw_ticks):
                     options_ctx = _opt_ctx_builder.build(
                         snapshots=_chain_snapshots,
                         spot_price=spot,
-                        lot_size=_LOT_SIZE,
+                        lot_size=_bnk_state.lot_size,
                         valuation_timestamp=datetime.now(timezone.utc),
                     )
 
                     if options_ctx.atm_iv:
-                        _last_atm_iv = options_ctx.atm_iv
+                        _bnk_state.last_atm_iv = options_ctx.atm_iv
 
                     if options_ctx.strike_candidates:
                         _candidates_list = list(options_ctx.strike_candidates)
@@ -1183,7 +1275,7 @@ def on_ticks(raw_ticks):
                         )
                         best = _selection_result.best()
                         if best is not None:
-                            _captured_strike_rec = best
+                            _bnk_state.captured_strike_rec = best
                             print(
                                 f"[STRIKE] {best.option_symbol}  "
                                 f"δ={best.delta:.2f}  "
@@ -1195,7 +1287,7 @@ def on_ticks(raw_ticks):
                                 result=_selection_result,
                                 candidates=_candidates_list,
                                 feed_symbol=completed_bar.symbol,
-                                strike_step=_STRIKE_STEP,
+                                strike_step=_bnk_state.strike_step,
                             )
                 except Exception as exc:
                     _err_str = str(exc)
@@ -1309,16 +1401,17 @@ def on_ticks(raw_ticks):
             except Exception:
                 pass
 
-        # ── OptionPaperTrader: exit evaluation + entry (BANKNIFTY only) ──────
-        if completed_bar.symbol == _PRIMARY_OPTION_TARGET and _captured_market_ctx is not None:
+        # ── OptionPaperTrader: exit evaluation + entry (enabled targets only) ───
+        if (is_option_target_enabled(feed_symbol_to_option_underlying(completed_bar.symbol))
+                and _bnk_state.captured_market_ctx is not None):
             _bar_date_live = datetime.now(timezone.utc).date()
 
             # Exit evaluation runs on every bar while a position is open
-            if _option_trader.has_open_position():
-                _exit_sig = _option_exit_signal(result.emitted_events, _option_trader)
-                _closed = _option_trader.evaluate_and_close(
+            if _bnk_state.option_trader.has_open_position():
+                _exit_sig = _option_exit_signal(result.emitted_events, _bnk_state.option_trader)
+                _closed = _bnk_state.option_trader.evaluate_and_close(
                     current_spot=completed_bar.close_price,
-                    current_iv=_last_atm_iv,
+                    current_iv=_bnk_state.last_atm_iv,
                     current_date=_bar_date_live,
                     bar_index=_bar_count,
                     stop_loss_pct=_STOP_LOSS_PCT,
@@ -1371,7 +1464,7 @@ def on_ticks(raw_ticks):
                             ),
                         )
                     _summary = performance_tracker.calculate_summary(
-                        trades=[t.as_paper_trade() for t in _option_trader.completed_trades]
+                        trades=[t.as_paper_trade() for t in _bnk_state.option_trader.completed_trades]
                     )
                     print_performance_summary(
                         total_trades=_summary.total_trades,
@@ -1441,37 +1534,38 @@ def on_ticks(raw_ticks):
                 ENGINES[_PRIMARY_OPTION_TARGET]._liquidity_sweep_detector.recent_sweeps
             )
             _htf_fvgs_live = {
-                "MIN_15": _fvg_15m.active_gaps,
-                "HOUR_1": _fvg_1h.active_gaps,
+                "MIN_15": _bnk_state.fvg_15m.active_gaps,
+                "HOUR_1": _bnk_state.fvg_1h.active_gaps,
             }
 
+            _mctx = _bnk_state.captured_market_ctx
             _effective_conf = (
-                _captured_market_ctx.confidence * _session_ctx.confidence_multiplier
+                _mctx.confidence * _session_ctx.confidence_multiplier
             )
 
             _pdl_mult, _pdl_reason = 1.0, ""
-            if _pdl_engine.ready and str(_captured_market_ctx.bias) != "NEUTRAL":
-                _pdl_mult, _pdl_reason = _pdl_engine.levels.confidence_multiplier(
+            if _bnk_state.pdl_engine.ready and str(_mctx.bias) != "NEUTRAL":
+                _pdl_mult, _pdl_reason = _bnk_state.pdl_engine.levels.confidence_multiplier(
                     spot=completed_bar.close_price,
-                    bias=str(_captured_market_ctx.bias),
+                    bias=str(_mctx.bias),
                 )
             _effective_conf *= _pdl_mult
 
             _or_mult, _or_reason = 1.0, ""
-            if _or_engine.ready and str(_captured_market_ctx.bias) != "NEUTRAL":
-                _or_mult, _or_reason = _or_engine.current_range.confidence_multiplier(
+            if _bnk_state.or_engine.ready and str(_mctx.bias) != "NEUTRAL":
+                _or_mult, _or_reason = _bnk_state.or_engine.current_range.confidence_multiplier(
                     spot=completed_bar.close_price,
-                    bias=str(_captured_market_ctx.bias),
+                    bias=str(_mctx.bias),
                 )
             _effective_conf *= _or_mult
 
             _fvg_quality_for_entry = 1.0
             _fvg_quality_reason = ""
-            if _fvg_events and str(_captured_market_ctx.bias) != "NEUTRAL":
+            if _fvg_events and str(_mctx.bias) != "NEUTRAL":
                 _rescored = [
                     _fvg_scorer.score_event(
                         event=e,
-                        market_bias=str(_captured_market_ctx.bias),
+                        market_bias=str(_mctx.bias),
                         recent_sweeps=_recent_sweeps_live,
                         active_htf_fvgs=_htf_fvgs_live,
                         mitigation_ratio=0.0,
@@ -1479,8 +1573,8 @@ def on_ticks(raw_ticks):
                     for e in _fvg_events
                 ]
                 _best_q = max(_rescored, key=lambda s: s.total)
-                _fvg_quality = _best_q.total
-                _fvg_quality_bar = _bar_count
+                _bnk_state.fvg_quality = _best_q.total
+                _bnk_state.fvg_quality_bar = _bar_count
                 _fvg_quality_for_entry = _best_q.confidence_multiplier()
                 if _best_q.blocks_entry:
                     _fvg_quality_reason = (
@@ -1490,15 +1584,15 @@ def on_ticks(raw_ticks):
                         f"sweep={_best_q.sweep_origin:.2f} "
                         f"htf={_best_q.htf_alignment:.2f})"
                     )
-            elif _bar_count - _fvg_quality_bar <= FVG_QUALITY_STALENESS_BARS:
+            elif _bar_count - _bnk_state.fvg_quality_bar <= FVG_QUALITY_STALENESS_BARS:
                 _stored_q = FVGQualityScore(
-                    total=_fvg_quality,
+                    total=_bnk_state.fvg_quality,
                     displacement=0.0, session=0.0, sweep_origin=0.0,
                     htf_alignment=0.0, freshness=0.0, volume=0.0,
                 )
                 _fvg_quality_for_entry = _stored_q.confidence_multiplier()
-                if _fvg_quality < FVG_QUALITY_BLOCK_THRESHOLD:
-                    _fvg_quality_reason = f"stored low FVG quality={_fvg_quality:.2f}"
+                if _bnk_state.fvg_quality < FVG_QUALITY_BLOCK_THRESHOLD:
+                    _fvg_quality_reason = f"stored low FVG quality={_bnk_state.fvg_quality:.2f}"
             _effective_conf *= _fvg_quality_for_entry
 
             if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_ctx.allow_entry:
@@ -1514,14 +1608,15 @@ def on_ticks(raw_ticks):
                 print_warning_block(
                     "ENTRY FILTER",
                     bar_index=_bar_count,
-                    conf=f"{_captured_market_ctx.confidence:.2f}→{_effective_conf:.2f}",
+                    conf=f"{_mctx.confidence:.2f}→{_effective_conf:.2f}",
                     reason="  |  ".join(_filter_parts),
                 )
 
             # ── Entry gate: fresh strike, no open position, not hard-halted ─
+            _srec = _bnk_state.captured_strike_rec
             if (
-                _captured_strike_rec is not None
-                and not _option_trader.has_open_position()
+                _srec is not None
+                and not _bnk_state.option_trader.has_open_position()
                 and not _trading_halted
                 and _session_ctx.allow_entry
                 and not _fvg_quality_reason
@@ -1531,81 +1626,80 @@ def on_ticks(raw_ticks):
                     _effective_tier    = 0
                     _effective_min_conf = _SOFT_HALT_MIN_CONF
                 else:
-                    _effective_tier     = _determine_risk_tier(_captured_market_ctx.confidence)
+                    _effective_tier     = _determine_risk_tier(_mctx.confidence)
                     _tier_min_confs     = {1: _TIER1_MIN_CONF, 2: _TIER2_MIN_CONF, 3: _TIER3_MIN_CONF}
                     _effective_min_conf = _tier_min_confs[_effective_tier]
 
                 if _effective_conf >= _effective_min_conf:
                     _sizing = _size_live_position(
-                        _captured_strike_rec, _captured_market_ctx, _effective_tier,
-                        _effective_conf,
+                        _srec, _mctx, _effective_tier, _effective_conf,
                     )
                     if _sizing.tradable and _sizing.recommended_lots >= 1:
                         _lots = _sizing.recommended_lots
                         _cost = (
-                            _captured_strike_rec.last_traded_price
-                            * _captured_strike_rec.lot_size
+                            _srec.last_traded_price
+                            * _srec.lot_size
                             * _lots
                         )
                         _avail = max(_equity - _open_premium_cost, 0.0)
                         if _cost <= _avail:
                             _open_premium_cost = _cost
-                            _option_trader.open(
-                                recommendation=_captured_strike_rec,
-                                direction=str(_captured_market_ctx.bias),
+                            _bnk_state.option_trader.open(
+                                recommendation=_srec,
+                                direction=str(_mctx.bias),
                                 bar_index=_bar_count,
                                 lots=_lots,
                             )
                             _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
                             print_entry_block(
-                                direction=str(_captured_market_ctx.bias),
-                                underlying=_captured_strike_rec.underlying_symbol,
-                                strike=_captured_strike_rec.strike_price,
-                                option_type=_captured_strike_rec.option_type,
-                                expiry=_captured_strike_rec.expiry_date,
+                                direction=str(_mctx.bias),
+                                underlying=_srec.underlying_symbol,
+                                strike=_srec.strike_price,
+                                option_type=_srec.option_type,
+                                expiry=_srec.expiry_date,
                                 lots=_lots,
-                                lot_size=_captured_strike_rec.lot_size,
-                                premium=_captured_strike_rec.last_traded_price,
+                                lot_size=_srec.lot_size,
+                                premium=_srec.last_traded_price,
                                 notional=_cost,
                                 bar_index=_bar_count,
                                 session=str(_session_ctx.phase),
-                                conf_raw=_captured_market_ctx.confidence,
+                                conf_raw=_mctx.confidence,
                                 conf_eff=_effective_conf,
-                                fvg_quality=_fvg_quality,
+                                fvg_quality=_bnk_state.fvg_quality,
                                 drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                 extra_label=f"TIER{_tier_label}",
                             )
                             try:
                                 _db.write_trade_entry(
-                                    underlying=_captured_strike_rec.underlying_symbol,
-                                    contract_symbol=_captured_strike_rec.option_symbol,
-                                    strike=_captured_strike_rec.strike_price,
-                                    option_type=_captured_strike_rec.option_type,
-                                    expiry_date=_captured_strike_rec.expiry_date.isoformat(),
-                                    direction=str(_captured_market_ctx.bias),
+                                    underlying=_srec.underlying_symbol,
+                                    contract_symbol=_srec.option_symbol,
+                                    strike=_srec.strike_price,
+                                    option_type=_srec.option_type,
+                                    expiry_date=_srec.expiry_date.isoformat(),
+                                    direction=str(_mctx.bias),
                                     lots=_lots,
-                                    lot_size=_captured_strike_rec.lot_size,
-                                    entry_premium=_captured_strike_rec.last_traded_price,
+                                    lot_size=_srec.lot_size,
+                                    entry_premium=_srec.last_traded_price,
                                     entry_spot=completed_bar.close_price,
-                                    entry_iv=_last_atm_iv,
+                                    entry_iv=_bnk_state.last_atm_iv,
                                     entry_bar_index=_bar_count,
                                     entry_ts=datetime.now(timezone.utc).isoformat(),
-                                    conf_raw=_captured_market_ctx.confidence,
+                                    conf_raw=_mctx.confidence,
                                     conf_eff=_effective_conf,
-                                    fvg_quality=_fvg_quality,
+                                    fvg_quality=_bnk_state.fvg_quality,
                                     drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                     equity_before=_equity,
                                 )
                                 _db.write_decision(
                                     bar_index=_bar_count,
                                     bar_ts=datetime.now(timezone.utc).isoformat(),
-                                    underlying=_captured_strike_rec.underlying_symbol,
-                                    bias=str(_captured_market_ctx.bias),
-                                    conf_raw=_captured_market_ctx.confidence,
+                                    underlying=_srec.underlying_symbol,
+                                    bias=str(_mctx.bias),
+                                    conf_raw=_mctx.confidence,
                                     conf_eff=_effective_conf,
                                     outcome=f"ENTRY_TIER{_tier_label}",
                                     session_phase=str(_session_ctx.phase),
-                                    fvg_quality=_fvg_quality,
+                                    fvg_quality=_bnk_state.fvg_quality,
                                     equity=_equity,
                                     drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                 )
@@ -1623,9 +1717,9 @@ def on_ticks(raw_ticks):
                                 _db.write_decision(
                                     bar_index=_bar_count,
                                     bar_ts=datetime.now(timezone.utc).isoformat(),
-                                    underlying=_captured_strike_rec.underlying_symbol,
-                                    bias=str(_captured_market_ctx.bias),
-                                    conf_raw=_captured_market_ctx.confidence,
+                                    underlying=_srec.underlying_symbol,
+                                    bias=str(_mctx.bias),
+                                    conf_raw=_mctx.confidence,
                                     conf_eff=_effective_conf,
                                     outcome="CASH_BLOCK",
                                     filter_reason=f"need=₹{_cost:,.0f} available=₹{_avail:,.0f}",
@@ -1646,9 +1740,9 @@ def on_ticks(raw_ticks):
                             _db.write_decision(
                                 bar_index=_bar_count,
                                 bar_ts=datetime.now(timezone.utc).isoformat(),
-                                underlying=_captured_strike_rec.underlying_symbol,
-                                bias=str(_captured_market_ctx.bias),
-                                conf_raw=_captured_market_ctx.confidence,
+                                underlying=_srec.underlying_symbol,
+                                bias=str(_mctx.bias),
+                                conf_raw=_mctx.confidence,
                                 conf_eff=_effective_conf,
                                 outcome="SIZING_REJECTED",
                                 filter_reason=_sizing.rejection_reason,
