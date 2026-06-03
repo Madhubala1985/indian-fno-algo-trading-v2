@@ -280,6 +280,7 @@ class UnderlyingRuntimeState:
     bars_since_save:  int  = 0                  # bars since last state-file write
     fvg_quality:      float = 1.0
     fvg_quality_bar:  int   = 0                 # set to -FVG_QUALITY_STALENESS_BARS-1
+    sizers:           dict  = field(default_factory=dict)  # {0..3: PositionSizer}
 
     # ── Per-bar captures — reset to None each bar ──────────────────────────
     captured_market_ctx:  object | None = None
@@ -397,23 +398,47 @@ _HARD_HALT_DAILY_LOSS_FRAC: float = 0.040   # hard-halt trigger: daily loss >= 4
 _HARD_HALT_CONSEC_LOSSES:   int   = 3       # hard-halt trigger: 3 consecutive losses
 _MAX_ACCOUNT_DD:            float = 0.150   # hard-halt trigger: account drawdown >= 15%
 
-# ── Per-tier PositionSizer instances (portfolio-level, shared across underlyings) ─
-_sizer_t1 = PositionSizer(config=PositionSizingConfig(
-    max_risk_fraction_per_trade=_TIER1_RISK_FRAC,
-    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
-))
-_sizer_t2 = PositionSizer(config=PositionSizingConfig(
-    max_risk_fraction_per_trade=_TIER2_RISK_FRAC,
-    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
-))
-_sizer_t3 = PositionSizer(config=PositionSizingConfig(
-    max_risk_fraction_per_trade=_TIER3_RISK_FRAC,
-    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
-))
-_sizer_soft = PositionSizer(config=PositionSizingConfig(
-    max_risk_fraction_per_trade=_SOFT_HALT_RISK_FRAC,
-    max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
-))
+# ── Per-underlying PositionSizer sets ────────────────────────────────────────
+# Each underlying gets independent instances so sizer internal tracking
+# (_last_underlying_symbol, _processed_requests) never bleeds across symbols.
+for _sizer_init_state in _runtime_by_underlying.values():
+    _sizer_init_state.sizers = {
+        0: PositionSizer(config=PositionSizingConfig(
+            max_risk_fraction_per_trade=_SOFT_HALT_RISK_FRAC,
+            max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+        )),
+        1: PositionSizer(config=PositionSizingConfig(
+            max_risk_fraction_per_trade=_TIER1_RISK_FRAC,
+            max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+        )),
+        2: PositionSizer(config=PositionSizingConfig(
+            max_risk_fraction_per_trade=_TIER2_RISK_FRAC,
+            max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+        )),
+        3: PositionSizer(config=PositionSizingConfig(
+            max_risk_fraction_per_trade=_TIER3_RISK_FRAC,
+            max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+        )),
+    }
+
+
+# ── One-global-position helpers ──────────────────────────────────────────────
+
+def has_any_open_position() -> bool:
+    """Return True if any prepared underlying currently holds an open position."""
+    return any(
+        und_s.option_trader.has_open_position()
+        for und_s in _runtime_by_underlying.values()
+    )
+
+
+def get_open_position_state() -> "UnderlyingRuntimeState | None":
+    """Return the UnderlyingRuntimeState whose option_trader has an open position, or None."""
+    for und_s in _runtime_by_underlying.values():
+        if und_s.option_trader.has_open_position():
+            return und_s
+    return None
+
 
 # ── Mutable account state (portfolio-level) ───────────────────────────────────
 _equity:            float = _INITIAL_EQUITY
@@ -626,7 +651,8 @@ def _save_state() -> bool:
     value and skip downstream side-effects if False.
     """
     _bnk = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]
-    pos = _bnk.option_trader._position
+    _pos_state = get_open_position_state()
+    pos = _pos_state.option_trader._position if _pos_state is not None else None
     state = {
         "equity":                _equity,
         "peak_equity":           _peak_equity,
@@ -753,26 +779,32 @@ def _load_state() -> None:
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
         f"halted={_trading_halted}  soft={_soft_halted}  session={_session_date}"
     )
-    # Restore open position — re-derive _open_premium_cost from position data
-    _bnk = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]
+    # Restore open position — route to correct underlying by underlying_symbol.
+    # Defaults to BANKNIFTY for legacy state files that lack the underlying_symbol field.
     if pos_data is not None:
-        _bnk.option_trader._position = OptionPosition(**pos_data)
-        _open_premium_cost = (
-            pos_data["entry_premium"] * pos_data["lot_size"] * pos_data["lots"]
-        )
-        print(
-            f"[STATE] Open position restored: {pos_data['contract_symbol']}  "
-            f"lots={pos_data['lots']}  entry=₹{pos_data['entry_premium']:.2f}  "
-            f"direction={pos_data['direction']}  expiry={pos_data['expiry_date']}"
-        )
-        # Re-link the DB rowid so write_trade_exit() can update the correct row.
-        # Called before _db.start() — recover_open_trade_row() connects directly.
-        _db.recover_open_trade_row(
-            contract_symbol=pos_data["contract_symbol"],
-            direction=pos_data["direction"],
-            entry_premium=pos_data["entry_premium"],
-            entry_bar_index=pos_data["bar_index"],
-        )
+        _pos_und_key = pos_data.get("underlying_symbol", _PRIMARY_OPTION_TARGET)
+        _pos_target  = _runtime_by_underlying.get(_pos_und_key)
+        if _pos_target is None:
+            print(f"[STATE] WARNING: unknown underlying '{_pos_und_key}' in open_position — skipping restore.")
+        else:
+            _pos_target.option_trader._position = OptionPosition(**pos_data)
+            _open_premium_cost = (
+                pos_data["entry_premium"] * pos_data["lot_size"] * pos_data["lots"]
+            )
+            print(
+                f"[STATE] Open position restored: {pos_data['contract_symbol']}  "
+                f"lots={pos_data['lots']}  entry=₹{pos_data['entry_premium']:.2f}  "
+                f"direction={pos_data['direction']}  expiry={pos_data['expiry_date']}"
+            )
+            # Re-link the DB rowid so write_trade_exit() can update the correct row.
+            # Called before _db.start() — recover_open_trade_row() connects directly.
+            _db.recover_open_trade_row(
+                contract_symbol=pos_data["contract_symbol"],
+                direction=pos_data["direction"],
+                entry_premium=pos_data["entry_premium"],
+                entry_bar_index=pos_data["bar_index"],
+            )
+    _bnk = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]  # needed for legacy bar_history path below
     # Rehydrate MarketContextBuilder from persisted bar history.
     # Separated from account-state restore so corrupt bar history never blocks position restore.
     # Phase B3B: supports both new per-underlying format and legacy BANKNIFTY-only format.
@@ -1082,9 +1114,15 @@ def _try_resume_trading(current_date: date) -> None:
     _save_state()
 
 
-def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> PositionSizingResult:
+def _size_live_position(
+    state: UnderlyingRuntimeState,
+    rec,
+    market_ctx,
+    tier: int,
+    effective_conf: float,
+) -> PositionSizingResult:
     """
-    Size position using the tier-appropriate PositionSizer.
+    Size position using the tier-appropriate PositionSizer for the given underlying.
 
     Tier selection determines:
       - which PositionSizer instance (different max_risk_fraction_per_trade)
@@ -1095,10 +1133,9 @@ def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> Po
     matching BacktestRunner._size_position which passes effective_confidence to the
     PositionSizingRequest.confidence_score field.
     """
-    _tier_sizers  = {0: _sizer_soft, 1: _sizer_t1, 2: _sizer_t2, 3: _sizer_t3}
     _tier_maxlots = {0: _SOFT_HALT_MAX_LOTS, 1: _TIER1_MAX_LOTS, 2: _TIER2_MAX_LOTS, 3: _TIER3_MAX_LOTS}
 
-    sizer    = _tier_sizers[tier]
+    sizer    = state.sizers[tier]
     max_lots = _tier_maxlots[tier]
 
     entry_premium = rec.last_traded_price
@@ -1114,7 +1151,7 @@ def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> Po
         current_drawdown_fraction=drawdown,
         max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
         correlation_exposure_fraction=0.0,
-        open_position_count=1 if _runtime_by_underlying[_PRIMARY_OPTION_TARGET].option_trader.has_open_position() else 0,
+        open_position_count=1 if has_any_open_position() else 0,
     )
 
     try:
@@ -1132,7 +1169,7 @@ def _size_live_position(rec, market_ctx, tier: int, effective_conf: float) -> Po
                 maximum_lot_count=max_lots,
                 confidence_score=min(effective_conf, 1.0),
                 actionability_score=min(rec.composite_score, 1.0),
-                realized_volatility_ratio=max(_runtime_by_underlying[_PRIMARY_OPTION_TARGET].last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
+                realized_volatility_ratio=max(state.last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
                 liquidity_score=min(rec.breakdown.liquidity, 1.0),
                 spread_bps=50.0,
                 slippage_bps_estimate=10.0,
@@ -1704,7 +1741,7 @@ def on_ticks(raw_ticks):
             _srec = _current_state.captured_strike_rec
             if (
                 _srec is not None
-                and not _current_state.option_trader.has_open_position()
+                and not has_any_open_position()
                 and not _trading_halted
                 and _session_ctx.allow_entry
                 and not _fvg_quality_reason
@@ -1720,7 +1757,7 @@ def on_ticks(raw_ticks):
 
                 if _effective_conf >= _effective_min_conf:
                     _sizing = _size_live_position(
-                        _srec, _mctx, _effective_tier, _effective_conf,
+                        _current_state, _srec, _mctx, _effective_tier, _effective_conf,
                     )
                     if _sizing.tradable and _sizing.recommended_lots >= 1:
                         _lots = _sizing.recommended_lots
