@@ -17,7 +17,10 @@ from platform_core.options.strike_selection import (
     StrikeSelectionEngine,
     StrikeSelectionConfig,
 )
-from platform_core.options.strike_selection_audit import log_selection as _audit_selection
+from platform_core.options.strike_selection_audit import (
+    StrikeAuditLogger,
+    log_selection as _audit_selection,
+)
 from platform_core.core.constants import REFERENCE_LOT_SIZES, REFERENCE_STRIKE_STEPS
 from platform_core.core.enums import UnderlyingFamily
 
@@ -195,7 +198,11 @@ multi_timeframe_builder = (
 
 _PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"
 _OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY"})
+_OPTION_TARGETS_SHADOW:    frozenset = frozenset({"NIFTY", "SENSEX"})  # chain+score only, no trades
 _OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
+_overlap = _OPTION_TARGETS_ENABLED & _OPTION_TARGETS_SHADOW
+if _overlap:
+    print(f"[CONFIG WARNING] Targets in both ENABLED and SHADOW sets: {_overlap} — shadow suppressed for those.")
 _LOT_SIZE  = REFERENCE_LOT_SIZES[UnderlyingFamily.BANKNIFTY]
 _STRIKE_STEP = float(REFERENCE_STRIKE_STEPS[UnderlyingFamily.BANKNIFTY])
 
@@ -236,6 +243,21 @@ def is_option_target_enabled(option_underlying: str) -> bool:
     (active) until all Phase B prerequisites pass for that underlying.
     """
     return option_underlying in _OPTION_TARGETS_ENABLED
+
+
+def is_option_target_shadow(option_underlying: str) -> bool:
+    """Return True when underlying is in shadow-only mode (chain+score audit, no trades)."""
+    return option_underlying in _OPTION_TARGETS_SHADOW
+
+
+def can_run_option_intelligence(option_underlying: str) -> bool:
+    """Return True when option chain fetch and strike scoring may run (enabled or shadow)."""
+    return is_option_target_enabled(option_underlying) or is_option_target_shadow(option_underlying)
+
+
+def can_execute_option_trade(option_underlying: str) -> bool:
+    """Return True when position sizing and trade entry/exit may run (enabled targets only)."""
+    return is_option_target_enabled(option_underlying)
 
 
 # ── Per-underlying runtime state ───────────────────────────────────────────────
@@ -458,10 +480,13 @@ _soft_halted:            bool        = False
 _soft_halt_reason:       str         = ""
 _consecutive_losses:     int         = 0
 _shutdown_triggered:     bool        = False  # set True by _handle_market_close_shutdown
+_shadow_last_bar:        dict        = {}     # {underlying: _bar_count} — shadow rate-limit
 
 # Operational state
 _STATE_FILE:         Path = Path("logs/paper_trading_state.json")
 _PID_FILE:           Path = Path("logs/live_pipeline.pid")
+_SHADOW_AUDIT_PATH:  Path = Path("logs/strike_selection_shadow.jsonl")
+_shadow_auditor      = StrikeAuditLogger(audit_path=_SHADOW_AUDIT_PATH, mode="shadow")
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
@@ -1205,6 +1230,149 @@ def _size_live_position(
         )
 
 
+def _classify_shadow_error(exc: Exception) -> str:
+    """Map an exception from shadow option intelligence to a failure reason code."""
+    msg = str(exc).lower()
+    if any(kw in msg for kw in ("token", "forbidden", "access denied", "invalid api", "401", "403")):
+        return "KITE_SESSION_INVALID"
+    if any(kw in msg for kw in ("bfo", "exchange", "unavailable", "not supported")):
+        return "EXCHANGE_UNAVAILABLE"
+    if any(kw in msg for kw in ("expiry", "no expiry", "maturity")):
+        return "EXPIRY_NOT_FOUND"
+    if any(kw in msg for kw in ("empty", "no contracts", "chain")):
+        return "OPTION_CHAIN_EMPTY"
+    if any(kw in msg for kw in ("metadata", "invalid symbol", "instrument")):
+        return "METADATA_ERROR"
+    return "UNKNOWN_ERROR"
+
+
+def _write_shadow_failure_record(
+    state: "UnderlyingRuntimeState",
+    market_ctx,
+    spot: float,
+    reason: str,
+) -> None:
+    """Write a shadow no-candidate record to the shadow audit JSONL. Never raises."""
+    try:
+        record = {
+            "ts":               datetime.now(timezone.utc).isoformat(),
+            "mode":             "shadow",
+            "feed_symbol":      state.feed_symbol,
+            "underlying":       state.option_underlying,
+            "exchange":         state.exchange,
+            "bias":             str(market_ctx.bias),
+            "confidence":       market_ctx.confidence,
+            "spot":             spot,
+            "selected_symbol":  None,
+            "failure_reason":   reason,
+        }
+        _SHADOW_AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _SHADOW_AUDIT_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        print(f"[SHADOW STRIKE] {state.option_underlying} {market_ctx.bias} no_candidate  reason={reason}")
+    except Exception:
+        pass
+
+
+def _run_shadow_option_intelligence(
+    state: "UnderlyingRuntimeState",
+    market_ctx,
+    completed_bar: "LiveBar",
+) -> None:
+    """
+    Fetch option chain and run strike selection for a shadow underlying.
+
+    Writes to logs/strike_selection_shadow.jsonl.  Never sizes or opens a
+    position. Never writes DB trade rows. Never raises (all exceptions caught).
+    Never affects BANKNIFTY execution.
+    """
+    spot = completed_bar.close_price
+    try:
+        bar_date = datetime.now(timezone.utc).date()
+
+        try:
+            expiry = adapter.nearest_expiry(
+                state.option_underlying, bar_date, exchange=state.exchange,
+            )
+        except Exception:
+            _write_shadow_failure_record(state, market_ctx, spot, "EXPIRY_NOT_FOUND")
+            return
+
+        _chain_snapshots = []
+        try:
+            live_chain = adapter.fetch_option_chain(
+                underlying=state.option_underlying,
+                expiry_date=expiry,
+                spot_price=spot,
+                lot_size=state.lot_size,
+                strike_step=state.strike_step,
+                exchange=state.exchange,
+            )
+            _chain_snapshots.append(live_chain)
+        except Exception as exc:
+            _write_shadow_failure_record(state, market_ctx, spot, _classify_shadow_error(exc))
+            return
+
+        # Best-effort: add next-nearest expiry for DTE ranking (mirrors BANKNIFTY path)
+        try:
+            expiry_next = adapter.nearest_expiry(
+                state.option_underlying, expiry + timedelta(days=1),
+                exchange=state.exchange,
+            )
+            _chain_snapshots.append(adapter.fetch_option_chain(
+                underlying=state.option_underlying,
+                expiry_date=expiry_next,
+                spot_price=spot,
+                lot_size=state.lot_size,
+                strike_step=state.strike_step,
+                exchange=state.exchange,
+            ))
+        except Exception:
+            pass  # next expiry unavailable — proceed with nearest only
+
+        options_ctx = _opt_ctx_builder.build(
+            snapshots=_chain_snapshots,
+            spot_price=spot,
+            lot_size=state.lot_size,
+            valuation_timestamp=datetime.now(timezone.utc),
+        )
+
+        if options_ctx.atm_iv:
+            state.last_atm_iv = options_ctx.atm_iv
+
+        if not options_ctx.strike_candidates:
+            _write_shadow_failure_record(state, market_ctx, spot, "CANDIDATES_EMPTY")
+            return
+
+        _candidates_list = list(options_ctx.strike_candidates)
+        _selection_result = _strike_engine.select(
+            bias=market_ctx.bias,
+            candidates=_candidates_list,
+            valuation_timestamp=datetime.now(timezone.utc),
+            oi_snapshot=options_ctx.oi_snapshot,
+            gex_snapshot=options_ctx.gex_snapshot,
+            atm_iv=options_ctx.atm_iv,
+        )
+
+        if _selection_result.best() is None:
+            _write_shadow_failure_record(state, market_ctx, spot, "STRIKE_SELECTION_EMPTY")
+            return
+
+        # Terminal [SHADOW STRIKE] line + JSONL record via shadow auditor
+        _shadow_auditor.log(
+            result=_selection_result,
+            candidates=_candidates_list,
+            feed_symbol=state.feed_symbol,
+            strike_step=state.strike_step,
+        )
+
+    except Exception as exc:
+        try:
+            _write_shadow_failure_record(state, market_ctx, spot, _classify_shadow_error(exc))
+        except Exception:
+            pass
+
+
 def _handle_market_close_shutdown(reason: str) -> None:
     """
     Deterministic market-close shutdown — idempotent, safe to call from any thread.
@@ -1393,7 +1561,7 @@ def on_ticks(raw_ticks):
                 valuation_timestamp=datetime.now(timezone.utc)
             )
 
-            # ── Chain fetch + strike selection — enabled targets only ───────────
+            # ── Chain fetch + strike selection — enabled targets (full execution) ──
             if is_option_target_enabled(_current_state.option_underlying):
                 print(
                     f"\n[OPTIONS] bias={market_ctx.bias}  "
@@ -1496,6 +1664,20 @@ def on_ticks(raw_ticks):
                             )
                         elif _kite_session_valid:
                             print(f"[OPTIONS] Pipeline error: {exc}")
+
+            # ── Shadow option intelligence — observe chain/strike, no execution ──
+            # Runs for NIFTY/SENSEX only: chain fetch + strike scoring + JSONL audit.
+            # No sizing, no position open, no equity change, no DB trade rows.
+            elif (is_option_target_shadow(_current_state.option_underlying)
+                    and str(market_ctx.bias) != "NEUTRAL"
+                    and _kite_session_valid
+                    and _shadow_last_bar.get(_current_state.option_underlying, -1) != _bar_count):
+                _shadow_last_bar[_current_state.option_underlying] = _bar_count
+                _run_shadow_option_intelligence(
+                    state=_current_state,
+                    market_ctx=market_ctx,
+                    completed_bar=completed_bar,
+                )
         # ─────────────────────────────────────────────────────────────────────
 
         h4_bar = LATEST_HTF_BARS.get(

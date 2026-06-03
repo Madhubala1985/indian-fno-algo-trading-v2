@@ -60,10 +60,20 @@ class StrikeAuditLogger:
     Stateful audit logger.  Tracks previous selections per underlying for
     SAME_STRIKE_AS_PREVIOUS detection.  One instance should be shared across
     all calls within a process.
+
+    Parameters
+    ----------
+    audit_path : Path or None
+        JSONL output file.  Defaults to _AUDIT_PATH (live audit log).
+    mode : str
+        "live" (default) or "shadow".  Controls terminal prefix and the
+        ``mode`` field written to JSONL records.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, audit_path: Path | None = None, mode: str = "live") -> None:
         self._previous: dict[str, float | None] = {}  # underlying → prev strike
+        self._audit_path = audit_path or _AUDIT_PATH
+        self._mode = mode
 
     def log(
         self,
@@ -173,17 +183,25 @@ class StrikeAuditLogger:
         dist_str    = (f"dist={atm_dist:+.0f}" if atm_dist is not None else "dist=n/a")
         factor_tops = self._dominant_factors(bd)
         flag_str    = f" [{','.join(flags)}]" if flags else ""
-        print(
-            f"  [STRIKE AUDIT] {feed_symbol} {result.bias} "
-            f"selected {best.option_symbol} "
-            f"score={best.composite_score:.3f} {margin_str} "
-            f"ATM={atm:.0f} {dist_str} "
-            f"reason={factor_tops}{flag_str}"
-        )
+        if self._mode == "shadow":
+            print(
+                f"[SHADOW STRIKE] {feed_symbol} {result.bias} "
+                f"selected {best.option_symbol}  "
+                f"score={best.composite_score:.3f}  {margin_str}{flag_str}"
+            )
+        else:
+            print(
+                f"  [STRIKE AUDIT] {feed_symbol} {result.bias} "
+                f"selected {best.option_symbol} "
+                f"score={best.composite_score:.3f} {margin_str} "
+                f"ATM={atm:.0f} {dist_str} "
+                f"reason={factor_tops}{flag_str}"
+            )
 
         # ── JSONL record ───────────────────────────────────────────────────────
         record = {
             "ts":               datetime.now(timezone.utc).isoformat(),
+            "mode":             self._mode,
             "feed_symbol":      feed_symbol,
             "underlying":       underlying,
             "bias":             result.bias,
@@ -240,8 +258,8 @@ class StrikeAuditLogger:
             "candidates_ok": result.candidates_passed_filters,
         }
 
-        _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _AUDIT_PATH.open("a", encoding="utf-8") as fh:
+        self._audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._audit_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
 
         # Update previous-strike state
