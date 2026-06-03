@@ -197,12 +197,17 @@ multi_timeframe_builder = (
 #   5. KiteAdapter BFO cache proven live for SENSEX (market-hours test required)
 
 _PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"
-_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY"})
-_OPTION_TARGETS_SHADOW:    frozenset = frozenset({"NIFTY", "SENSEX"})  # chain+score only, no trades
+_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY", "NIFTY"})
+_OPTION_TARGETS_SHADOW:    frozenset = frozenset({"SENSEX"})  # chain+score only, no trades
 _OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
+# Raw index/feed names that must never appear as a contract symbol
+_RAW_INDEX_SYMBOLS:        frozenset = frozenset({"BANKNIFTY", "NIFTY", "NIFTY50", "SENSEX", "FINNIFTY"})
 _overlap = _OPTION_TARGETS_ENABLED & _OPTION_TARGETS_SHADOW
 if _overlap:
     print(f"[CONFIG WARNING] Targets in both ENABLED and SHADOW sets: {_overlap} — shadow suppressed for those.")
+_enabled_str = ",".join(sorted(_OPTION_TARGETS_ENABLED))
+_shadow_str  = ",".join(sorted(_OPTION_TARGETS_SHADOW)) or "none"
+print(f"[OPTIONS TARGETS] enabled={_enabled_str}  shadow={_shadow_str}")
 _LOT_SIZE  = REFERENCE_LOT_SIZES[UnderlyingFamily.BANKNIFTY]
 _STRIKE_STEP = float(REFERENCE_STRIKE_STEPS[UnderlyingFamily.BANKNIFTY])
 
@@ -338,9 +343,10 @@ _INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000 — aligns with backtest ba
 _REFERENCE_IV:   float = 0.18         # baseline IV for vol-ratio scaling
 
 # ── Per-underlying runtime state ───────────────────────────────────────────────
-# All three prepared underlyings are instantiated.  Only BANKNIFTY is in
-# _OPTION_TARGETS_ENABLED — NIFTY and SENSEX build inert context (MCB/OR/PDL/FVG)
-# but never fetch chains, run strike selection, or open trades.
+# All three prepared underlyings are instantiated.  BANKNIFTY and NIFTY are in
+# _OPTION_TARGETS_ENABLED — both build context and execute paper option trades.
+# SENSEX is shadow-only: builds inert context (MCB/OR/PDL/FVG) but never
+# fetches chains, runs strike selection, or opens trades.
 #
 # Execution guard: is_option_target_enabled(state.option_underlying) must return
 # True before any execution path (chain fetch / sizing / trade open/close) runs.
@@ -1144,6 +1150,38 @@ def _try_resume_trading(current_date: date) -> None:
     _save_state()
 
 
+def _validate_entry_contract(
+    state: "UnderlyingRuntimeState",
+    srec,
+    lots: int,
+) -> tuple[bool, str]:
+    """
+    Pre-flight contract sanity check before option_trader.open().
+
+    Returns (ok, rejection_reason).  Checks:
+    - underlying is in _OPTION_TARGETS_ENABLED (belt+suspenders; outer gate already enforces this)
+    - contract_symbol is not a raw index name
+    - contract_symbol contains CE or PE
+    - lots >= 1
+    - srec.lot_size matches state.lot_size
+    """
+    sym = srec.option_symbol
+    if state.option_underlying not in _OPTION_TARGETS_ENABLED:
+        return False, f"underlying {state.option_underlying!r} not in ENABLED set"
+    if sym in _RAW_INDEX_SYMBOLS:
+        return False, f"contract {sym!r} is a raw index symbol — not a valid option contract"
+    if "CE" not in sym and "PE" not in sym:
+        return False, f"contract {sym!r} missing CE/PE suffix — not a valid option contract"
+    if lots < 1:
+        return False, f"lots={lots} < 1"
+    if srec.lot_size != state.lot_size:
+        return False, (
+            f"lot_size mismatch: srec={srec.lot_size} != state={state.lot_size} "
+            f"for {state.option_underlying}"
+        )
+    return True, ""
+
+
 def _size_live_position(
     state: UnderlyingRuntimeState,
     rec,
@@ -1613,8 +1651,8 @@ def on_ticks(raw_ticks):
                 elif tf_key == "HOUR_1":
                     _current_state.fvg_1h.process_bar(bar=structure_adapter.convert_bar(live_bar=tf_bar))
 
-            # ── Periodic state save — triggered by BANKNIFTY bars, writes all underlyings ──
-            # _save_state() now includes bar_history_by_underlying for all prepared targets.
+            # ── Periodic state save — triggered by any enabled-target bar, writes all underlyings ──
+            # _save_state() includes bar_history_by_underlying for all prepared targets.
             if is_option_target_enabled(_current_state.option_underlying):
                 _current_state.bars_since_save += 1
                 if _current_state.bars_since_save >= _MCB_SAVE_INTERVAL:
@@ -2087,68 +2125,99 @@ def on_ticks(raw_ticks):
                         )
                         _avail = max(_equity - _open_premium_cost, 0.0)
                         if _cost <= _avail:
-                            _open_premium_cost = _cost
-                            _current_state.option_trader.open(
-                                recommendation=_srec,
-                                direction=str(_mctx.bias),
-                                bar_index=_bar_count,
-                                lots=_lots,
+                            # ── Entry contract guard ──────────────────────────
+                            _entry_ok, _entry_rejection = _validate_entry_contract(
+                                _current_state, _srec, _lots
                             )
+                            if not _entry_ok:
+                                print_warning_block(
+                                    "ENTRY GUARD REJECTED",
+                                    bar_index=_bar_count,
+                                    underlying=_current_state.option_underlying,
+                                    contract=_srec.option_symbol,
+                                    reason=_entry_rejection,
+                                )
+                                try:
+                                    _db.write_decision(
+                                        bar_index=_bar_count,
+                                        bar_ts=datetime.now(timezone.utc).isoformat(),
+                                        underlying=_srec.underlying_symbol,
+                                        bias=str(_mctx.bias),
+                                        conf_raw=_mctx.confidence,
+                                        conf_eff=_effective_conf,
+                                        outcome="ENTRY_GUARD_REJECTED",
+                                        filter_reason=_entry_rejection,
+                                        equity=_equity,
+                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                    )
+                                except Exception:
+                                    pass
+                            else:
+                            # ── Open position ─────────────────────────────────
+                                _open_premium_cost = _cost
+                                _current_state.option_trader.open(
+                                    recommendation=_srec,
+                                    direction=str(_mctx.bias),
+                                    bar_index=_bar_count,
+                                    lots=_lots,
+                                )
                             _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
-                            print_entry_block(
-                                direction=str(_mctx.bias),
-                                underlying=_srec.underlying_symbol,
-                                strike=_srec.strike_price,
-                                option_type=_srec.option_type,
-                                expiry=_srec.expiry_date,
-                                lots=_lots,
-                                lot_size=_srec.lot_size,
-                                premium=_srec.last_traded_price,
-                                notional=_cost,
-                                bar_index=_bar_count,
-                                session=str(_session_ctx.phase),
-                                conf_raw=_mctx.confidence,
-                                conf_eff=_effective_conf,
-                                fvg_quality=_current_state.fvg_quality,
-                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                extra_label=f"TIER{_tier_label}",
-                            )
-                            try:
-                                _db.write_trade_entry(
+                            if _entry_ok:
+                                # ── Entry print + DB write (only when open succeeded) ──
+                                print_entry_block(
+                                    direction=str(_mctx.bias),
                                     underlying=_srec.underlying_symbol,
-                                    contract_symbol=_srec.option_symbol,
                                     strike=_srec.strike_price,
                                     option_type=_srec.option_type,
-                                    expiry_date=_srec.expiry_date.isoformat(),
-                                    direction=str(_mctx.bias),
+                                    expiry=_srec.expiry_date,
                                     lots=_lots,
                                     lot_size=_srec.lot_size,
-                                    entry_premium=_srec.last_traded_price,
-                                    entry_spot=completed_bar.close_price,
-                                    entry_iv=_current_state.last_atm_iv,
-                                    entry_bar_index=_bar_count,
-                                    entry_ts=datetime.now(timezone.utc).isoformat(),
-                                    conf_raw=_mctx.confidence,
-                                    conf_eff=_effective_conf,
-                                    fvg_quality=_current_state.fvg_quality,
-                                    drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                    equity_before=_equity,
-                                )
-                                _db.write_decision(
+                                    premium=_srec.last_traded_price,
+                                    notional=_cost,
                                     bar_index=_bar_count,
-                                    bar_ts=datetime.now(timezone.utc).isoformat(),
-                                    underlying=_srec.underlying_symbol,
-                                    bias=str(_mctx.bias),
+                                    session=str(_session_ctx.phase),
                                     conf_raw=_mctx.confidence,
                                     conf_eff=_effective_conf,
-                                    outcome=f"ENTRY_TIER{_tier_label}",
-                                    session_phase=str(_session_ctx.phase),
                                     fvg_quality=_current_state.fvg_quality,
-                                    equity=_equity,
                                     drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                    extra_label=f"TIER{_tier_label}",
                                 )
-                            except Exception:
-                                pass
+                                try:
+                                    _db.write_trade_entry(
+                                        underlying=_srec.underlying_symbol,
+                                        contract_symbol=_srec.option_symbol,
+                                        strike=_srec.strike_price,
+                                        option_type=_srec.option_type,
+                                        expiry_date=_srec.expiry_date.isoformat(),
+                                        direction=str(_mctx.bias),
+                                        lots=_lots,
+                                        lot_size=_srec.lot_size,
+                                        entry_premium=_srec.last_traded_price,
+                                        entry_spot=completed_bar.close_price,
+                                        entry_iv=_current_state.last_atm_iv,
+                                        entry_bar_index=_bar_count,
+                                        entry_ts=datetime.now(timezone.utc).isoformat(),
+                                        conf_raw=_mctx.confidence,
+                                        conf_eff=_effective_conf,
+                                        fvg_quality=_current_state.fvg_quality,
+                                        drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                        equity_before=_equity,
+                                    )
+                                    _db.write_decision(
+                                        bar_index=_bar_count,
+                                        bar_ts=datetime.now(timezone.utc).isoformat(),
+                                        underlying=_srec.underlying_symbol,
+                                        bias=str(_mctx.bias),
+                                        conf_raw=_mctx.confidence,
+                                        conf_eff=_effective_conf,
+                                        outcome=f"ENTRY_TIER{_tier_label}",
+                                        session_phase=str(_session_ctx.phase),
+                                        fvg_quality=_current_state.fvg_quality,
+                                        equity=_equity,
+                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                    )
+                                except Exception:
+                                    pass
                         else:
                             print_warning_block(
                                 "CASH BLOCK",
