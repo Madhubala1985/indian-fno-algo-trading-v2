@@ -301,8 +301,10 @@ _opt_ctx_builder = OptionsContextBuilder(
 )
 # top_n=5 so the audit logger has rank-2..5 margin and top-candidate analysis
 _strike_engine = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=5))
-_session_engine = SessionContextEngine()
-_fvg_scorer     = FVGQualityScorer()
+_session_engine    = SessionContextEngine()
+_fvg_scorer        = FVGQualityScorer()
+_IST               = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
+_SESSION_CLOSE_TOD = 15 * 60 + 30  # 15:30 IST — market-close shutdown trigger (minutes since midnight)
 
 # ── Virtual account — ₹10,00,000 capital model ───────────────────────────────
 # Set to match BacktestConfig.initial_equity (₹10,00,000) so live paper trading
@@ -455,6 +457,7 @@ _halt_reason:            str         = ""
 _soft_halted:            bool        = False
 _soft_halt_reason:       str         = ""
 _consecutive_losses:     int         = 0
+_shutdown_triggered:     bool        = False  # set True by _handle_market_close_shutdown
 
 # Operational state
 _STATE_FILE:         Path = Path("logs/paper_trading_state.json")
@@ -1202,6 +1205,61 @@ def _size_live_position(
         )
 
 
+def _handle_market_close_shutdown(reason: str) -> None:
+    """
+    Deterministic market-close shutdown — idempotent, safe to call from any thread.
+
+    Sequence:
+      1. Set _shutdown_triggered flag (guards against re-entry).
+      2. Print terminal summary with open position status.
+      3. Save state to disk.
+      4. Write MARKET_CLOSE_SHUTDOWN runtime event to DB.
+      5. Disconnect Kite WebSocket.
+      6. Return — caller (main loop) calls sys.exit(0).
+
+    Does NOT force-close open positions.  If a position is open at market
+    close it is carried in the state file and logged as such.
+    """
+    global _shutdown_triggered
+    if _shutdown_triggered:
+        return
+    _shutdown_triggered = True
+
+    print(f"\n[MARKET CLOSE] Saving state and shutting down cleanly... ({reason})")
+
+    _pos_state = get_open_position_state()
+    if _pos_state is not None:
+        _p = _pos_state.option_trader._position
+        print(
+            f"[MARKET CLOSE] Open position carried: {_p.contract_symbol}  "
+            f"lots={_p.lots}  entry=₹{_p.entry_premium:.2f}  "
+            f"direction={_p.direction}  expiry={_p.expiry_date}"
+        )
+    else:
+        print("[MARKET CLOSE] No open position.")
+
+    _save_state()
+
+    try:
+        _pos_msg = (
+            f"open_position={_pos_state.option_trader._position.contract_symbol}"
+            if _pos_state is not None else "no_open_position"
+        )
+        _db.write_runtime_event(
+            "MARKET_CLOSE_SHUTDOWN",
+            severity="INFO",
+            message=f"reason={reason}  equity=₹{_equity:,.0f}  {_pos_msg}",
+            equity=_equity,
+        )
+    except Exception:
+        pass
+
+    try:
+        adapter.disconnect()
+    except Exception:
+        pass
+
+
 def on_ticks(raw_ticks):
     global _equity, _peak_equity, _open_premium_cost, _bar_count
     global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
@@ -1222,6 +1280,12 @@ def on_ticks(raw_ticks):
 
         if completed_bar is None:
             continue
+
+        # Market-close guard — stop processing bars after 15:30 IST
+        _bar_ist = completed_bar.start_timestamp.astimezone(_IST)
+        if _bar_ist.hour * 60 + _bar_ist.minute >= _SESSION_CLOSE_TOD and not _shutdown_triggered:
+            _handle_market_close_shutdown("bar-level 15:30 IST detection")
+            return   # main loop will see _shutdown_triggered and call sys.exit(0)
 
         _bar_count += 1
 
@@ -1926,4 +1990,9 @@ import time
 
 while True:
     time.sleep(1)
+    if _shutdown_triggered:
+        sys.exit(0)
+    _now_ist = datetime.now(_IST)
+    if _now_ist.hour * 60 + _now_ist.minute >= _SESSION_CLOSE_TOD:
+        _handle_market_close_shutdown("main-loop 15:30 IST clock")
 
