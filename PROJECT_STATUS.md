@@ -2795,3 +2795,76 @@ with any SQLite tool or Python `sqlite3`.
 - Backtest results: **IDENTICAL** — DB writer default is `None`; all calls are after decisions
 - CSV logs: **OPERATIONAL** — CSV write precedes DB write in all paths
 - Terminal output: **OPERATIONAL** — DB calls after all display calls
+
+---
+
+## §34. Live Paper Capital Calibration Fix (2026-06-03)
+
+### Root Cause
+
+`live_structure_pipeline.py` had `_INITIAL_EQUITY = 100_000.0` (₹1,00,000) while
+the validated 440-trade backtest baseline used `BacktestConfig.initial_equity =
+1_000_000.0` (₹10,00,000). The live position sizer was operating at 1/10th the
+equity the risk model was calibrated for.
+
+### Mathematical Proof
+
+With `_INITIAL_EQUITY = ₹1,00,000`, Tier 2 (2% risk), `confidence=1.0`:
+
+```
+base_risk_budget        = ₹1,00,000 × 0.020           = ₹2,000
+× confidence_scale      = 1.075  (max realistic)
+× volatility_scale      = 1.000
+× liquidity_scale       = 0.468  (spread_bps=50 zeroes spread_penalty)
+= effective_risk_budget = ₹1,006
+
+For ≥1 lot:  need  lot_size × premium × stop_pct ≤ effective_risk_budget
+             15   ×  ₹400   ×   0.50  =  ₹3,000  >  ₹1,006
+
+floor(₹1,006 / ₹200 / 15) = floor(0.335) = 0 lots → INSUFFICIENT_RISK_BUDGET
+```
+
+The system could afford 5 individual units of premium but BANKNIFTY requires 15
+units per exchange-mandated lot. The floor to whole lots truncated 0.33 lots to
+zero on every bar, regardless of signal quality, confidence, or tier.
+
+With `_INITIAL_EQUITY = ₹10,00,000`:
+
+```
+effective_risk_budget = ₹10,062
+floor(₹10,062 / ₹200 / 15) = floor(3.35) = 3 lots → TRADABLE
+```
+
+### Change
+
+```
+# live_structure_pipeline.py line 250
+Before: _INITIAL_EQUITY: float = 100_000.0   # ₹1,00,000
+After:  _INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000
+```
+
+### Rationale
+
+This is a configuration correction, not a risk model change. Every risk parameter
+(stop loss, risk fraction, confidence scaling, lot formula) is unchanged. Setting
+`_INITIAL_EQUITY = 1_000_000.0` makes the live paper trading account directly
+equivalent to the validated backtest baseline — same sizing inputs, same lot counts,
+same expected behaviour.
+
+### New Live Paper Baseline Assumptions
+
+| Parameter | Value |
+|---|---|
+| Virtual capital | ₹10,00,000 |
+| Tier 1 effective risk (1%) | ₹5,031 → 1 lot at ≤₹671 premium |
+| Tier 2 effective risk (2%) | ₹10,062 → 3 lots at ₹400 premium |
+| Tier 3 effective risk (3.5%) | ₹17,609 → 5 lots at ₹400 premium |
+| T2 premium threshold for ≥1 lot | ₹1,342 (covers full BANKNIFTY ATM range) |
+| Soft-halt effective risk (0.7%) | ₹3,522 → 1 lot at ≤₹469 premium |
+
+### Impact
+
+- **Backtest results**: ZERO — `BacktestConfig.initial_equity` is independent
+- **Risk model**: ZERO — all fractions, stops, and scales unchanged
+- **Strategy logic**: ZERO — no signal, sizing formula, or exit logic changed
+- **Live sizing**: Now matches backtest-validated lot counts exactly

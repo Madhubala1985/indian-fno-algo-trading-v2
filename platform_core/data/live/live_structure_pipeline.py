@@ -246,8 +246,13 @@ _fvg_quality:     float = 1.0
 _fvg_quality_bar: int   = -FVG_QUALITY_STALENESS_BARS - 1
 _daily_acc = DailyBarAccumulator(symbol=_OPTION_TARGET)
 
-# ── Virtual account — ₹1,00,000 capital model ────────────────────────────────
-_INITIAL_EQUITY: float = 100_000.0  # configurable virtual capital (₹)
+# ── Virtual account — ₹10,00,000 capital model ───────────────────────────────
+# Set to match BacktestConfig.initial_equity (₹10,00,000) so live paper trading
+# uses the same sizing calibration as the validated 440-trade baseline.
+# At ₹1,00,000 the effective risk budget (₹1,006 at Tier 2) is below the
+# BANKNIFTY 15-unit lot threshold (≥₹3,000 needed) → INSUFFICIENT_RISK_BUDGET
+# on every bar.  See PROJECT_STATUS §34 for full mathematical proof.
+_INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000 — aligns with backtest baseline
 _REFERENCE_IV:   float = 0.18       # baseline IV for vol-ratio scaling
 
 # Risk tier parameters — tier is selected at runtime from account state
