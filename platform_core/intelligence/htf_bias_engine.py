@@ -53,9 +53,10 @@ class HTFBiasEngine:
             m15_bias=m15_bias,
             liquidity_direction=(
                 "BULLISH"
-                if bullish_count >
-                bearish_count
+                if bullish_count > bearish_count
                 else "BEARISH"
+                if bearish_count > bullish_count
+                else "NEUTRAL"
             ),
             volatility_regime=(
                 volatility_regime

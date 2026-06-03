@@ -19,11 +19,6 @@ from platform_core.options.strike_selection import (
 from platform_core.core.constants import REFERENCE_LOT_SIZES, REFERENCE_STRIKE_STEPS
 from platform_core.core.enums import UnderlyingFamily
 
-from platform_core.adaptive.market_memory import (
-    MarketMemory,
-    MarketMemoryRecord,
-)
-
 from platform_core.analytics.structure.swing_detector import (
     SwingDetector,
     SwingDetectorConfig,
@@ -42,26 +37,6 @@ from platform_core.data.multi_timeframe_builder import (
     MultiTimeframeBuilder,
 )
 
-
-from platform_core.adaptive.reflection_engine import (
-    ReflectionEngine,
-)
-
-from platform_core.adaptive.adaptive_policy_engine import (
-    AdaptivePolicyEngine,
-)
-
-from platform_core.adaptive.regime_engine import (
-    RegimeEngine,
-)
-
-from platform_core.signals.signal_engine import (
-    SignalEngine,
-)
-
-from platform_core.paper_trading.paper_broker import (
-    PaperBroker,
-)
 
 from platform_core.paper_trading.performance_tracker import (
     PerformanceTracker,
@@ -182,34 +157,17 @@ structure_adapter = (
 
 adapter = KiteAdapter()
 
-signal_engine = SignalEngine()
-
 bias_detector = BiasDetector()
 
 htf_bias_engine = (
     HTFBiasEngine()
 )
 
-paper_broker = PaperBroker()
-
 performance_tracker = (
     PerformanceTracker()
 )
 
 trade_logger = TradeLogger()
-
-market_memory = MarketMemory()
-
-reflection_engine = (
-    ReflectionEngine()
-)
-
-
-regime_engine = RegimeEngine()
-
-adaptive_policy_engine = (
-    AdaptivePolicyEngine()
-)
 
 multi_timeframe_builder = (
     MultiTimeframeBuilder()
@@ -641,6 +599,14 @@ def _load_state() -> None:
             f"[STATE] Open position restored: {pos_data['contract_symbol']}  "
             f"lots={pos_data['lots']}  entry=₹{pos_data['entry_premium']:.2f}  "
             f"direction={pos_data['direction']}  expiry={pos_data['expiry_date']}"
+        )
+        # Re-link the DB rowid so write_trade_exit() can update the correct row.
+        # Called before _db.start() — recover_open_trade_row() connects directly.
+        _db.recover_open_trade_row(
+            contract_symbol=pos_data["contract_symbol"],
+            direction=pos_data["direction"],
+            entry_premium=pos_data["entry_premium"],
+            entry_bar_index=pos_data["bar_index"],
         )
     # Rehydrate MarketContextBuilder from persisted bar history.
     # Parsed and fed separately so a corrupt bar_history never blocks account state restore.
@@ -1648,192 +1614,6 @@ def on_ticks(raw_ticks):
             ):
 
                 print(event)
-
-            bar_range = (
-                completed_bar.high_price
-                - completed_bar.low_price
-            )
-
-            average_range = max(
-                bar_range,
-                1.0,
-            )
-
-            regime = (
-                regime_engine.classify(
-                    bar_range=bar_range,
-                    average_range=average_range,
-                )
-            )
-
-            print(
-                "\nMARKET REGIME:\n"
-            )
-
-            print(regime)
-
-            event_names = tuple(
-                str(event.event_type)
-                for event in (
-                    result.emitted_events
-                )
-            )
-
-            adaptive_confidence = (
-                adaptive_policy_engine.confidence(
-                    events=event_names,
-                    regime=(
-                        regime.volatility_regime
-                    ),
-                )
-            )
-
-            signals = (
-                signal_engine.generate_signals(
-                    symbol=completed_bar.symbol,
-                    events=result.emitted_events,
-                    regime=regime,
-                    market_context=market_context,
-                )
-            )
-
-            for signal in signals:
-
-                signal.confidence = (
-                    signal.confidence
-                    * adaptive_confidence
-                )
-
-            if signals:
-
-                print(
-                    "\nTRADE SIGNALS:\n"
-                )
-
-                for signal in signals:
-
-                    print(signal)
-
-                    if signal.action == "OPEN":
-
-                        if not (
-                            paper_broker.has_open_position(
-                                symbol=signal.symbol
-                            )
-                        ):
-
-                            paper_broker.open_position(
-                                symbol=signal.symbol,
-                                direction=signal.direction,
-                                entry_price=(
-                                    completed_bar.close_price
-                                ),
-                                quantity=1,
-                            )
-
-                    elif signal.action == "CLOSE":
-
-                        if (
-                            paper_broker.has_open_position(
-                                symbol=signal.symbol
-                            )
-                        ):
-
-                            paper_broker.close_position(
-                                symbol=signal.symbol,
-                                exit_price=(
-                                    completed_bar.close_price
-                                ),
-                            )
-
-                        if paper_broker.completed_trades:
-                            latest_trade = (
-                                paper_broker.completed_trades[-1]
-                            )
-
-                            memory_record = (
-                                MarketMemoryRecord(
-
-                                    symbol=latest_trade.symbol,
-
-                                    direction=latest_trade.direction,
-
-                                    confidence=signal.confidence,
-
-                                    events=tuple(
-                                        str(event.event_type)
-                                        for event in (
-                                            result.emitted_events
-                                        )
-                                    ),
-
-                                    entry_price=(
-                                        latest_trade.entry_price
-                                    ),
-
-                                    exit_price=(
-                                        latest_trade.exit_price
-                                    ),
-
-                                    pnl=latest_trade.pnl,
-
-                                     timestamp=datetime.utcnow(),
-
-                                    outcome=(
-                                        "WIN"
-                                        if latest_trade.pnl > 0
-                                        else "LOSS"
-                                    ),
-                                 )
-                            )
-
-                            market_memory.remember_trade(
-                                record=memory_record
-                            )
-
-                            reflection = (
-                                reflection_engine.reflect(
-                                    memory=memory_record
-                                )
-                            )
-
-                            adaptive_policy_engine.reinforce(
-
-                                events=memory_record.events,
-
-                                regime=signal.regime,
-
-                                pnl=latest_trade.pnl,
-                            )
-
-                            print(
-                                "\nREFLECTION ENGINE:\n"
-                            )
-
-                            print(reflection)
-
-
-                        
-
-
-                            summary = (
-                                performance_tracker.calculate_summary(
-                                    trades=(
-                                        paper_broker.completed_trades
-                                    )
-                                )
-                            )
-
-                            print_performance_summary(
-                                total_trades=summary.total_trades,
-                                wins=summary.winning_trades,
-                                losses=summary.losing_trades,
-                                total_pnl=summary.total_pnl,
-                                avg_pnl=summary.average_pnl,
-                                equity=summary.total_pnl,
-                                initial_equity=0.0,
-                                label="LEGACY PERFORMANCE SUMMARY",
-                            )
 
         else:
 

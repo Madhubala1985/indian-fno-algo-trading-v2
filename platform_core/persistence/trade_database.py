@@ -221,6 +221,72 @@ class TradeDatabase:
 
     # ── Public write API ───────────────────────────────────────────────────────
 
+    def recover_open_trade_row(
+        self,
+        *,
+        contract_symbol: str,
+        direction: str,
+        entry_premium: float,
+        entry_bar_index: int,
+    ) -> bool:
+        """
+        Recover the DB rowid for an open position after process restart.
+
+        Queries pt_trades synchronously (safe to call before start()) for a
+        state='OPEN' row matching the restored position parameters.  Sets
+        _open_trade_rowid so the next write_trade_exit() updates the correct
+        row instead of being silently dropped.
+
+        Returns True when a matching row was found and the rowid was set,
+        False when no match exists or the DB is unavailable.  In both cases
+        a diagnostic line is printed to stdout/stderr so the operator sees
+        what happened.
+        """
+        try:
+            conn = sqlite3.connect(self._db_path)
+            cur = conn.execute(
+                """
+                SELECT id FROM pt_trades
+                WHERE contract_symbol = ?
+                  AND direction       = ?
+                  AND entry_premium   = ?
+                  AND entry_bar_index = ?
+                  AND state           = 'OPEN'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (contract_symbol, direction, entry_premium, entry_bar_index),
+            )
+            row = cur.fetchone()
+            conn.close()
+        except Exception as exc:
+            print(
+                f"\n[DB WARNING] recover_open_trade_row failed ({exc}) — "
+                f"exit for {contract_symbol} will not be recorded in pt_trades.  "
+                f"CSV log is unaffected.\n",
+                file=sys.stderr,
+            )
+            return False
+        if row is None:
+            print(
+                f"\n[DB WARNING] No OPEN row found in pt_trades for {contract_symbol} "
+                f"direction={direction} entry_premium={entry_premium} "
+                f"bar_index={entry_bar_index}.  "
+                f"Position restored from state file but DB entry is missing or "
+                f"already CLOSED.  Exit will not be recorded in pt_trades; "
+                f"CSV log is unaffected.\n",
+                file=sys.stderr,
+            )
+            return False
+        self._open_trade_rowid = row[0]
+        print(
+            f"[DB] Recovered open trade rowid={self._open_trade_rowid} "
+            f"for {contract_symbol} "
+            f"(direction={direction} entry_premium={entry_premium} "
+            f"bar={entry_bar_index})"
+        )
+        return True
+
     def write_trade_entry(
         self,
         *,
