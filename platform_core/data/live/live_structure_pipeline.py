@@ -173,10 +173,16 @@ multi_timeframe_builder = (
     MultiTimeframeBuilder()
 )
 
-# ── Options pipeline (BANKNIFTY target) ───────────────────────────────────────
+# ── Options pipeline ──────────────────────────────────────────────────────────
+# _PRIMARY_OPTION_TARGET is the single active execution target.
+# _PRIMARY_OPTION_TARGETS is the set of enabled underlyings; currently contains only
+# BANKNIFTY.  Phase B will extend this set when per-underlying state
+# containers and exchange routing are in place.  Adding a symbol here without
+# those prerequisites is intentionally blocked.
 
-_OPTION_TARGET = "BANKNIFTY"
-_LOT_SIZE = REFERENCE_LOT_SIZES[UnderlyingFamily.BANKNIFTY]
+_PRIMARY_OPTION_TARGET: str          = "BANKNIFTY"
+_PRIMARY_OPTION_TARGETS:        frozenset    = frozenset({"BANKNIFTY"})
+_LOT_SIZE  = REFERENCE_LOT_SIZES[UnderlyingFamily.BANKNIFTY]
 _STRIKE_STEP = float(REFERENCE_STRIKE_STEPS[UnderlyingFamily.BANKNIFTY])
 
 # MTF key normalisation (matches BacktestRunner convention)
@@ -187,7 +193,7 @@ _MTF_KEY_MAP: dict[str, str] = {
     "HOUR_4": "4h",
 }
 
-_market_ctx_builder = MarketContextBuilder(underlying_symbol=_OPTION_TARGET, min_history_bars=20)
+_market_ctx_builder = MarketContextBuilder(underlying_symbol=_PRIMARY_OPTION_TARGET, min_history_bars=20)
 _opt_ctx_builder = OptionsContextBuilder(
     config=OptionsContextBuilderConfig(compute_missing_greeks=True)
 )
@@ -198,11 +204,11 @@ _session_engine   = SessionContextEngine()
 _pdl_engine       = PreviousDayLevelsEngine()
 _or_engine        = OpeningRangeEngine()
 _fvg_scorer       = FVGQualityScorer()
-_fvg_15m = FVGEngine(config=FVGEngineConfig(instrument_id=_OPTION_TARGET, timeframe="MIN_15"))
-_fvg_1h  = FVGEngine(config=FVGEngineConfig(instrument_id=_OPTION_TARGET, timeframe="HOUR_1"))
+_fvg_15m = FVGEngine(config=FVGEngineConfig(instrument_id=_PRIMARY_OPTION_TARGET, timeframe="MIN_15"))
+_fvg_1h  = FVGEngine(config=FVGEngineConfig(instrument_id=_PRIMARY_OPTION_TARGET, timeframe="HOUR_1"))
 _fvg_quality:     float = 1.0
 _fvg_quality_bar: int   = -FVG_QUALITY_STALENESS_BARS - 1
-_daily_acc = DailyBarAccumulator(symbol=_OPTION_TARGET)
+_daily_acc = DailyBarAccumulator(symbol=_PRIMARY_OPTION_TARGET)
 
 # ── Virtual account — ₹10,00,000 capital model ───────────────────────────────
 # Set to match BacktestConfig.initial_equity (₹10,00,000) so live paper trading
@@ -1034,7 +1040,7 @@ def on_ticks(raw_ticks):
             print(mtf_bar)
 
         # ── Options pipeline (runs only for the designated target symbol) ─────
-        if completed_bar.symbol == _OPTION_TARGET:
+        if completed_bar.symbol == _PRIMARY_OPTION_TARGET:
             # Session / Opening-Range / PDH-PDL — same update sequence as BacktestRunner
             _session_ctx = _session_engine.classify(completed_bar.start_timestamp)
             _or_engine.update_bar(completed_bar)
@@ -1085,10 +1091,10 @@ def on_ticks(raw_ticks):
                 try:
                     spot = completed_bar.close_price
                     bar_date = datetime.now(timezone.utc).date()
-                    expiry = adapter.nearest_expiry(_OPTION_TARGET, bar_date)
+                    expiry = adapter.nearest_expiry(_PRIMARY_OPTION_TARGET, bar_date)
 
                     live_chain = adapter.fetch_option_chain(
-                        underlying=_OPTION_TARGET,
+                        underlying=_PRIMARY_OPTION_TARGET,
                         expiry_date=expiry,
                         spot_price=spot,
                         lot_size=_LOT_SIZE,
@@ -1101,10 +1107,10 @@ def on_ticks(raw_ticks):
                     _chain_snapshots = [live_chain]
                     try:
                         expiry_next = adapter.nearest_expiry(
-                            _OPTION_TARGET, expiry + timedelta(days=1)
+                            _PRIMARY_OPTION_TARGET, expiry + timedelta(days=1)
                         )
                         live_chain_next = adapter.fetch_option_chain(
-                            underlying=_OPTION_TARGET,
+                            underlying=_PRIMARY_OPTION_TARGET,
                             expiry_date=expiry_next,
                             spot_price=spot,
                             lot_size=_LOT_SIZE,
@@ -1255,7 +1261,7 @@ def on_ticks(raw_ticks):
                 pass
 
         # ── OptionPaperTrader: exit evaluation + entry (BANKNIFTY only) ──────
-        if completed_bar.symbol == _OPTION_TARGET and _captured_market_ctx is not None:
+        if completed_bar.symbol == _PRIMARY_OPTION_TARGET and _captured_market_ctx is not None:
             _bar_date_live = datetime.now(timezone.utc).date()
 
             # Exit evaluation runs on every bar while a position is open
@@ -1383,7 +1389,7 @@ def on_ticks(raw_ticks):
                 if e.event_type == StructureEventType.FVG_CREATED
             ]
             _recent_sweeps_live = tuple(
-                ENGINES[_OPTION_TARGET]._liquidity_sweep_detector.recent_sweeps
+                ENGINES[_PRIMARY_OPTION_TARGET]._liquidity_sweep_detector.recent_sweeps
             )
             _htf_fvgs_live = {
                 "MIN_15": _fvg_15m.active_gaps,
