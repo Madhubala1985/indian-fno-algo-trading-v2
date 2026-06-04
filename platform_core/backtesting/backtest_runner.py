@@ -385,7 +385,9 @@ class OptionPaperTrader:
         if exit_reason is None and dte < min_dte:
             exit_reason = f"DTE_MINIMUM (dte={dte})"
         if exit_reason is None and pct_of_entry <= stop_loss_pct:
-            exit_reason = f"STOP_LOSS ({pct_of_entry:.0%} of entry)"
+            _max_loss = 1.0 - stop_loss_pct
+            _actual_loss = 1.0 - pct_of_entry
+            exit_reason = f"STOP_LOSS max_loss={_max_loss:.0%} actual_loss={_actual_loss:.0%}"
         if exit_reason is None and pct_of_entry >= take_profit_pct:
             exit_reason = f"TAKE_PROFIT ({pct_of_entry:.0%} of entry)"
         if exit_reason is None:

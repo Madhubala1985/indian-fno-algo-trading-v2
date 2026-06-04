@@ -294,6 +294,9 @@ class UnderlyingRuntimeState:
     # ── Mutable per-underlying state ───────────────────────────────────────
     last_atm_iv:      float                     # updated each bar from live chain
     last_bar_close:   float = 0.0               # most recent 1m close price — used for EOD BSM
+    last_stop_bar:    int   = -9999             # _bar_count at last stop-loss fire
+    last_stop_contract: str = ""               # contract symbol of last stop-loss
+    live_bars_seen:   int   = 0                 # live 1m bars received this session
     bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
     bars_since_save:  int  = 0                  # bars since last state-file write
     fvg_quality:      float = 1.0
@@ -403,10 +406,26 @@ _TIER3_MAX_DD:    float = 0.025   # Tier 3 ineligible when drawdown ≥ 2.5%
 _TIER3_CONF_GATE: float = 0.65    # Tier 3 requires confidence ≥ 65%
 
 # Portfolio heat and trade management
-_MAX_HEAT_FRACTION: float = 0.10  # max open-premium / equity
-_STOP_LOSS_PCT:     float = 0.50
+_MAX_HEAT_FRACTION: float = 0.10   # max open-premium / equity
+# Stop-loss: max 30% loss from entry premium (premium must remain >= 70% of entry).
+# Tighter than the previous 50%-remaining threshold; still subject to bar-close gap risk.
+_MAX_OPTION_PREMIUM_LOSS_FRACTION: float = 0.30   # stop at 30% loss from entry
+_STOP_LOSS_PCT:     float = 1.0 - _MAX_OPTION_PREMIUM_LOSS_FRACTION   # 0.70 remaining
 _TAKE_PROFIT_PCT:   float = 2.00
 _MIN_DTE_TO_HOLD:   int   = 2
+
+# Stop-loss cooldown: prevent immediate re-entry after a loss exit.
+# Proven defect: SENSEX re-entered the same contract at the exact bar of stop-loss exit.
+_SAME_UNDERLYING_STOP_COOLDOWN_BARS: int = 5    # any contract on this underlying
+_SAME_CONTRACT_STOP_COOLDOWN_BARS:   int = 15   # exact same contract symbol
+
+# Confluence gate for Tier2/Tier3: require minimum OI support on the selected strike.
+# Proven defect: SENSEX entry had oi_support=0.034 (near-zero OI = liquidity risk).
+_MIN_OI_SUPPORT_TIER23: float = 0.10
+
+# Live bar warmup gate: require at least this many live bars before allowing entry.
+# Prevents entries driven purely by warm-start historical MCB state (no live confirmation).
+_LIVE_BARS_BEFORE_ENTRY: int = 20
 
 # Capital protection limits
 # Soft halt — defensive mode, not a full stop
@@ -1947,8 +1966,9 @@ def on_ticks(raw_ticks):
         # Execution-only paths (chain fetch, strike selection, entry/exit) are
         # gated on is_option_target_enabled() inside this block.
         if _current_state is not None:
-            # Track latest close price for EOD BSM force-close
+            # Track latest close price (EOD BSM) and live bar count (warm-start gate)
             _current_state.last_bar_close = completed_bar.close_price
+            _current_state.live_bars_seen += 1
             # Session classification — shared stateless engine, safe to call per-bar
             _session_ctx = _session_engine.classify(completed_bar.start_timestamp)
             _current_state.or_engine.update_bar(completed_bar)
@@ -2168,7 +2188,7 @@ def on_ticks(raw_ticks):
         if mtf_bars:
 
             print(
-                "\nMARKET CONTEXT:\n"
+                "\n[DIAG HTF — not used for option execution]\n"
             )
 
             print(market_context)
@@ -2239,6 +2259,10 @@ def on_ticks(raw_ticks):
                         _consecutive_losses += 1
                     else:
                         _consecutive_losses = 0
+                    # Record stop-loss cooldown state (prevents immediate re-entry)
+                    if "STOP_LOSS" in str(_closed.exit_reason):
+                        _current_state.last_stop_bar      = _bar_count
+                        _current_state.last_stop_contract = _closed.contract_symbol
                     print_exit_block(
                         underlying=_closed.underlying_symbol,
                         strike=_closed.strike,
@@ -2446,118 +2470,228 @@ def on_ticks(raw_ticks):
                     _effective_min_conf = _tier_min_confs[_effective_tier]
 
                 if _effective_conf >= _effective_min_conf:
-                    _sizing = _size_live_position(
-                        _current_state, _srec, _mctx, _effective_tier, _effective_conf,
+                    # Print MCB execution context explicitly so the terminal is not misleading
+                    print(
+                        f"[EXECUTION_MCB_CONTEXT] {_current_state.option_underlying}  "
+                        f"bias={_mctx.bias}  conf={_mctx.confidence:.2f}  "
+                        f"live_bars={_current_state.live_bars_seen}"
                     )
-                    if _sizing.tradable and _sizing.recommended_lots >= 1:
-                        _lots = _sizing.recommended_lots
-                        _cost = (
-                            _srec.last_traded_price
-                            * _srec.lot_size
-                            * _lots
+
+                    # ── Pre-entry safety checks [A] warmup  [B] cooldown ─────
+                    _pre_entry_block: str | None = None
+                    _bars_since_stop = _bar_count - _current_state.last_stop_bar
+
+                    # [A] Live bar warmup gate
+                    if _current_state.live_bars_seen < _LIVE_BARS_BEFORE_ENTRY:
+                        _pre_entry_block = (
+                            f"WARM_START_LOCKOUT "
+                            f"live_bars={_current_state.live_bars_seen}/{_LIVE_BARS_BEFORE_ENTRY}"
                         )
-                        _avail = max(_equity - _open_premium_cost, 0.0)
-                        if _cost <= _avail:
-                            # ── Entry contract guard ──────────────────────────
-                            _entry_ok, _entry_rejection = _validate_entry_contract(
-                                _current_state, _srec, _lots
-                            )
-                            if not _entry_ok:
-                                print_warning_block(
-                                    "ENTRY GUARD REJECTED",
-                                    bar_index=_bar_count,
-                                    underlying=_current_state.option_underlying,
-                                    contract=_srec.option_symbol,
-                                    reason=_entry_rejection,
-                                )
-                                try:
-                                    _db.write_decision(
-                                        bar_index=_bar_count,
-                                        bar_ts=datetime.now(timezone.utc).isoformat(),
-                                        underlying=_srec.underlying_symbol,
-                                        bias=str(_mctx.bias),
-                                        conf_raw=_mctx.confidence,
-                                        conf_eff=_effective_conf,
-                                        outcome="ENTRY_GUARD_REJECTED",
-                                        filter_reason=_entry_rejection,
-                                        equity=_equity,
-                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                    )
-                                except Exception:
-                                    pass
-                            else:
-                            # ── Open position ─────────────────────────────────
-                                _open_premium_cost += _cost
-                                _current_state.option_trader.open(
-                                    recommendation=_srec,
-                                    direction=str(_mctx.bias),
-                                    bar_index=_bar_count,
-                                    lots=_lots,
-                                )
-                            _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
-                            if _entry_ok:
-                                # ── Entry print + DB write (only when open succeeded) ──
-                                print_entry_block(
-                                    direction=str(_mctx.bias),
-                                    underlying=_srec.underlying_symbol,
-                                    strike=_srec.strike_price,
-                                    option_type=_srec.option_type,
-                                    expiry=_srec.expiry_date,
-                                    lots=_lots,
-                                    lot_size=_srec.lot_size,
-                                    premium=_srec.last_traded_price,
-                                    notional=_cost,
-                                    bar_index=_bar_count,
-                                    session=str(_session_ctx.phase),
-                                    conf_raw=_mctx.confidence,
-                                    conf_eff=_effective_conf,
-                                    fvg_quality=_current_state.fvg_quality,
-                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                    extra_label=f"TIER{_tier_label}",
-                                )
-                                try:
-                                    _db.write_trade_entry(
-                                        underlying=_srec.underlying_symbol,
-                                        contract_symbol=_srec.option_symbol,
-                                        strike=_srec.strike_price,
-                                        option_type=_srec.option_type,
-                                        expiry_date=_srec.expiry_date.isoformat(),
-                                        direction=str(_mctx.bias),
-                                        lots=_lots,
-                                        lot_size=_srec.lot_size,
-                                        entry_premium=_srec.last_traded_price,
-                                        entry_spot=completed_bar.close_price,
-                                        entry_iv=_current_state.last_atm_iv,
-                                        entry_bar_index=_bar_count,
-                                        entry_ts=datetime.now(timezone.utc).isoformat(),
-                                        conf_raw=_mctx.confidence,
-                                        conf_eff=_effective_conf,
-                                        fvg_quality=_current_state.fvg_quality,
-                                        drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                        equity_before=_equity,
-                                    )
-                                    _db.write_decision(
-                                        bar_index=_bar_count,
-                                        bar_ts=datetime.now(timezone.utc).isoformat(),
-                                        underlying=_srec.underlying_symbol,
-                                        bias=str(_mctx.bias),
-                                        conf_raw=_mctx.confidence,
-                                        conf_eff=_effective_conf,
-                                        outcome=f"ENTRY_TIER{_tier_label}",
-                                        session_phase=str(_session_ctx.phase),
-                                        fvg_quality=_current_state.fvg_quality,
-                                        equity=_equity,
-                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                    )
-                                except Exception:
-                                    pass
-                        else:
-                            print_warning_block(
-                                "CASH BLOCK",
+                    # [B1] Underlying-level cooldown after stop
+                    elif _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:
+                        _pre_entry_block = (
+                            f"STOP_COOLDOWN_ACTIVE underlying_cooldown "
+                            f"bars_since_stop={_bars_since_stop}/{_SAME_UNDERLYING_STOP_COOLDOWN_BARS}"
+                        )
+                    # [B2] Same-contract cooldown after stop
+                    elif (_srec.option_symbol == _current_state.last_stop_contract
+                            and _bars_since_stop < _SAME_CONTRACT_STOP_COOLDOWN_BARS):
+                        _pre_entry_block = (
+                            f"STOP_COOLDOWN_ACTIVE same_contract_cooldown "
+                            f"bars_since_stop={_bars_since_stop}/{_SAME_CONTRACT_STOP_COOLDOWN_BARS}"
+                        )
+
+                    if _pre_entry_block is not None:
+                        print_warning_block(
+                            "ENTRY CHECK BLOCKED",
+                            bar_index=_bar_count,
+                            underlying=_current_state.option_underlying,
+                            reason=_pre_entry_block,
+                        )
+                        try:
+                            _db.write_decision(
                                 bar_index=_bar_count,
-                                need=f"₹{_cost:,.2f}",
-                                available=f"₹{_avail:,.2f}",
+                                bar_ts=datetime.now(timezone.utc).isoformat(),
+                                underlying=_current_state.option_underlying,
+                                bias=str(_mctx.bias),
+                                conf_raw=_mctx.confidence,
+                                conf_eff=_effective_conf,
+                                outcome=_pre_entry_block.split()[0],
+                                filter_reason=_pre_entry_block,
+                                equity=_equity,
+                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        # Pre-entry checks passed — proceed to sizing
+                        _sizing = _size_live_position(
+                            _current_state, _srec, _mctx, _effective_tier, _effective_conf,
+                        )
+                        if _sizing.tradable and _sizing.recommended_lots >= 1:
+                            _lots = _sizing.recommended_lots
+                            _cost = (
+                                _srec.last_traded_price
+                                * _srec.lot_size
+                                * _lots
+                            )
+                            _avail = max(_equity - _open_premium_cost, 0.0)
+                            if _cost <= _avail:
+                                # [C] Confluence gate: Tier2/3 requires OI support
+                                _oi_supp = getattr(
+                                    getattr(_srec, "breakdown", None), "oi_support", 1.0
+                                )
+                                if (_effective_tier >= 2
+                                        and _oi_supp < _MIN_OI_SUPPORT_TIER23):
+                                    _oi_reason = (
+                                        f"INSUFFICIENT_CONFLUENCE oi_support={_oi_supp:.3f} "
+                                        f"< min={_MIN_OI_SUPPORT_TIER23} for tier={_effective_tier}"
+                                    )
+                                    print_warning_block(
+                                        "ENTRY CHECK BLOCKED",
+                                        bar_index=_bar_count,
+                                        underlying=_current_state.option_underlying,
+                                        reason=_oi_reason,
+                                    )
+                                    try:
+                                        _db.write_decision(
+                                            bar_index=_bar_count,
+                                            bar_ts=datetime.now(timezone.utc).isoformat(),
+                                            underlying=_current_state.option_underlying,
+                                            bias=str(_mctx.bias),
+                                            conf_raw=_mctx.confidence,
+                                            conf_eff=_effective_conf,
+                                            outcome="INSUFFICIENT_CONFLUENCE",
+                                            filter_reason=_oi_reason,
+                                            equity=_equity,
+                                            drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                        )
+                                    except Exception:
+                                        pass
+                                else:
+                                    # ── Entry contract guard ──────────────────
+                                    _entry_ok, _entry_rejection = _validate_entry_contract(
+                                        _current_state, _srec, _lots
+                                    )
+                                    if not _entry_ok:
+                                        print_warning_block(
+                                            "ENTRY GUARD REJECTED",
+                                            bar_index=_bar_count,
+                                            underlying=_current_state.option_underlying,
+                                            contract=_srec.option_symbol,
+                                            reason=_entry_rejection,
+                                        )
+                                        try:
+                                            _db.write_decision(
+                                                bar_index=_bar_count,
+                                                bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                underlying=_srec.underlying_symbol,
+                                                bias=str(_mctx.bias),
+                                                conf_raw=_mctx.confidence,
+                                                conf_eff=_effective_conf,
+                                                outcome="ENTRY_GUARD_REJECTED",
+                                                filter_reason=_entry_rejection,
+                                                equity=_equity,
+                                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                            )
+                                        except Exception:
+                                            pass
+                                    else:
+                                        # ── Open position ─────────────────────
+                                        _open_premium_cost += _cost
+                                        _current_state.option_trader.open(
+                                            recommendation=_srec,
+                                            direction=str(_mctx.bias),
+                                            bar_index=_bar_count,
+                                            lots=_lots,
+                                        )
+                                    _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
+                                    if _entry_ok:
+                                        # ── Entry print + DB write ────────────
+                                        print_entry_block(
+                                            direction=str(_mctx.bias),
+                                            underlying=_srec.underlying_symbol,
+                                            strike=_srec.strike_price,
+                                            option_type=_srec.option_type,
+                                            expiry=_srec.expiry_date,
+                                            lots=_lots,
+                                            lot_size=_srec.lot_size,
+                                            premium=_srec.last_traded_price,
+                                            notional=_cost,
+                                            bar_index=_bar_count,
+                                            session=str(_session_ctx.phase),
+                                            conf_raw=_mctx.confidence,
+                                            conf_eff=_effective_conf,
+                                            fvg_quality=_current_state.fvg_quality,
+                                            drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                            extra_label=f"TIER{_tier_label}",
+                                        )
+                                        try:
+                                            _db.write_trade_entry(
+                                                underlying=_srec.underlying_symbol,
+                                                contract_symbol=_srec.option_symbol,
+                                                strike=_srec.strike_price,
+                                                option_type=_srec.option_type,
+                                                expiry_date=_srec.expiry_date.isoformat(),
+                                                direction=str(_mctx.bias),
+                                                lots=_lots,
+                                                lot_size=_srec.lot_size,
+                                                entry_premium=_srec.last_traded_price,
+                                                entry_spot=completed_bar.close_price,
+                                                entry_iv=_current_state.last_atm_iv,
+                                                entry_bar_index=_bar_count,
+                                                entry_ts=datetime.now(timezone.utc).isoformat(),
+                                                conf_raw=_mctx.confidence,
+                                                conf_eff=_effective_conf,
+                                                fvg_quality=_current_state.fvg_quality,
+                                                drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                equity_before=_equity,
+                                            )
+                                            _db.write_decision(
+                                                bar_index=_bar_count,
+                                                bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                underlying=_srec.underlying_symbol,
+                                                bias=str(_mctx.bias),
+                                                conf_raw=_mctx.confidence,
+                                                conf_eff=_effective_conf,
+                                                outcome=f"ENTRY_TIER{_tier_label}",
+                                                session_phase=str(_session_ctx.phase),
+                                                fvg_quality=_current_state.fvg_quality,
+                                                equity=_equity,
+                                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                            )
+                                        except Exception:
+                                            pass
+                            else:
+                                print_warning_block(
+                                    "CASH BLOCK",
+                                    bar_index=_bar_count,
+                                    need=f"₹{_cost:,.2f}",
+                                    available=f"₹{_avail:,.2f}",
+                                    equity=f"₹{_equity:,.0f}",
+                                )
+                                try:
+                                    _db.write_decision(
+                                        bar_index=_bar_count,
+                                        bar_ts=datetime.now(timezone.utc).isoformat(),
+                                        underlying=_srec.underlying_symbol,
+                                        bias=str(_mctx.bias),
+                                        conf_raw=_mctx.confidence,
+                                        conf_eff=_effective_conf,
+                                        outcome="CASH_BLOCK",
+                                        filter_reason=f"need=₹{_cost:,.0f} available=₹{_avail:,.0f}",
+                                        equity=_equity,
+                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                    )
+                                except Exception:
+                                    pass
+                        elif not _sizing.tradable:
+                            print_warning_block(
+                                "SIZING REJECTED",
+                                bar_index=_bar_count,
+                                tier=f"{'SOFT' if _soft_halted else _effective_tier}",
                                 equity=f"₹{_equity:,.0f}",
+                                reason=_sizing.rejection_reason or "",
                             )
                             try:
                                 _db.write_decision(
@@ -2567,36 +2701,13 @@ def on_ticks(raw_ticks):
                                     bias=str(_mctx.bias),
                                     conf_raw=_mctx.confidence,
                                     conf_eff=_effective_conf,
-                                    outcome="CASH_BLOCK",
-                                    filter_reason=f"need=₹{_cost:,.0f} available=₹{_avail:,.0f}",
+                                    outcome="SIZING_REJECTED",
+                                    filter_reason=_sizing.rejection_reason,
                                     equity=_equity,
                                     drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                 )
                             except Exception:
                                 pass
-                    elif not _sizing.tradable:
-                        print_warning_block(
-                            "SIZING REJECTED",
-                            bar_index=_bar_count,
-                            tier=f"{'SOFT' if _soft_halted else _effective_tier}",
-                            equity=f"₹{_equity:,.0f}",
-                            reason=_sizing.rejection_reason or "",
-                        )
-                        try:
-                            _db.write_decision(
-                                bar_index=_bar_count,
-                                bar_ts=datetime.now(timezone.utc).isoformat(),
-                                underlying=_srec.underlying_symbol,
-                                bias=str(_mctx.bias),
-                                conf_raw=_mctx.confidence,
-                                conf_eff=_effective_conf,
-                                outcome="SIZING_REJECTED",
-                                filter_reason=_sizing.rejection_reason,
-                                equity=_equity,
-                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                            )
-                        except Exception:
-                            pass
 
         if result.emitted_events:
 
