@@ -3177,3 +3177,109 @@ All of the above, plus:
 > (single rowid cannot track two simultaneous positions), and wrong equity
 > accounting (_open_premium_cost is a single scalar not keyed to underlying).
 
+---
+
+## 36. Phase B Completion Status — Three-Index Options Execution and Parity (2026-06-04)
+
+### 36a. Commit history (Phase B)
+
+| Hash | Description |
+|---|---|
+| 7237ab6 | Add generic index history fetch for parity validation |
+| b943f3a | Add symbol backtest support validation |
+| 5c5317f | Enable SENSEX paper option execution |
+| a0619ad | Enable NIFTY paper option execution |
+| 5c409b3 | Enhance shadow readiness analysis reporting |
+| 8735e6a | Add shadow option readiness analyzer |
+| b1f4a2a | Harden shadow option intelligence observability |
+| 7a88701 | Add NIFTY and SENSEX shadow option intelligence |
+
+### 36b. Live paper execution state
+
+```
+_OPTION_TARGETS_ENABLED = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
+_OPTION_TARGETS_SHADOW  = frozenset()  # no active shadow targets
+```
+
+All three underlyings are in `_OPTION_TARGETS_ENABLED` as of 2026-06-04.  
+One global open position is enforced (single-position constraint unchanged).  
+Direct index/spot trades remain forbidden.  
+PaperBroker legacy path remains removed.  
+Strike selection remains 8-factor; no ATM/fixed-delta shortcuts introduced.
+
+### 36c. Backtest parity — 2026-06-04
+
+OHLCV CSVs fetched via `scripts/fetch_index_history.py` from Kite historical API.  
+Date range: 2026-04-28 → 2026-05-29.  Rows: 7,875 per symbol.
+
+| Symbol | CSV | Rows | Trades | Win Rate | Return | Status |
+|---|---|---|---|---|---|---|
+| BANKNIFTY | `data/banknifty_real.csv` | — | 6 | 66.7% | 1.82% | **PASS** |
+| NIFTY | `data/nifty_1m_2026-04-28_2026-05-29.csv` | 7,875 | 13 | 46.2% | 16.74% | **PASS** |
+| SENSEX | `data/sensex_1m_2026-04-28_2026-05-29.csv` | 7,875 | 46 | 34.8% | 13.56% | **PASS** |
+
+`validate_symbol_backtest_support.py` → `ALL CONFIG OK` — all three symbols pass lot size, strike step, ExpiryProvider weekday, SyntheticChainConfig, and BacktestRunner initialisation checks.
+
+### 36d. Option-chain validation — 2026-06-04 (market hours)
+
+`validate_option_chain_support.py --symbol ALL` run with valid Kite session (token confirmed).
+
+| Symbol | Exchange | Contracts | ATM IV | Candidates | Top-1 CE | Top-1 PE | Script result |
+|---|---|---|---|---|---|---|---|
+| BANKNIFTY | NFO | 42 | 19.9% | 42 | 55000CE score=0.550 | 54000PE score=0.579 | FAIL* |
+| NIFTY | NFO | 42 (+42 2nd expiry) | 18.9% | 84 | 23500CE score=0.777 | 23300PE score=0.750 | FAIL* |
+| SENSEX | BFO | 42 (+42 2nd expiry) | 19.3% | 84 | 74500CE score=0.646 | 74500PE score=0.688 | **PASS** |
+
+\* BANKNIFTY and NIFTY show `[FAIL]` only due to a cosmetic `Invalid format specifier` bug in the repeated-strike analysis print block of `validate_option_chain_support.py`. Chain fetch, candidate build, and top-5 scoring all completed successfully for both. The FAIL is a script presentation bug, not a chain or data failure.
+
+### 36e. Critical finding — lot size mismatches
+
+All three underlyings show `CONSTANT_LOT_MISMATCH` between `REFERENCE_LOT_SIZES` constants and the current Kite instrument master:
+
+| Underlying | `REFERENCE_LOT_SIZES` | Kite master (2026-06-04) | Delta |
+|---|---|---|---|
+| BANKNIFTY | 15 | 30 | **+100%** |
+| NIFTY | 75 | 65 | **−13%** |
+| SENSEX | 10 | 20 | **+100%** |
+
+**Impact:** Backtest P&L, position sizing, and lot-level risk are all computed using the stale constants, not current exchange-mandated lot sizes. Strike step (100/50/100) and expiry weekday are unaffected.
+
+**Before live real-funds execution:** `REFERENCE_LOT_SIZES` must be updated to match the Kite master for all three underlyings. All dependent constants, sizing, and DB schemas must be re-validated after any lot-size change. This is a pre-production blocker; it does not affect paper-trading signal correctness.
+
+### 36f. Safety checks — 2026-06-04
+
+```
+grep "paper_broker.open_position|paper_broker.close_position|LEGACY PERFORMANCE SUMMARY"
+  platform_core/data/live/live_structure_pipeline.py
+→ NONE FOUND
+```
+
+No legacy PaperBroker call-sites survive in the live pipeline.
+
+### 36g. Phase B parity matrix
+
+| Dimension | BANKNIFTY | NIFTY | SENSEX |
+|---|---|---|---|
+| Live paper execution enabled | Yes | Yes | Yes |
+| Backtest config valid | Yes | Yes | Yes |
+| Backtest ran on OHLCV data | Yes | Yes | Yes |
+| Option chain fetchable (market hours) | Yes | Yes (script bug masked) | Yes |
+| BFO chain confirmed | n/a | n/a | Yes |
+| Lot size matches exchange master | **No** | **No** | **No** |
+| Per-underlying state containers | No | No | No |
+| DB/state schema extended per-underlying | No | No | No |
+| Market-hours paper lifecycle validated | No | No | No |
+
+### 36h. Remaining blockers before real-funds
+
+1. **Lot size constants** — update `REFERENCE_LOT_SIZES` for all three underlyings to match current Kite master; re-run full validation suite.
+2. **Per-underlying state containers** — `MarketContextBuilder`, `OptionPaperTrader`, `DailyBarAccumulator`, `PreviousDayLevelsEngine`, `OpeningRangeEngine`, `FVGEngine`, `last_atm_iv` must be instantiated per underlying (items 3–6 from §35c still open).
+3. **DB/state persistence extension** — `open_position` → `open_positions: {underlying: {...}}`; `TradeDatabase._open_trade_rowid` → `dict[str, int | None]`; `_open_premium_cost` keyed per underlying.
+4. **Market-hours paper lifecycle** — full entry → exit → DB commit → CSV → state-file round-trip must be observed for NIFTY and SENSEX during live market session.
+5. **SENSEX BFO chain stability** — nearest expiry was same-day (2026-06-04); second expiry used for candidates. Monitor rollover behaviour and chain non-empty guarantee.
+6. **Repeated-strike analysis script bug** — cosmetic only; fix `validate_option_chain_support.py` format specifier before next chain-validation run.
+
+### 36i. Phase B overall status
+
+> **PARTIAL — backtest and static config parity proven for all three underlyings; live paper execution flags are set; real-funds enablement blocked by lot-size constant staleness and missing per-underlying state/DB infrastructure.**
+
