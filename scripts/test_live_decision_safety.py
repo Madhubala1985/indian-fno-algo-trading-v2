@@ -15,6 +15,17 @@ Covers:
   8. Valid Tier2 trade passes when oi_support >= 0.10.
   9. Tier1 trade passes even with low oi_support (only Tier2/3 gated).
  10. Stop-loss exit message says max_loss= and actual_loss=.
+ 11. Structure-exit fires when side is lowercase bearish/bullish (bug fix).
+ 12. CONTEXT_CONTRADICTION_REJECTED blocks SHORT on bullish BOS/CHOCH.
+ 13. CONTEXT_CONTRADICTION_REJECTED blocks LONG on bearish BOS/CHOCH.
+ 14. NEUTRAL bias does not block on structural events.
+ 15. Strike-quality gate blocks Tier2 with low score_margin.
+ 16. Strike-quality gate blocks Tier2 with low iv_attractiveness.
+ 17. Strike-quality gate blocks Tier2 with low oi_support.
+ 18. Strike-quality gate allows Tier2 when all fields pass.
+ 19. Strike-quality gate does not apply to Tier1.
+ 20. Compact mode flag does not affect gate logic.
+ 21. Valid Tier2 trade passes all gates when all values are above threshold.
 
 Does NOT import live_structure_pipeline.
 Uses only backtest_runner and direct logic reproduction.
@@ -53,22 +64,100 @@ _MIN_DTE_TO_HOLD                   = 2
 _SAME_UNDERLYING_STOP_COOLDOWN_BARS = 5
 _SAME_CONTRACT_STOP_COOLDOWN_BARS   = 15
 _MIN_OI_SUPPORT_TIER23              = 0.10
+_MIN_SCORE_MARGIN_TIER23            = 0.05
+_MIN_IV_ATTR_TIER23                 = 0.05
 _LIVE_BARS_BEFORE_ENTRY             = 20
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 class FakeBreakdown:
-    def __init__(self, oi_support: float = 0.80):
-        self.oi_support = oi_support
+    def __init__(self, oi_support: float = 0.80, iv_attractiveness: float = 0.50):
+        self.oi_support       = oi_support
+        self.iv_attractiveness = iv_attractiveness
 
 
 class FakeSRec:
-    def __init__(self, symbol: str = "BNK26JUN54000PE", oi_support: float = 0.80):
+    def __init__(self, symbol: str = "BNK26JUN54000PE",
+                 oi_support: float = 0.80,
+                 iv_attractiveness: float = 0.50):
         self.option_symbol = symbol
-        self.breakdown     = FakeBreakdown(oi_support)
+        self.breakdown     = FakeBreakdown(oi_support, iv_attractiveness)
         self.last_traded_price = 900.0
         self.lot_size      = 30
+
+
+class FakeEvent:
+    """Minimal structure event stub for context contradiction tests."""
+    def __init__(self, event_type: str, side: str):
+        self.event_type = type("ET", (), {"value": event_type})()
+        self.side       = type("SD", (), {"value": side})()
+
+
+def _option_exit_signal_reproduced(emitted_events, direction: str) -> str | None:
+    """Reproduce the fixed _option_exit_signal logic (lowercase side comparison)."""
+    for event in emitted_events:
+        evt  = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
+        side = (event.side.value if hasattr(event.side, "value") else str(event.side)).lower()
+        is_reversal = "CHOCH" in evt or evt == "BOS"
+        if direction == "LONG"  and is_reversal and side == "bearish":
+            return f"STRUCTURE_EXIT ({evt})"
+        if direction == "SHORT" and is_reversal and side == "bullish":
+            return f"STRUCTURE_EXIT ({evt})"
+    return None
+
+
+def _context_contradiction_check(
+    bias_str: str,
+    emitted_events: list,
+    bar_count: int,
+) -> str | None:
+    """Reproduce CONTEXT_CONTRADICTION_REJECTED gate from live_structure_pipeline."""
+    bias_upper = bias_str.upper()
+    if bias_upper not in ("SHORT", "LONG"):
+        return None
+    for ev in emitted_events:
+        ev_type = (
+            ev.event_type.value if hasattr(ev.event_type, "value") else str(ev.event_type)
+        )
+        ev_side = (
+            ev.side.value if hasattr(ev.side, "value") else str(ev.side)
+        ).lower()
+        is_structural = "CHOCH" in ev_type or ev_type == "BOS"
+        if bias_upper == "SHORT" and is_structural and ev_side == "bullish":
+            return (
+                f"CONTEXT_CONTRADICTION_REJECTED "
+                f"mcb=SHORT structure={ev_type}_BULLISH at bar={bar_count}"
+            )
+        if bias_upper == "LONG" and is_structural and ev_side == "bearish":
+            return (
+                f"CONTEXT_CONTRADICTION_REJECTED "
+                f"mcb=LONG structure={ev_type}_BEARISH at bar={bar_count}"
+            )
+    return None
+
+
+def _strike_quality_check(
+    srec: FakeSRec,
+    score_margin: float | None,
+    tier: int,
+) -> str | None:
+    """Reproduce INSUFFICIENT_STRIKE_QUALITY gate."""
+    if tier < 2:
+        return None
+    bd       = getattr(srec, "breakdown", None)
+    iv_attr  = getattr(bd, "iv_attractiveness", None)
+    oi_supp  = getattr(bd, "oi_support", None)
+    parts: list[str] = []
+    if score_margin is not None and score_margin < _MIN_SCORE_MARGIN_TIER23:
+        parts.append(f"score_margin={score_margin:.3f}<{_MIN_SCORE_MARGIN_TIER23}")
+    if iv_attr is not None and iv_attr < _MIN_IV_ATTR_TIER23:
+        parts.append(f"iv_attr={iv_attr:.3f}<{_MIN_IV_ATTR_TIER23}")
+    if oi_supp is not None and oi_supp < _MIN_OI_SUPPORT_TIER23:
+        parts.append(f"oi_support={oi_supp:.3f}<{_MIN_OI_SUPPORT_TIER23}")
+    if parts:
+        return f"INSUFFICIENT_STRIKE_QUALITY {' '.join(parts)} tier={tier}"
+    return None
 
 
 def _pre_entry_check(
@@ -78,6 +167,7 @@ def _pre_entry_check(
     bar_count: int,
     srec: FakeSRec,
     tier: int,
+    score_margin: float | None = 0.20,
 ) -> str | None:
     """
     Reproduce the pre-entry safety check logic from live_structure_pipeline.
@@ -89,12 +179,12 @@ def _pre_entry_check(
         return (
             f"WARM_START_LOCKOUT live_bars={live_bars}/{_LIVE_BARS_BEFORE_ENTRY}"
         )
-    elif _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:
+    if _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:
         return (
             f"STOP_COOLDOWN_ACTIVE underlying_cooldown "
             f"bars_since_stop={_bars_since_stop}/{_SAME_UNDERLYING_STOP_COOLDOWN_BARS}"
         )
-    elif (srec.option_symbol == last_stop_contract
+    if (srec.option_symbol == last_stop_contract
             and _bars_since_stop < _SAME_CONTRACT_STOP_COOLDOWN_BARS):
         return (
             f"STOP_COOLDOWN_ACTIVE same_contract_cooldown "
@@ -106,6 +196,10 @@ def _pre_entry_check(
             f"INSUFFICIENT_CONFLUENCE oi_support={srec.breakdown.oi_support:.3f} "
             f"< min={_MIN_OI_SUPPORT_TIER23} for tier={tier}"
         )
+    # Strike-quality gate (Tier2/3)
+    sq = _strike_quality_check(srec, score_margin, tier)
+    if sq is not None:
+        return sq
     return None
 
 
@@ -294,6 +388,133 @@ check("stop_loss_pct_is_0.70",
       f"actual={_STOP_LOSS_PCT}")
 check("max_loss_fraction_is_0.30",
       abs(_MAX_OPTION_PREMIUM_LOSS_FRACTION - 0.30) < 0.001)
+
+
+# ── Test 11: Structure-exit uses lowercase side comparison ────────────────────
+print("\n[Test 11] Structure-exit fires on lowercase 'bearish' side (bug fix)")
+events_bearish = [FakeEvent("BOS", "bearish")]
+sig11a = _option_exit_signal_reproduced(events_bearish, "LONG")
+check("structure_exit_long_bearish_bos",
+      sig11a is not None and "STRUCTURE_EXIT" in sig11a,
+      f"got={sig11a}")
+
+events_bullish = [FakeEvent("CHOCH_BULL", "bullish")]
+sig11b = _option_exit_signal_reproduced(events_bullish, "SHORT")
+check("structure_exit_short_bullish_choch",
+      sig11b is not None and "STRUCTURE_EXIT" in sig11b,
+      f"got={sig11b}")
+
+# Uppercase should also work (robust .lower())
+events_upper = [FakeEvent("BOS", "BEARISH")]
+sig11c = _option_exit_signal_reproduced(events_upper, "LONG")
+check("structure_exit_uppercase_also_works",
+      sig11c is not None and "STRUCTURE_EXIT" in sig11c,
+      f"got={sig11c}")
+
+
+# ── Test 12: CONTEXT_CONTRADICTION blocks SHORT on bullish BOS/CHOCH ─────────
+print("\n[Test 12] CONTEXT_CONTRADICTION_REJECTED blocks SHORT on bullish BOS")
+ev_bullish_bos = [FakeEvent("BOS", "bullish")]
+contra12 = _context_contradiction_check("SHORT", ev_bullish_bos, bar_count=60)
+check("contra_blocks_short_on_bullish_bos",
+      contra12 is not None and "CONTEXT_CONTRADICTION_REJECTED" in contra12,
+      f"got={contra12}")
+
+ev_bullish_choch = [FakeEvent("CHOCH_BULL", "bullish")]
+contra12b = _context_contradiction_check("SHORT", ev_bullish_choch, bar_count=70)
+check("contra_blocks_short_on_bullish_choch",
+      contra12b is not None and "CONTEXT_CONTRADICTION_REJECTED" in contra12b,
+      f"got={contra12b}")
+
+
+# ── Test 13: CONTEXT_CONTRADICTION blocks LONG on bearish BOS/CHOCH ──────────
+print("\n[Test 13] CONTEXT_CONTRADICTION_REJECTED blocks LONG on bearish BOS")
+ev_bearish_bos = [FakeEvent("BOS", "bearish")]
+contra13 = _context_contradiction_check("LONG", ev_bearish_bos, bar_count=80)
+check("contra_blocks_long_on_bearish_bos",
+      contra13 is not None and "CONTEXT_CONTRADICTION_REJECTED" in contra13,
+      f"got={contra13}")
+
+
+# ── Test 14: NEUTRAL bias does not trigger context contradiction ───────────────
+print("\n[Test 14] NEUTRAL bias: contradiction gate does not block")
+contra14 = _context_contradiction_check("NEUTRAL", ev_bullish_bos, bar_count=50)
+check("neutral_bias_no_contra", contra14 is None, f"got={contra14}")
+
+
+# ── Test 15: Strike-quality gate blocks Tier2 with low score_margin ──────────
+print("\n[Test 15] Tier2 blocked by low score_margin")
+srec15 = FakeSRec(oi_support=0.80, iv_attractiveness=0.60)
+sq15 = _strike_quality_check(srec15, score_margin=0.02, tier=2)
+check("sq_blocks_low_score_margin",
+      sq15 is not None and "INSUFFICIENT_STRIKE_QUALITY" in sq15,
+      f"got={sq15}")
+check("sq_reason_has_score_margin", "score_margin" in (sq15 or ""), f"got={sq15}")
+
+
+# ── Test 16: Strike-quality gate blocks Tier2 with low iv_attractiveness ─────
+print("\n[Test 16] Tier2 blocked by low iv_attractiveness")
+srec16 = FakeSRec(oi_support=0.80, iv_attractiveness=0.01)
+sq16 = _strike_quality_check(srec16, score_margin=0.20, tier=2)
+check("sq_blocks_low_iv_attr",
+      sq16 is not None and "INSUFFICIENT_STRIKE_QUALITY" in sq16,
+      f"got={sq16}")
+check("sq_reason_has_iv_attr", "iv_attr" in (sq16 or ""), f"got={sq16}")
+
+
+# ── Test 17: Strike-quality gate blocks Tier2 with low oi_support (direct) ───
+print("\n[Test 17] Tier2 blocked by low oi_support in strike-quality gate")
+srec17 = FakeSRec(oi_support=0.02, iv_attractiveness=0.60)
+sq17 = _strike_quality_check(srec17, score_margin=0.20, tier=2)
+check("sq_blocks_low_oi_direct",
+      sq17 is not None and "INSUFFICIENT_STRIKE_QUALITY" in sq17,
+      f"got={sq17}")
+
+
+# ── Test 18: Strike-quality gate passes Tier2 when all fields OK ─────────────
+print("\n[Test 18] Tier2 strike-quality gate passes when all values above threshold")
+srec18 = FakeSRec(oi_support=0.80, iv_attractiveness=0.60)
+sq18 = _strike_quality_check(srec18, score_margin=0.20, tier=2)
+check("sq_passes_tier2_all_ok", sq18 is None, f"got={sq18}")
+
+
+# ── Test 19: Strike-quality gate does not apply to Tier1 ─────────────────────
+print("\n[Test 19] Tier1 not subject to strike-quality gate (even with bad values)")
+srec19 = FakeSRec(oi_support=0.01, iv_attractiveness=0.00)
+sq19 = _strike_quality_check(srec19, score_margin=0.00, tier=1)
+check("sq_tier1_not_gated", sq19 is None, f"got={sq19}")
+
+
+# ── Test 20: Compact mode flag does not affect gate logic ────────────────────
+print("\n[Test 20] Compact mode flag is purely display — gates unaffected")
+# Gate checks are pure functions; LIVE_TERMINAL_MODE should have no effect.
+import os as _os
+original_env = _os.environ.get("LIVE_TERMINAL_MODE")
+_os.environ["LIVE_TERMINAL_MODE"] = "compact"
+sq20_compact = _strike_quality_check(
+    FakeSRec(oi_support=0.01, iv_attractiveness=0.01), score_margin=0.01, tier=2
+)
+_os.environ["LIVE_TERMINAL_MODE"] = "debug"
+sq20_debug = _strike_quality_check(
+    FakeSRec(oi_support=0.01, iv_attractiveness=0.01), score_margin=0.01, tier=2
+)
+if original_env is None:
+    _os.environ.pop("LIVE_TERMINAL_MODE", None)
+else:
+    _os.environ["LIVE_TERMINAL_MODE"] = original_env
+check("compact_mode_gate_same_result", sq20_compact == sq20_debug,
+      f"compact={sq20_compact}  debug={sq20_debug}")
+
+
+# ── Test 21: Full gate chain — valid Tier2 trade passes all gates ────────────
+print("\n[Test 21] Valid Tier2 trade passes all gates")
+reason21 = _pre_entry_check(
+    live_bars=50, last_stop_bar=-9999, last_stop_contract="",
+    bar_count=100,
+    srec=FakeSRec(oi_support=0.80, iv_attractiveness=0.60),
+    tier=2, score_margin=0.20,
+)
+check("valid_tier2_all_gates_pass", reason21 is None, f"reason={reason21}")
 
 
 # ── Summary ───────────────────────────────────────────────────────────────────

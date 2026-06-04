@@ -304,8 +304,9 @@ class UnderlyingRuntimeState:
     sizers:           dict  = field(default_factory=dict)  # {0..3: PositionSizer}
 
     # ── Per-bar captures — reset to None each bar ──────────────────────────
-    captured_market_ctx:  object | None = None
-    captured_strike_rec:  object | None = None
+    captured_market_ctx:   object | None = None
+    captured_strike_rec:   object | None = None
+    captured_score_margin: float  | None = None  # rank1 - rank2 composite score
 
 
 # MTF key normalisation (matches BacktestRunner convention)
@@ -426,6 +427,16 @@ _MIN_OI_SUPPORT_TIER23: float = 0.10
 # Live bar warmup gate: require at least this many live bars before allowing entry.
 # Prevents entries driven purely by warm-start historical MCB state (no live confirmation).
 _LIVE_BARS_BEFORE_ENTRY: int = 20
+
+# Strike quality gate for Tier2/3: reject low-quality strikes that passed OI filter.
+# Proven defect (2026-06-04): SENSEX iv_attr=0.000 and all entries SCORE_MARGIN_LOW.
+_MIN_SCORE_MARGIN_TIER23: float = 0.05   # min rank-1 minus rank-2 score gap
+_MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
+
+# Terminal mode: set LIVE_TERMINAL_MODE=debug for full StructureEvent repr.
+# Default compact mode suppresses verbose event output.
+import os as _os
+_TERMINAL_COMPACT: bool = _os.environ.get("LIVE_TERMINAL_MODE", "compact").lower() != "debug"
 
 # Capital protection limits
 # Soft halt — defensive mode, not a full stop
@@ -1218,17 +1229,24 @@ for symbol in INSTRUMENTS.keys():
 # ── Helpers reused verbatim from BacktestRunner ────────────────────────────────
 
 def _option_exit_signal(emitted_events, trader: OptionPaperTrader):
-    """Detect CHoCH/BOS structure reversal that invalidates the open position."""
+    """
+    Detect CHoCH/BOS structure reversal that invalidates the open position.
+
+    StructureSide enum values are lowercase ("bullish", "bearish") — comparisons
+    use .lower() for robustness against enum value changes.
+    Proven bug (2026-06-04): uppercase comparisons silently failed; structure
+    exits never fired in production.
+    """
     pos = trader._position
     if pos is None:
         return None
     for event in emitted_events:
         evt  = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
-        side = event.side.value if hasattr(event.side, "value") else str(event.side)
+        side = (event.side.value if hasattr(event.side, "value") else str(event.side)).lower()
         is_reversal = "CHOCH" in evt or evt == "BOS"
-        if pos.direction == "LONG"  and is_reversal and side == "BEARISH":
+        if pos.direction == "LONG"  and is_reversal and side == "bearish":
             return f"STRUCTURE_EXIT ({evt})"
-        if pos.direction == "SHORT" and is_reversal and side == "BULLISH":
+        if pos.direction == "SHORT" and is_reversal and side == "bullish":
             return f"STRUCTURE_EXIT ({evt})"
     return None
 
@@ -1752,7 +1770,8 @@ def _eod_force_close_all() -> None:
             f"[EOD CLOSE] {key}: {_closed.contract_symbol}  "
             f"exit=₹{_closed.exit_premium:.2f}  "
             f"pnl=₹{_closed.pnl:+,.2f}  lots={_closed.lots}  "
-            f"entry=₹{_closed.entry_premium:.2f}"
+            f"entry=₹{_closed.entry_premium:.2f}  "
+            f"EOD_CLOSE_PRICE_SOURCE=BSM_FALLBACK"
         )
 
         try:
@@ -1908,26 +1927,30 @@ def on_ticks(raw_ticks):
         # Reset per-bar captures for all enabled targets
         for _st in _runtime_by_underlying.values():
             if is_option_target_enabled(_st.option_underlying):
-                _st.captured_strike_rec = None
-                _st.captured_market_ctx = None
+                _st.captured_strike_rec    = None
+                _st.captured_market_ctx    = None
+                _st.captured_score_margin  = None
 
         # Resolve state for this bar's feed symbol (None = unknown feed)
         _current_state = _state_by_feed.get(completed_bar.symbol)
 
-        print(
-            "\n======================"
-        )
-
-        print(
-            f"COMPLETED BAR: "
-            f"{completed_bar.symbol}"
-        )
-
-        print(
-            "======================"
-        )
-
-        print(completed_bar)
+        if _TERMINAL_COMPACT:
+            print(
+                f"[BAR] {completed_bar.symbol} "
+                f"{completed_bar.close_price:.2f}"
+            )
+        else:
+            print(
+                "\n======================"
+            )
+            print(
+                f"COMPLETED BAR: "
+                f"{completed_bar.symbol}"
+            )
+            print(
+                "======================"
+            )
+            print(completed_bar)
 
         structure_bar = (
             structure_adapter.convert_bar(
@@ -1952,13 +1975,13 @@ def on_ticks(raw_ticks):
                 )
             ] = mtf_bar
 
-            print(
-                f"\n[MTF] "
-                f"{completed_bar.symbol} "
-                f"{timeframe}"
-            )
-
-            print(mtf_bar)
+            if not _TERMINAL_COMPACT:
+                print(
+                    f"\n[MTF] "
+                    f"{completed_bar.symbol} "
+                    f"{timeframe}"
+                )
+                print(mtf_bar)
 
         # ── Options context update ────────────────────────────────────────────────
         # Inert context (MCB / OR / PDL / FVG / bar_history) runs for ALL prepared
@@ -2083,6 +2106,11 @@ def on_ticks(raw_ticks):
                             best = _selection_result.best()
                             if best is not None:
                                 _current_state.captured_strike_rec = best
+                                _recs = _selection_result.recommendations
+                                _current_state.captured_score_margin = (
+                                    _recs[0].composite_score - _recs[1].composite_score
+                                    if len(_recs) >= 2 else None
+                                )
                                 print(
                                     f"[STRIKE] {best.option_symbol}  "
                                     f"δ={best.delta:.2f}  "
@@ -2487,8 +2515,38 @@ def on_ticks(raw_ticks):
                             f"WARM_START_LOCKOUT "
                             f"live_bars={_current_state.live_bars_seen}/{_LIVE_BARS_BEFORE_ENTRY}"
                         )
+                    # [A2] Context contradiction: BOS/CHOCH at this bar opposes MCB bias.
+                    # Proven defect (2026-06-04): BANKNIFTY BOS BULLISH fired at bar 59
+                    # while MCB said SHORT — entry was made on a bullish structure break.
+                    # Only blocks when HTF structure actively contradicts; NEUTRAL is not blocked.
+                    elif _pre_entry_block is None:
+                        _bias_str = str(_mctx.bias).upper()
+                        if _bias_str in ("SHORT", "LONG"):
+                            for _ev in result.emitted_events:
+                                _ev_type = (
+                                    _ev.event_type.value
+                                    if hasattr(_ev.event_type, "value") else str(_ev.event_type)
+                                )
+                                _ev_side = (
+                                    _ev.side.value
+                                    if hasattr(_ev.side, "value") else str(_ev.side)
+                                ).lower()
+                                _is_structural = "CHOCH" in _ev_type or _ev_type == "BOS"
+                                if (_bias_str == "SHORT" and _is_structural and _ev_side == "bullish"):
+                                    _pre_entry_block = (
+                                        f"CONTEXT_CONTRADICTION_REJECTED "
+                                        f"mcb=SHORT structure={_ev_type}_BULLISH at bar={_bar_count}"
+                                    )
+                                    break
+                                if (_bias_str == "LONG" and _is_structural and _ev_side == "bearish"):
+                                    _pre_entry_block = (
+                                        f"CONTEXT_CONTRADICTION_REJECTED "
+                                        f"mcb=LONG structure={_ev_type}_BEARISH at bar={_bar_count}"
+                                    )
+                                    break
+
                     # [B1] Underlying-level cooldown after stop
-                    elif _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:
+                    if _pre_entry_block is None and _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:
                         _pre_entry_block = (
                             f"STOP_COOLDOWN_ACTIVE underlying_cooldown "
                             f"bars_since_stop={_bars_since_stop}/{_SAME_UNDERLYING_STOP_COOLDOWN_BARS}"
@@ -2569,99 +2627,151 @@ def on_ticks(raw_ticks):
                                     except Exception:
                                         pass
                                 else:
-                                    # ── Entry contract guard ──────────────────
-                                    _entry_ok, _entry_rejection = _validate_entry_contract(
-                                        _current_state, _srec, _lots
-                                    )
-                                    if not _entry_ok:
+                                    # [D] Strike-quality gate: Tier2/3 must have
+                                    # meaningful score separation and IV attractiveness.
+                                    # Proven defect (2026-06-04): SENSEX iv_attr=0.000
+                                    # and SCORE_MARGIN_LOW let bad strikes through OI filter.
+                                    _sq_reason: str | None = None
+                                    if _effective_tier >= 2:
+                                        _bd       = getattr(_srec, "breakdown", None)
+                                        _iv_attr  = getattr(_bd, "iv_attractiveness", None)
+                                        _oi_supp2 = getattr(_bd, "oi_support", None)
+                                        _sm_val   = _current_state.captured_score_margin
+                                        _sq_parts: list[str] = []
+                                        if _sm_val is not None and _sm_val < _MIN_SCORE_MARGIN_TIER23:
+                                            _sq_parts.append(
+                                                f"score_margin={_sm_val:.3f}<{_MIN_SCORE_MARGIN_TIER23}"
+                                            )
+                                        if _iv_attr is not None and _iv_attr < _MIN_IV_ATTR_TIER23:
+                                            _sq_parts.append(
+                                                f"iv_attr={_iv_attr:.3f}<{_MIN_IV_ATTR_TIER23}"
+                                            )
+                                        if _oi_supp2 is not None and _oi_supp2 < _MIN_OI_SUPPORT_TIER23:
+                                            _sq_parts.append(
+                                                f"oi_support={_oi_supp2:.3f}<{_MIN_OI_SUPPORT_TIER23}"
+                                            )
+                                        if _sq_parts:
+                                            _sq_reason = (
+                                                f"INSUFFICIENT_STRIKE_QUALITY "
+                                                f"{' '.join(_sq_parts)} "
+                                                f"tier={_effective_tier}"
+                                            )
+                                    if _sq_reason is not None:
                                         print_warning_block(
-                                            "ENTRY GUARD REJECTED",
+                                            "ENTRY CHECK BLOCKED",
                                             bar_index=_bar_count,
                                             underlying=_current_state.option_underlying,
-                                            contract=_srec.option_symbol,
-                                            reason=_entry_rejection,
+                                            reason=_sq_reason,
                                         )
                                         try:
                                             _db.write_decision(
                                                 bar_index=_bar_count,
                                                 bar_ts=datetime.now(timezone.utc).isoformat(),
-                                                underlying=_srec.underlying_symbol,
+                                                underlying=_current_state.option_underlying,
                                                 bias=str(_mctx.bias),
                                                 conf_raw=_mctx.confidence,
                                                 conf_eff=_effective_conf,
-                                                outcome="ENTRY_GUARD_REJECTED",
-                                                filter_reason=_entry_rejection,
+                                                outcome="INSUFFICIENT_STRIKE_QUALITY",
+                                                filter_reason=_sq_reason,
                                                 equity=_equity,
                                                 drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                             )
                                         except Exception:
                                             pass
                                     else:
-                                        # ── Open position ─────────────────────
-                                        _open_premium_cost += _cost
-                                        _current_state.option_trader.open(
-                                            recommendation=_srec,
-                                            direction=str(_mctx.bias),
-                                            bar_index=_bar_count,
-                                            lots=_lots,
+                                        # ── Entry contract guard ──────────────
+                                        _entry_ok, _entry_rejection = _validate_entry_contract(
+                                            _current_state, _srec, _lots
                                         )
-                                    _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
-                                    if _entry_ok:
-                                        # ── Entry print + DB write ────────────
-                                        print_entry_block(
-                                            direction=str(_mctx.bias),
-                                            underlying=_srec.underlying_symbol,
-                                            strike=_srec.strike_price,
-                                            option_type=_srec.option_type,
-                                            expiry=_srec.expiry_date,
-                                            lots=_lots,
-                                            lot_size=_srec.lot_size,
-                                            premium=_srec.last_traded_price,
-                                            notional=_cost,
-                                            bar_index=_bar_count,
-                                            session=str(_session_ctx.phase),
-                                            conf_raw=_mctx.confidence,
-                                            conf_eff=_effective_conf,
-                                            fvg_quality=_current_state.fvg_quality,
-                                            drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                            extra_label=f"TIER{_tier_label}",
-                                        )
-                                        try:
-                                            _db.write_trade_entry(
+                                        if not _entry_ok:
+                                            print_warning_block(
+                                                "ENTRY GUARD REJECTED",
+                                                bar_index=_bar_count,
+                                                underlying=_current_state.option_underlying,
+                                                contract=_srec.option_symbol,
+                                                reason=_entry_rejection,
+                                            )
+                                            try:
+                                                _db.write_decision(
+                                                    bar_index=_bar_count,
+                                                    bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                    underlying=_srec.underlying_symbol,
+                                                    bias=str(_mctx.bias),
+                                                    conf_raw=_mctx.confidence,
+                                                    conf_eff=_effective_conf,
+                                                    outcome="ENTRY_GUARD_REJECTED",
+                                                    filter_reason=_entry_rejection,
+                                                    equity=_equity,
+                                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                )
+                                            except Exception:
+                                                pass
+                                        else:
+                                            # ── Open position ─────────────────
+                                            _open_premium_cost += _cost
+                                            _current_state.option_trader.open(
+                                                recommendation=_srec,
+                                                direction=str(_mctx.bias),
+                                                bar_index=_bar_count,
+                                                lots=_lots,
+                                            )
+                                        _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
+                                        if _entry_ok:
+                                            # ── Entry print + DB write ─────────
+                                            print_entry_block(
+                                                direction=str(_mctx.bias),
                                                 underlying=_srec.underlying_symbol,
-                                                contract_symbol=_srec.option_symbol,
                                                 strike=_srec.strike_price,
                                                 option_type=_srec.option_type,
-                                                expiry_date=_srec.expiry_date.isoformat(),
-                                                direction=str(_mctx.bias),
+                                                expiry=_srec.expiry_date,
                                                 lots=_lots,
                                                 lot_size=_srec.lot_size,
-                                                entry_premium=_srec.last_traded_price,
-                                                entry_spot=completed_bar.close_price,
-                                                entry_iv=_current_state.last_atm_iv,
-                                                entry_bar_index=_bar_count,
-                                                entry_ts=datetime.now(timezone.utc).isoformat(),
-                                                conf_raw=_mctx.confidence,
-                                                conf_eff=_effective_conf,
-                                                fvg_quality=_current_state.fvg_quality,
-                                                drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                                equity_before=_equity,
-                                            )
-                                            _db.write_decision(
+                                                premium=_srec.last_traded_price,
+                                                notional=_cost,
                                                 bar_index=_bar_count,
-                                                bar_ts=datetime.now(timezone.utc).isoformat(),
-                                                underlying=_srec.underlying_symbol,
-                                                bias=str(_mctx.bias),
+                                                session=str(_session_ctx.phase),
                                                 conf_raw=_mctx.confidence,
                                                 conf_eff=_effective_conf,
-                                                outcome=f"ENTRY_TIER{_tier_label}",
-                                                session_phase=str(_session_ctx.phase),
                                                 fvg_quality=_current_state.fvg_quality,
-                                                equity=_equity,
                                                 drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                extra_label=f"TIER{_tier_label}",
                                             )
-                                        except Exception:
-                                            pass
+                                            try:
+                                                _db.write_trade_entry(
+                                                    underlying=_srec.underlying_symbol,
+                                                    contract_symbol=_srec.option_symbol,
+                                                    strike=_srec.strike_price,
+                                                    option_type=_srec.option_type,
+                                                    expiry_date=_srec.expiry_date.isoformat(),
+                                                    direction=str(_mctx.bias),
+                                                    lots=_lots,
+                                                    lot_size=_srec.lot_size,
+                                                    entry_premium=_srec.last_traded_price,
+                                                    entry_spot=completed_bar.close_price,
+                                                    entry_iv=_current_state.last_atm_iv,
+                                                    entry_bar_index=_bar_count,
+                                                    entry_ts=datetime.now(timezone.utc).isoformat(),
+                                                    conf_raw=_mctx.confidence,
+                                                    conf_eff=_effective_conf,
+                                                    fvg_quality=_current_state.fvg_quality,
+                                                    drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                    equity_before=_equity,
+                                                )
+                                                _db.write_decision(
+                                                    bar_index=_bar_count,
+                                                    bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                    underlying=_srec.underlying_symbol,
+                                                    bias=str(_mctx.bias),
+                                                    conf_raw=_mctx.confidence,
+                                                    conf_eff=_effective_conf,
+                                                    outcome=f"ENTRY_TIER{_tier_label}",
+                                                    session_phase=str(_session_ctx.phase),
+                                                    fvg_quality=_current_state.fvg_quality,
+                                                    equity=_equity,
+                                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                )
+                                            except Exception:
+                                                pass
                             else:
                                 print_warning_block(
                                     "CASH BLOCK",
@@ -2710,22 +2820,36 @@ def on_ticks(raw_ticks):
                                 pass
 
         if result.emitted_events:
-
-            print(
-                "\nSTRUCTURE EVENTS:\n"
-            )
-
-            for event in (
-                result.emitted_events
-            ):
-
-                print(event)
-
+            if _TERMINAL_COMPACT:
+                _strongest = max(
+                    result.emitted_events,
+                    key=lambda e: getattr(e, "strength", 0.0),
+                    default=None,
+                )
+                _s_type = (
+                    (_strongest.event_type.value
+                     if hasattr(_strongest.event_type, "value")
+                     else str(_strongest.event_type))
+                    if _strongest is not None else "?"
+                )
+                print(
+                    f"[STRUCTURE] {completed_bar.symbol} "
+                    f"count={len(result.emitted_events)} "
+                    f"strongest={_s_type}"
+                )
+            else:
+                print(
+                    "\nSTRUCTURE EVENTS:\n"
+                )
+                for event in (
+                    result.emitted_events
+                ):
+                    print(event)
         else:
-
-            print(
-                "\nNo structure events."
-            )
+            if not _TERMINAL_COMPACT:
+                print(
+                    "\nNo structure events."
+                )
 
 
 # ── Validate Kite session before opening WebSocket ────────────────────────────

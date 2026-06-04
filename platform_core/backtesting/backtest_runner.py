@@ -1278,12 +1278,12 @@ def _detect_exit_signal(emitted_events: tuple, option_trader: OptionPaperTrader)
         return None
     for event in emitted_events:
         evt_val  = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
-        side_val = event.side.value if hasattr(event.side, "value") else str(event.side)
+        side_val = (event.side.value if hasattr(event.side, "value") else str(event.side)).lower()
         is_choch = "CHOCH" in evt_val
         is_bos   = evt_val == "BOS"
-        if pos.direction == "LONG"  and (is_choch or is_bos) and side_val == "BEARISH":
+        if pos.direction == "LONG"  and (is_choch or is_bos) and side_val == "bearish":
             return f"STRUCTURE_EXIT ({evt_val})"
-        if pos.direction == "SHORT" and (is_choch or is_bos) and side_val == "BULLISH":
+        if pos.direction == "SHORT" and (is_choch or is_bos) and side_val == "bullish":
             return f"STRUCTURE_EXIT ({evt_val})"
     return None
 
