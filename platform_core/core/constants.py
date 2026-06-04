@@ -108,11 +108,13 @@ REFERENCE_STRIKE_STEPS: dict[UnderlyingFamily, Decimal] = {
 }
 
 #: Reference lot sizes per underlying (units). Override via config.
+#: Updated 2026-06-04 to match current Kite instrument master:
+#:   BANKNIFTY 15 → 30, NIFTY 75 → 65, SENSEX 10 → 20
 REFERENCE_LOT_SIZES: dict[UnderlyingFamily, int] = {
-    UnderlyingFamily.NIFTY:     75,
-    UnderlyingFamily.BANKNIFTY: 15,
+    UnderlyingFamily.NIFTY:     65,
+    UnderlyingFamily.BANKNIFTY: 30,
     UnderlyingFamily.FINNIFTY:  25,
-    UnderlyingFamily.SENSEX:    10,
+    UnderlyingFamily.SENSEX:    20,
 }
 
 # ── 4. Bar and windowing defaults ─────────────────────────────────────────────

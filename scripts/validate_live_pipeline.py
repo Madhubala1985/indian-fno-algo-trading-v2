@@ -203,7 +203,7 @@ except Exception as exc:
 # ─────────────────────────────────────────────────────────────────────────────
 _hdr(4, "Live Option-Chain Retrieval")
 chain = None
-lot_size = 15
+lot_size = 30  # BANKNIFTY lot size per current Kite master (updated 2026-06-04)
 try:
     from platform_core.data.synthetic_chain_builder import (
         ExpiryProvider, SyntheticOptionChainBuilder, SyntheticChainConfig,

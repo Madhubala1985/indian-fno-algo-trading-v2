@@ -20,10 +20,10 @@ Chain generation:
 ExpiryProvider computes nearest weekly and biweekly expiry dates from the
 bar date. Expiry weekday is configurable per underlying via
 WEEKLY_EXPIRY_WEEKDAYS, enabling correct modeling of:
-  NIFTY     → Thursday
-  BANKNIFTY → Wednesday
+  NIFTY     → Tuesday  (weekly; NSE circular effective 2024)
+  BANKNIFTY → Tuesday  (monthly only; weekly series discontinued)
   FINNIFTY  → Tuesday
-  SENSEX    → Friday (BSE)
+  SENSEX    → Thursday (weekly; BSE)
 
 Replay safety:
   ATM IV is estimated from the past vol_lookback_bars only. No future
@@ -57,12 +57,16 @@ from platform_core.core.enums import UnderlyingFamily
 
 # ── Expiry calendar constants ──────────────────────────────────────────────────
 
-# NSE/BSE weekly option expiry weekdays (Monday=0 … Sunday=6)
+# NSE/BSE option expiry weekdays (Monday=0 … Sunday=6)
+# Updated 2026-06-04 to match current exchange rules confirmed by Kite master:
+#   NIFTY weekly: Tuesday (NSE circular; previously Thursday)
+#   BANKNIFTY: Tuesday monthly only; weekly series discontinued
+#   SENSEX weekly: Thursday (BSE; previously Friday)
 WEEKLY_EXPIRY_WEEKDAYS: dict[str, int] = {
-    "NIFTY":     3,   # Thursday
-    "BANKNIFTY": 2,   # Wednesday
+    "NIFTY":     1,   # Tuesday
+    "BANKNIFTY": 1,   # Tuesday (monthly; weekly discontinued)
     "FINNIFTY":  1,   # Tuesday
-    "SENSEX":    4,   # Friday (BSE)
+    "SENSEX":    3,   # Thursday (BSE)
 }
 _DEFAULT_EXPIRY_WEEKDAY = 3   # Thursday fallback for unknown underlyings
 

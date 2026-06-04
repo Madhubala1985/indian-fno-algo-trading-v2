@@ -138,8 +138,9 @@ def _repeated_strike_analysis(
     if same:
         print(f"    CALL and PUT both select strike {best_call.strike_price:.0f}")
     else:
+        put_str = f"{best_put.strike_price:.0f}" if best_put else "n/a"
         print(f"    CALL winner: {best_call.strike_price:.0f}  "
-              f"PUT winner: {best_put.strike_price:.0f if best_put else 'n/a'}")
+              f"PUT winner: {put_str}")
 
     dist_atm = abs(best_call.strike_price - atm)
     atm_label = "ATM" if dist_atm < step * 0.5 else (
@@ -342,7 +343,10 @@ def _validate_one(
     for r in put_recs[:5]:
         _print_candidate(r.rank, r, atm)
 
-    _repeated_strike_analysis(call_recs, put_recs, atm, step)
+    try:
+        _repeated_strike_analysis(call_recs, put_recs, atm, step)
+    except Exception as exc:
+        print(f"  [WARN] repeated-strike analysis: {exc}")
 
     print(f"\n  [PASS] {config_key}  underlying={underlying}  "
           f"exchange={exchange}  contracts={len(chain.contracts)}  "
