@@ -3283,3 +3283,91 @@ No legacy PaperBroker call-sites survive in the live pipeline.
 
 > **PARTIAL — backtest and static config parity proven for all three underlyings; live paper execution flags are set; real-funds enablement blocked by lot-size constant staleness and missing per-underlying state/DB infrastructure.**
 
+---
+
+## 37. Phase C Completion — Multi-Underlying Position Lifecycle (2026-06-04)
+
+### 37a. Commit
+
+| Hash | Description |
+|---|---|
+| 9b97037 | Add multi-underlying position lifecycle support |
+
+### 37b. What was implemented
+
+**`platform_core/persistence/trade_database.py`**
+
+| Before | After |
+|---|---|
+| `_open_trade_rowid: int \| None` (single scalar) | `_open_trade_rowids: dict[str, int \| None]` keyed by underlying |
+| `recover_open_trade_row()` — no underlying param | `recover_open_trade_row(*, underlying, ...)` — routes to correct slot |
+| `write_trade_exit()` — no underlying param | `write_trade_exit(*, underlying, ...)` — keys the correct rowid |
+| `_insert_trade_entry` warns on any open rowid | Warns per-underlying; BANKNIFTY entry cannot conflict with NIFTY rowid |
+| `_update_trade_exit` clears single scalar | Clears `_open_trade_rowids[underlying]` — other underlyings unaffected |
+
+**`platform_core/data/live/live_structure_pipeline.py`**
+
+| Area | Before | After |
+|---|---|---|
+| `_open_premium_cost` | Set to `_cost` on entry (overwrites) | `+= _cost` on entry (accumulates) |
+| Exit `_open_premium_cost` | `= 0.0` | `= _compute_open_premium_cost()` (recomputes remaining) |
+| Entry gate | `not has_any_open_position()` (global) | `not _current_state.option_trader.has_open_position()` (per-underlying) |
+| `open_position_count` in sizer | `1 if any_open else 0` | Count of all underlyings with open positions |
+| State save `open_position` | Single dict or null | Retained for backward compat |
+| State save `open_positions` | Not written | New authoritative dict keyed by underlying |
+| State load | Single-position restore only | Per-underlying loop; migration from old `open_position`; isolated try/except per position; unknown underlying warns and skips |
+| DB recovery on restore | `recover_open_trade_row()` once | Called per underlying with correct `underlying=` param |
+| Performance summary | `_current_state.option_trader.completed_trades` only | Aggregated across all underlyings |
+| Market-close | Prints first open position | Iterates and prints all open positions |
+
+### 37c. Test results
+
+| Suite | Result |
+|---|---|
+| `test_multipos_state_migration.py` — state/DB lifecycle | **24/24 PASS** |
+| `test_strike_selector_sanity.py` | 13/13 PASS |
+| `validate_symbol_backtest_support.py` | ALL CONFIG OK (BNK 3 trades, NIFTY 20, SENSEX 24) |
+| `py_compile` all changed files | OK |
+
+### 37d. Live artifact state — 2026-06-04
+
+`validate_live_lifecycle_state.py` run against current logs:
+
+| Area | Finding | Severity |
+|---|---|---|
+| DB pt_trades | 1 BANKNIFTY OPEN row (BANKNIFTY26JUN54000CE, id=1) — entry fields complete | OK |
+| DB integrity | No raw-index trades, no NIFTY50 symbols, underlying is BANKNIFTY only | OK |
+| State format | Pre-Phase-C (`open_position` key only; `open_positions` absent/null) | WARN |
+| State/DB cross-ref | BANKNIFTY state and DB agree on open contract | OK |
+| State bar history | Legacy `bar_history` only — NIFTY/SENSEX MCB will cold-start on next run | WARN |
+| CSV duplicate | Lines 3–4 are identical (`BANKNIFTY03JUN2652600CE`) — likely trade logger bug | **FAIL** |
+| CSV vs DB | CSV contains trades from previous DB sessions (expected — DB not retained) | WARN |
+| State lot_size | Open position restores with old lot_size=15 — next run will use 30 | INFO |
+
+> The CSV duplicate (`BANKNIFTY03JUN2652600CE` logged twice) is a pre-existing artifact from a
+> previous session, not introduced by Phase C.  The trade logger (`TradeLogger.log_trade`) may
+> have been called twice for one exit event.  This is a known issue requiring a separate fix.
+
+### 37e. Phase C parity matrix
+
+| Dimension | Status |
+|---|---|
+| Per-underlying open position state | **DONE** |
+| Per-underlying DB rowid tracking | **DONE** |
+| Multi-position accumulation of portfolio heat | **DONE** |
+| Entry gate per-underlying (BANKNIFTY no longer blocks NIFTY) | **DONE** |
+| Performance summary across all underlyings | **DONE** |
+| State file backward compat (old format migrated) | **DONE** |
+| Market-hours paper lifecycle observation (NIFTY/SENSEX) | NOT YET |
+| CSV duplicate bug investigation | NOT YET |
+| SENSEX BFO rollover/expiry monitoring | NOT YET |
+| Per-underlying performance table in live summary | NOT YET |
+
+### 37f. Phase C status
+
+> **CODE COMPLETE — multi-underlying position lifecycle implemented and unit-tested.
+> Real-funds status: NOT READY.
+> Required before real-funds: market-hours paper entry→management→exit→DB→CSV→state
+> round-trip observed and clean for BANKNIFTY, NIFTY, and SENSEX; CSV duplicate bug
+> investigated and fixed; SENSEX BFO rollover behaviour confirmed stable.**
+
