@@ -293,6 +293,7 @@ class UnderlyingRuntimeState:
 
     # ── Mutable per-underlying state ───────────────────────────────────────
     last_atm_iv:      float                     # updated each bar from live chain
+    last_bar_close:   float = 0.0               # most recent 1m close price — used for EOD BSM
     bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
     bars_since_save:  int  = 0                  # bars since last state-file write
     fvg_quality:      float = 1.0
@@ -1667,56 +1668,184 @@ def _run_shadow_option_intelligence(
         _maybe_print_shadow_summary(state.option_underlying)
 
 
+def _eod_force_close_all() -> None:
+    """
+    Force-close every open paper option position at market close.
+
+    For each open position:
+      - Requires last_bar_close > 0 AND last_atm_iv > 0.
+      - Calls evaluate_and_close(force_reason="EOD_FORCE_CLOSE") with the
+        most recent bar close as current_spot and last_atm_iv as current_iv.
+        The BSM inside evaluate_and_close computes a fair option price.
+      - If either price source is zero (no bar ever seen for this underlying),
+        logs EOD_CLOSE_PRICE_UNAVAILABLE and leaves the position open.
+      - On success: updates _equity, _daily_pnl, _open_premium_cost,
+        _consecutive_losses; writes DB exit row; writes CSV row; saves state.
+
+    Never uses the underlying spot directly as option exit premium.
+    Never inserts a fabricated price when the BSM inputs are unavailable.
+    """
+    global _equity, _peak_equity, _open_premium_cost, _daily_pnl, _consecutive_losses
+
+    for key, und_state in _runtime_by_underlying.items():
+        if not und_state.option_trader.has_open_position():
+            continue
+
+        pos = und_state.option_trader._position
+        spot = und_state.last_bar_close
+        iv   = und_state.last_atm_iv
+
+        if spot <= 0 or iv <= 0:
+            print(
+                f"[EOD CLOSE WARN] {key}: price unavailable "
+                f"(spot={spot:.2f}  iv={iv:.4f}) — "
+                f"position {pos.contract_symbol} carried, not closed. "
+                f"Reason: EOD_CLOSE_PRICE_UNAVAILABLE"
+            )
+            continue
+
+        _closed = und_state.option_trader.evaluate_and_close(
+            current_spot=spot,
+            current_iv=iv,
+            current_date=datetime.now(timezone.utc).date(),
+            bar_index=_bar_count,
+            stop_loss_pct=_STOP_LOSS_PCT,
+            take_profit_pct=_TAKE_PROFIT_PCT,
+            min_dte=_MIN_DTE_TO_HOLD,
+            force_reason="EOD_FORCE_CLOSE",
+        )
+
+        if _closed is None:
+            # Should not happen since force_reason is set, but guard defensively
+            print(f"[EOD CLOSE WARN] {key}: evaluate_and_close returned None unexpectedly")
+            continue
+
+        _equity               += _closed.pnl
+        _peak_equity           = max(_peak_equity, _equity)
+        _open_premium_cost     = _compute_open_premium_cost()
+        _daily_pnl            += _closed.pnl
+        if _closed.pnl < 0:
+            _consecutive_losses += 1
+        else:
+            _consecutive_losses = 0
+
+        print(
+            f"[EOD CLOSE] {key}: {_closed.contract_symbol}  "
+            f"exit=₹{_closed.exit_premium:.2f}  "
+            f"pnl=₹{_closed.pnl:+,.2f}  lots={_closed.lots}  "
+            f"entry=₹{_closed.entry_premium:.2f}"
+        )
+
+        try:
+            _db.write_trade_exit(
+                underlying=key,
+                exit_premium=_closed.exit_premium,
+                pnl=_closed.pnl,
+                bars_held=_closed.bars_held,
+                exit_reason="EOD_FORCE_CLOSE",
+                exit_ts=datetime.now(timezone.utc).isoformat(),
+                equity_after=_equity,
+            )
+        except Exception:
+            pass
+
+        if _save_state():
+            trade_logger.log_trade(trade=_closed.as_paper_trade())
+        else:
+            print(
+                f"[EOD CLOSE WARN] {key}: state save failed — "
+                f"{_closed.contract_symbol} closed in memory but not written to CSV"
+            )
+
+
+def _print_eod_portfolio_summary() -> None:
+    """
+    Print a compact per-underlying and portfolio-level summary at shutdown.
+    """
+    print(f"\n{'═'*62}")
+    print("  EOD PORTFOLIO SUMMARY")
+    print(f"{'═'*62}")
+    print(f"  {'Underlying':<12}  {'Opened':>6}  {'Closed':>6}  {'Open':>5}  {'PnL':>12}")
+    print(f"  {'─'*12}  {'─'*6}  {'─'*6}  {'─'*5}  {'─'*12}")
+
+    total_opened = 0
+    total_closed_pnl = 0.0
+    for key, und_state in sorted(_runtime_by_underlying.items()):
+        # completed_trades includes all this session's closed trades for this underlying
+        ct     = und_state.option_trader.completed_trades
+        opened = len(ct) + (1 if und_state.option_trader.has_open_position() else 0)
+        closed = len(ct)
+        open_  = 1 if und_state.option_trader.has_open_position() else 0
+        rpnl   = sum(t.pnl for t in ct)
+        total_opened     += opened
+        total_closed_pnl += rpnl
+        print(
+            f"  {key:<12}  {opened:>6}  {closed:>6}  {open_:>5}  "
+            f"₹{rpnl:>+10,.2f}"
+        )
+
+    print(f"  {'─'*52}")
+    print(f"  {'TOTAL':<12}  {total_opened:>6}  {'':>6}  {'':>5}  ₹{total_closed_pnl:>+10,.2f}")
+    print(f"\n  Equity     : ₹{_equity:>12,.2f}")
+    print(f"  Daily PnL  : ₹{_daily_pnl:>+12,.2f}")
+    print(f"  Peak Equity: ₹{_peak_equity:>12,.2f}")
+    dd = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
+    print(f"  Drawdown   :  {dd:>11.2%}")
+    print(f"{'═'*62}\n")
+
+
 def _handle_market_close_shutdown(reason: str) -> None:
     """
     Deterministic market-close shutdown — idempotent, safe to call from any thread.
 
     Sequence:
       1. Set _shutdown_triggered flag (guards against re-entry).
-      2. Print terminal summary with open position status.
+      2. Force-close all open paper positions (EOD_FORCE_CLOSE).
       3. Save state to disk.
-      4. Write MARKET_CLOSE_SHUTDOWN runtime event to DB.
-      5. Disconnect Kite WebSocket.
-      6. Return — caller (main loop) calls sys.exit(0).
-
-    Does NOT force-close open positions.  If a position is open at market
-    close it is carried in the state file and logged as such.
+      4. Print EOD portfolio summary.
+      5. Write MARKET_CLOSE_SHUTDOWN runtime event to DB.
+      6. Disconnect Kite WebSocket.
+      7. Return — caller (main loop) calls sys.exit(0).
     """
     global _shutdown_triggered
     if _shutdown_triggered:
         return
     _shutdown_triggered = True
 
-    print(f"\n[MARKET CLOSE] Saving state and shutting down cleanly... ({reason})")
+    print(f"\n[MARKET CLOSE] {reason} — forcing EOD close and shutting down cleanly.")
 
-    _open_states_mc = [
+    # Force-close all open positions before saving final state
+    _eod_force_close_all()
+
+    # Any positions that could not be closed (price unavailable) are still open
+    _still_open = [
         s for s in _runtime_by_underlying.values()
         if s.option_trader.has_open_position()
     ]
-    if _open_states_mc:
-        for _os_mc in _open_states_mc:
-            _p_mc = _os_mc.option_trader._position
+    if _still_open:
+        for _s in _still_open:
+            _p = _s.option_trader._position
             print(
-                f"[MARKET CLOSE] Open position carried ({_os_mc.option_underlying}): "
-                f"{_p_mc.contract_symbol}  lots={_p_mc.lots}  "
-                f"entry=₹{_p_mc.entry_premium:.2f}  direction={_p_mc.direction}  "
-                f"expiry={_p_mc.expiry_date}"
+                f"[MARKET CLOSE] Position carried (price unavailable): "
+                f"{_p.contract_symbol}  entry=₹{_p.entry_premium:.2f}  "
+                f"lots={_p.lots}  expiry={_p.expiry_date}"
             )
     else:
-        print("[MARKET CLOSE] No open positions.")
+        print("[MARKET CLOSE] All positions closed.")
 
     _save_state()
+    _print_eod_portfolio_summary()
 
     try:
         _pos_syms = [
             s.option_trader._position.contract_symbol
-            for s in _open_states_mc
+            for s in _still_open
         ]
-        _pos_msg = f"open_positions={_pos_syms}" if _pos_syms else "no_open_positions"
+        _pos_msg = f"carried_positions={_pos_syms}" if _pos_syms else "all_positions_closed"
         _db.write_runtime_event(
             "MARKET_CLOSE_SHUTDOWN",
             severity="INFO",
-            message=f"reason={reason}  equity=₹{_equity:,.0f}  {_pos_msg}",
+            message=f"reason={reason}  equity=₹{_equity:,.0f}  daily_pnl=₹{_daily_pnl:+,.0f}  {_pos_msg}",
             equity=_equity,
         )
     except Exception:
@@ -1818,6 +1947,8 @@ def on_ticks(raw_ticks):
         # Execution-only paths (chain fetch, strike selection, entry/exit) are
         # gated on is_option_target_enabled() inside this block.
         if _current_state is not None:
+            # Track latest close price for EOD BSM force-close
+            _current_state.last_bar_close = completed_bar.close_price
             # Session classification — shared stateless engine, safe to call per-bar
             _session_ctx = _session_engine.classify(completed_bar.start_timestamp)
             _current_state.or_engine.update_bar(completed_bar)
