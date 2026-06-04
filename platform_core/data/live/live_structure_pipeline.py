@@ -182,23 +182,15 @@ multi_timeframe_builder = (
 )
 
 # ── Options pipeline ──────────────────────────────────────────────────────────
-# _PRIMARY_OPTION_TARGET   — the single active BANKNIFTY execution target (unchanged).
-# _OPTION_TARGETS_ENABLED  — set of underlyings currently allowed to enter positions.
-#                            Contains only BANKNIFTY until Phase B2 validation passes.
+# _PRIMARY_OPTION_TARGET    — canonical reference underlying (BANKNIFTY).
+# _OPTION_TARGETS_ENABLED   — all underlyings currently executing paper trades.
+#                             BANKNIFTY and NIFTY trade on NFO; SENSEX on BFO.
+# _OPTION_TARGETS_SHADOW    — empty; shadow infrastructure retained for future use.
 # _OPTION_TARGETS_AVAILABLE — all underlyings with complete option-chain config.
-#
-# NIFTY and SENSEX are PREPARED but DISABLED.
-# Before enabling either, the following must pass:
-#   1. validate_option_chain_support.py PASS for the target
-#   2. BacktestRunner(symbol=target).run() produces valid trades on historical data
-#   3. Per-underlying state containers (MCB, OptionPaperTrader, DailyBarAccumulator,
-#      PDL, OR, FVG engines, last_atm_iv) must be instantiated and wired
-#   4. DB/state persistence extended to open_positions dict (not single open_position)
-#   5. KiteAdapter BFO cache proven live for SENSEX (market-hours test required)
 
 _PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"
-_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY", "NIFTY"})
-_OPTION_TARGETS_SHADOW:    frozenset = frozenset({"SENSEX"})  # chain+score only, no trades
+_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
+_OPTION_TARGETS_SHADOW:    frozenset = frozenset()  # no active shadow targets
 _OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
 # Raw index/feed names that must never appear as a contract symbol
 _RAW_INDEX_SYMBOLS:        frozenset = frozenset({"BANKNIFTY", "NIFTY", "NIFTY50", "SENSEX", "FINNIFTY"})
@@ -240,12 +232,10 @@ def get_option_chain_config(option_underlying: str):
 
 def is_option_target_enabled(option_underlying: str) -> bool:
     """
-    Return True only when option_underlying is in the live-enabled set.
+    Return True when option_underlying is in the live-enabled set.
 
-    This is the single authoritative gate that prevents NIFTY and SENSEX
-    from entering the options execution path.  Both are in
-    _OPTION_TARGETS_AVAILABLE (prepared) but not in _OPTION_TARGETS_ENABLED
-    (active) until all Phase B prerequisites pass for that underlying.
+    Authoritative execution gate: only enabled targets may fetch chains,
+    run strike selection, size positions, or open/close trades.
     """
     return option_underlying in _OPTION_TARGETS_ENABLED
 
@@ -343,10 +333,10 @@ _INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000 — aligns with backtest ba
 _REFERENCE_IV:   float = 0.18         # baseline IV for vol-ratio scaling
 
 # ── Per-underlying runtime state ───────────────────────────────────────────────
-# All three prepared underlyings are instantiated.  BANKNIFTY and NIFTY are in
-# _OPTION_TARGETS_ENABLED — both build context and execute paper option trades.
-# SENSEX is shadow-only: builds inert context (MCB/OR/PDL/FVG) but never
-# fetches chains, runs strike selection, or opens trades.
+# All three prepared underlyings are instantiated and in _OPTION_TARGETS_ENABLED.
+# BANKNIFTY and NIFTY trade on NSE (NFO).  SENSEX trades on BSE (BFO).
+# The shadow infrastructure (_run_shadow_option_intelligence etc.) is retained
+# for future use but no active shadow targets remain.
 #
 # Execution guard: is_option_target_enabled(state.option_underlying) must return
 # True before any execution path (chain fetch / sizing / trade open/close) runs.
@@ -1158,12 +1148,17 @@ def _validate_entry_contract(
     """
     Pre-flight contract sanity check before option_trader.open().
 
-    Returns (ok, rejection_reason).  Checks:
-    - underlying is in _OPTION_TARGETS_ENABLED (belt+suspenders; outer gate already enforces this)
+    Returns (ok, rejection_reason).  Checks (all underlyings):
+    - underlying is in _OPTION_TARGETS_ENABLED
     - contract_symbol is not a raw index name
     - contract_symbol contains CE or PE
     - lots >= 1
     - srec.lot_size matches state.lot_size
+    - srec.underlying_symbol matches state.option_underlying
+    - strike_price > 0
+
+    SENSEX/BFO additional check:
+    - state.exchange must be "BFO" (fail-closed: if misconfigured, do not trade)
     """
     sym = srec.option_symbol
     if state.option_underlying not in _OPTION_TARGETS_ENABLED:
@@ -1178,6 +1173,20 @@ def _validate_entry_contract(
         return False, (
             f"lot_size mismatch: srec={srec.lot_size} != state={state.lot_size} "
             f"for {state.option_underlying}"
+        )
+    if getattr(srec, "underlying_symbol", None) != state.option_underlying:
+        return False, (
+            f"underlying mismatch: srec.underlying_symbol={getattr(srec, 'underlying_symbol', None)!r} "
+            f"!= state.option_underlying={state.option_underlying!r}"
+        )
+    strike = getattr(srec, "strike_price", None)
+    if strike is None or strike <= 0:
+        return False, f"strike_price={strike!r} is invalid (must be > 0)"
+    # SENSEX fail-closed: BFO exchange required; any misconfiguration blocks the trade
+    if state.option_underlying == "SENSEX" and state.exchange != "BFO":
+        return False, (
+            f"SENSEX must use exchange='BFO', got {state.exchange!r} — "
+            "re-check OPTION_CHAIN_CONFIG"
         )
     return True, ""
 
