@@ -394,20 +394,29 @@ def _check_csv(
         rpt.info("CSV", "Empty file — no completed trades logged yet")
         return
 
-    # Detect duplicate rows (same symbol + direction + entry_price)
-    seen: set[tuple] = set()
-    dupes: list[int] = []
+    # Detect duplicate rows (same symbol + direction + entry_price + exit_price + quantity)
+    sym_col_d = "symbol" if "symbol" in (csv_rows[0] if csv_rows else {}) else "contract_symbol"
+    seen_keys: dict[tuple, int] = {}   # key → first line number (1-indexed, header=1)
+    dupe_details: list[str] = []
     for i, row in enumerate(csv_rows):
         key = (
-            row.get("symbol", row.get("contract_symbol", "")),
+            row.get(sym_col_d, ""),
             row.get("direction", ""),
             row.get("entry_price", row.get("entry_premium", "")),
+            row.get("exit_price",  row.get("exit_premium", "")),
+            row.get("quantity",    row.get("lots", "")),
         )
-        if key in seen:
-            dupes.append(i + 2)  # 1-indexed + header
-        seen.add(key)
-    if dupes:
-        rpt.fail("CSV", f"Duplicate rows detected at line(s): {dupes}")
+        line_no = i + 2  # +1 for 0-index, +1 for header row
+        if key in seen_keys:
+            dupe_details.append(
+                f"line {line_no} duplicates line {seen_keys[key]} "
+                f"(symbol={key[0]!r} dir={key[1]} entry={key[2]} exit={key[3]})"
+            )
+        else:
+            seen_keys[key] = line_no
+    if dupe_details:
+        for detail in dupe_details:
+            rpt.fail("CSV", f"FAIL_CSV_DUPLICATE: {detail}")
     else:
         rpt.ok("CSV", "No duplicate rows")
 
