@@ -507,6 +507,14 @@ _MCB_HISTORY_BARS:  int = 30   # bars per timeframe kept (> min_history_bars=20)
 _MCB_SAVE_INTERVAL: int = 15   # write state every N BANKNIFTY 1-min bars
 # Note: bar_history and bars_since_save are now per-underlying in UnderlyingRuntimeState.
 
+# CSV warm-start: maps option_underlying key → filename prefix for data/*.csv discovery.
+# "NIFTY" maps to "nifty" because fetch_index_history.py writes nifty_1m_*.csv (not nifty50_*).
+_MCB_WARMSTART_CSV_PREFIX: dict[str, str] = {
+    "BANKNIFTY": "banknifty",
+    "NIFTY":     "nifty",
+    "SENSEX":    "sensex",
+}
+
 
 # ── Single-instance lock ───────────────────────────────────────────────────────
 
@@ -939,8 +947,137 @@ def _load_state() -> None:
             print(f"[STATE] MCB warm-start skipped ({exc}) — cold start required.")
 
 
+# ── MCB CSV warm-start ────────────────────────────────────────────────────────
+# Feeds each underlying's MarketContextBuilder with historical 1m data from CSV
+# so all timeframes (15m, 1h, 4h, 1d) start ready — eliminating the cold-start
+# NEUTRAL lock that otherwise persists for 4-5 hours after a pipeline restart.
+#
+# Uses private MTF builder and DailyBarAccumulator per underlying so the live
+# instances are not contaminated.  Does NOT touch equity, risk, or exec state.
+# Does NOT force bias — MCB builds its own classification from the data.
+
+def _find_warmstart_csv(option_underlying: str) -> "Path | None":
+    """Return the lexicographically latest matching 1m CSV, or None."""
+    prefix = _MCB_WARMSTART_CSV_PREFIX.get(option_underlying)
+    if not prefix:
+        return None
+    data_dir = Path("data")
+    if not data_dir.exists():
+        return None
+    candidates = [
+        p for p in data_dir.glob(f"{prefix}_1m_*.csv")
+        if p.stat().st_size >= 50_000
+    ]
+    return max(candidates, key=lambda p: p.name) if candidates else None
+
+
+def _csv_bars_to_livebars(csv_path: "Path", feed_symbol: str) -> "list[LiveBar]":
+    """Parse a 1m OHLCV CSV (timestamp,open,high,low,close,volume) into LiveBars."""
+    import csv as _csv
+    bars: list[LiveBar] = []
+    try:
+        with csv_path.open(newline="") as fh:
+            for row in _csv.DictReader(fh):
+                try:
+                    ts = datetime.fromisoformat(row["timestamp"])
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    bars.append(LiveBar(
+                        symbol          = feed_symbol,
+                        timeframe       = "MIN_1",
+                        start_timestamp = ts,
+                        end_timestamp   = ts + timedelta(minutes=1),
+                        open_price      = float(row["open"]),
+                        high_price      = float(row["high"]),
+                        low_price       = float(row["low"]),
+                        close_price     = float(row["close"]),
+                        volume          = float(row.get("volume") or 0),
+                    ))
+                except Exception:
+                    pass
+    except Exception as exc:
+        print(f"[MCB WARMSTART] Failed to read {csv_path}: {exc}")
+    return bars
+
+
+def _warm_start_mcb_from_csv() -> None:
+    """
+    Pre-seed every enabled underlying's MCB with historical 1m CSV data.
+    Called once between _load_state() and _db.start().
+
+    For each underlying:
+      - Skips if the state file already has >= 20 bars of 15m history.
+      - Finds the latest matching CSV in data/.
+      - Feeds bars through a private MultiTimeframeBuilder → 15m, 1h, 4h bars.
+      - Feeds bars through a private DailyBarAccumulator → 1d bars.
+      - Updates market_ctx_builder for all relevant timeframes.
+      - Prints a concise readiness summary.
+    """
+    for key, und_state in _runtime_by_underlying.items():
+        existing_15m = len(und_state.bar_history.get("15m", []))
+        if existing_15m >= 20:
+            try:
+                _ctx = und_state.market_ctx_builder.build()
+                print(
+                    f"[MCB WARMSTART] {key}: state has {existing_15m} 15m bars — "
+                    f"skipping CSV  bias={_ctx.bias}  conf={_ctx.confidence:.2f}"
+                )
+            except Exception:
+                pass
+            continue
+
+        csv_path = _find_warmstart_csv(key)
+        if csv_path is None:
+            print(
+                f"[MCB WARMSTART] {key}: no CSV found in data/ — "
+                f"cold start (bias=NEUTRAL until bars accumulate)"
+            )
+            continue
+
+        bars_1m = _csv_bars_to_livebars(csv_path, und_state.feed_symbol)
+        if not bars_1m:
+            print(f"[MCB WARMSTART] {key}: CSV {csv_path.name} is empty or unreadable — cold start")
+            continue
+
+        warmup_mtf   = MultiTimeframeBuilder()
+        warmup_daily = DailyBarAccumulator(symbol=und_state.feed_symbol)
+        counts: dict[str, int] = {"1m": 0, "15m": 0, "1h": 0, "4h": 0, "1d": 0}
+
+        for bar_1m in bars_1m:
+            und_state.market_ctx_builder.update(bar=bar_1m, timeframe="1m")
+            counts["1m"] += 1
+
+            for tf_key, tf_bar in warmup_mtf.update_bar(bar=bar_1m).items():
+                tf_name = _MTF_KEY_MAP.get(tf_key, tf_key.lower())
+                if tf_name in ("15m", "1h", "4h"):   # 5m not in MCB SUPPORTED_TIMEFRAMES
+                    und_state.market_ctx_builder.update(bar=tf_bar, timeframe=tf_name)
+                    counts[tf_name] += 1
+
+            daily_bar = warmup_daily.update(bar_1m)
+            if daily_bar is not None:
+                und_state.market_ctx_builder.update(bar=daily_bar, timeframe="1d")
+                counts["1d"] += 1
+
+        print(
+            f"[MCB WARMSTART] {key}: loaded {csv_path.name}  "
+            f"1m={counts['1m']}  15m={counts['15m']}  "
+            f"1h={counts['1h']}  4h={counts['4h']}  1d={counts['1d']}"
+        )
+        try:
+            _ctx = und_state.market_ctx_builder.build()
+            _tfs = sorted(_ctx.timeframes_with_history) if _ctx.timeframes_with_history else []
+            print(
+                f"[MCB WARMSTART] {key}: MCB ready  "
+                f"bias={_ctx.bias}  conf={_ctx.confidence:.2f}  "
+                f"timeframes_ready={_tfs}"
+            )
+        except Exception as exc:
+            print(f"[MCB WARMSTART] {key}: MCB build check failed ({exc})")
+
+
 _acquire_pid_lock()   # must run before _load_state so state is never shared by two instances
 _load_state()         # restore from disk at process startup
+_warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
 
 # Start persistence layer — fire-and-forget, never affects trading logic
 try:
