@@ -148,7 +148,7 @@ class TradeDatabase:
         self._session_id: str = "default"
         self._run_mode: str = "live"
         self._started: bool = False
-        self._open_trade_rowid: int | None = None   # rowid of the currently open trade row
+        self._open_trade_rowids: dict[str, int | None] = {}  # underlying → rowid of open trade row
         self._drops_since_last_warn: int = 0        # writes dropped since last stderr warning
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -224,6 +224,7 @@ class TradeDatabase:
     def recover_open_trade_row(
         self,
         *,
+        underlying: str,
         contract_symbol: str,
         direction: str,
         entry_premium: float,
@@ -234,8 +235,8 @@ class TradeDatabase:
 
         Queries pt_trades synchronously (safe to call before start()) for a
         state='OPEN' row matching the restored position parameters.  Sets
-        _open_trade_rowid so the next write_trade_exit() updates the correct
-        row instead of being silently dropped.
+        _open_trade_rowids[underlying] so the next write_trade_exit() for that
+        underlying updates the correct row instead of being silently dropped.
 
         Returns True when a matching row was found and the rowid was set,
         False when no match exists or the DB is unavailable.  In both cases
@@ -261,7 +262,7 @@ class TradeDatabase:
             conn.close()
         except Exception as exc:
             print(
-                f"\n[DB WARNING] recover_open_trade_row failed ({exc}) — "
+                f"\n[DB WARNING] recover_open_trade_row({underlying}) failed ({exc}) — "
                 f"exit for {contract_symbol} will not be recorded in pt_trades.  "
                 f"CSV log is unaffected.\n",
                 file=sys.stderr,
@@ -269,7 +270,7 @@ class TradeDatabase:
             return False
         if row is None:
             print(
-                f"\n[DB WARNING] No OPEN row found in pt_trades for {contract_symbol} "
+                f"\n[DB WARNING] No OPEN row found in pt_trades for {underlying}/{contract_symbol} "
                 f"direction={direction} entry_premium={entry_premium} "
                 f"bar_index={entry_bar_index}.  "
                 f"Position restored from state file but DB entry is missing or "
@@ -278,10 +279,10 @@ class TradeDatabase:
                 file=sys.stderr,
             )
             return False
-        self._open_trade_rowid = row[0]
+        self._open_trade_rowids[underlying] = row[0]
         print(
-            f"[DB] Recovered open trade rowid={self._open_trade_rowid} "
-            f"for {contract_symbol} "
+            f"[DB] Recovered open trade rowid={self._open_trade_rowids[underlying]} "
+            f"for {underlying}/{contract_symbol} "
             f"(direction={direction} entry_premium={entry_premium} "
             f"bar={entry_bar_index})"
         )
@@ -338,6 +339,7 @@ class TradeDatabase:
     def write_trade_exit(
         self,
         *,
+        underlying: str,
         exit_premium: float,
         pnl: float,
         bars_held: int,
@@ -348,6 +350,7 @@ class TradeDatabase:
         if not self._is_operational():
             return
         self._queue.put(("trade_exit", {
+            "underlying":    underlying,
             "exit_premium":  exit_premium,
             "pnl":           pnl,
             "bars_held":     bars_held,
@@ -517,12 +520,14 @@ class TradeDatabase:
     # ── DB insert/update helpers ───────────────────────────────────────────────
 
     def _insert_trade_entry(self, conn: sqlite3.Connection, p: dict) -> None:
-        if self._open_trade_rowid is not None:
-            # An OPEN row already exists for this session — unexpected duplicate entry.
+        und = p["underlying"]
+        existing_rowid = self._open_trade_rowids.get(und)
+        if existing_rowid is not None:
+            # An OPEN row already exists for this underlying — unexpected duplicate entry.
             # This should not happen in normal operation; log a prominent warning so
             # the operator can investigate, then continue (overwrite the rowid pointer).
             print(
-                f"\n[DB WARNING] write_trade_entry called while rowid={self._open_trade_rowid} "
+                f"\n[DB WARNING] write_trade_entry({und}) called while rowid={existing_rowid} "
                 f"is still OPEN.  Possible duplicate entry or missed exit write.  "
                 f"Old OPEN row will remain unresolved in pt_trades.\n",
                 file=sys.stderr,
@@ -541,7 +546,7 @@ class TradeDatabase:
             )
             """,
             (
-                p["session_id"], p["run_mode"], p["underlying"], p["contract_symbol"],
+                p["session_id"], p["run_mode"], und, p["contract_symbol"],
                 p["strike"], p["option_type"], p["expiry_date"], p["direction"],
                 p["lots"], p["lot_size"], p["entry_premium"], p["entry_spot"], p["entry_iv"],
                 p["entry_bar_index"], p["entry_ts"],
@@ -550,16 +555,18 @@ class TradeDatabase:
                 p["created_at"],
             ),
         )
-        self._open_trade_rowid = cur.lastrowid
+        self._open_trade_rowids[und] = cur.lastrowid
 
     def _update_trade_exit(self, conn: sqlite3.Connection, p: dict) -> None:
-        if self._open_trade_rowid is None:
-            # No rowid recorded for this session — most likely a crash-recovery scenario
+        und = p.get("underlying", "BANKNIFTY")
+        rowid = self._open_trade_rowids.get(und)
+        if rowid is None:
+            # No rowid recorded for this underlying — most likely a crash-recovery scenario
             # where the position was restored from the JSON state file but the DB entry
             # belongs to a previous session.  The exit is not recorded in pt_trades for
             # this session.  The CSV log (paper_trades.csv) remains authoritative.
             print(
-                f"\n[DB WARNING] write_trade_exit called with no open trade rowid.  "
+                f"\n[DB WARNING] write_trade_exit({und}) called with no open trade rowid.  "
                 f"Likely crash-recovery: position restored from state file, DB entry "
                 f"belongs to a previous session.  Exit not written to pt_trades.  "
                 f"CSV log is unaffected and remains authoritative.\n",
@@ -581,10 +588,10 @@ class TradeDatabase:
             (
                 p["exit_premium"], p["pnl"], p["bars_held"],
                 p["exit_reason"], p["exit_ts"], p["equity_after"],
-                self._open_trade_rowid,
+                rowid,
             ),
         )
-        self._open_trade_rowid = None
+        self._open_trade_rowids[und] = None
 
     def _insert_decision(self, conn: sqlite3.Connection, p: dict) -> None:
         conn.execute(

@@ -460,6 +460,16 @@ def get_open_position_state() -> "UnderlyingRuntimeState | None":
     return None
 
 
+def _compute_open_premium_cost() -> float:
+    """Sum entry_premium × lot_size × lots across every currently-open position."""
+    total = 0.0
+    for und_s in _runtime_by_underlying.values():
+        pos = und_s.option_trader._position
+        if pos is not None:
+            total += pos.entry_premium * pos.lot_size * pos.lots
+    return total
+
+
 # ── Mutable account state (portfolio-level) ───────────────────────────────────
 _equity:            float = _INITIAL_EQUITY
 _peak_equity:       float = _INITIAL_EQUITY
@@ -691,6 +701,7 @@ def _save_state() -> bool:
         "session_date":          _session_date.isoformat() if _session_date else None,
         "session_opening_equity": _session_opening_equity,
         "last_atm_iv":           _bnk.last_atm_iv,
+        # Legacy single-position key — kept for backward compat; source of truth is open_positions.
         "open_position": {
             "underlying_symbol": pos.underlying_symbol,
             "contract_symbol":   pos.contract_symbol,
@@ -705,6 +716,24 @@ def _save_state() -> bool:
             "direction":         pos.direction,
             "bar_index":         pos.bar_index,
         } if pos is not None else None,
+        # Multi-underlying positions — authoritative source of truth.
+        "open_positions": {
+            und: {
+                "underlying_symbol": _p.underlying_symbol,
+                "contract_symbol":   _p.contract_symbol,
+                "strike":            _p.strike,
+                "option_type":       _p.option_type,
+                "expiry_date":       _p.expiry_date.isoformat(),
+                "lot_size":          _p.lot_size,
+                "lots":              _p.lots,
+                "entry_premium":     _p.entry_premium,
+                "entry_spot":        _p.entry_spot,
+                "entry_iv":          _p.entry_iv,
+                "direction":         _p.direction,
+                "bar_index":         _p.bar_index,
+            } if (_p := und_s.option_trader._position) is not None else None
+            for und, und_s in _runtime_by_underlying.items()
+        },
         "bar_history": _bnk.bar_history,
         # Phase B3B: multi-underlying context persistence (BANKNIFTY compat preserved above)
         "bar_history_by_underlying": {
@@ -757,24 +786,9 @@ def _load_state() -> None:
         iv     = float(s.get("last_atm_iv", _REFERENCE_IV))  # routed to runtime state below
         sd     = s.get("session_date")
         sdate  = date.fromisoformat(sd) if sd else None
-        # Parse open position if present (optional key — absent in older state files)
-        pos_raw  = s.get("open_position")
-        pos_data = None
-        if pos_raw is not None:
-            pos_data = dict(
-                underlying_symbol = str(pos_raw["underlying_symbol"]),
-                contract_symbol   = str(pos_raw["contract_symbol"]),
-                strike            = float(pos_raw["strike"]),
-                option_type       = str(pos_raw["option_type"]),
-                expiry_date       = date.fromisoformat(str(pos_raw["expiry_date"])),
-                lot_size          = int(pos_raw["lot_size"]),
-                lots              = int(pos_raw["lots"]),
-                entry_premium     = float(pos_raw["entry_premium"]),
-                entry_spot        = float(pos_raw["entry_spot"]),
-                entry_iv          = float(pos_raw["entry_iv"]),
-                direction         = str(pos_raw["direction"]),
-                bar_index         = int(pos_raw["bar_index"]),
-            )
+        # Parse open position keys (both formats; parsing is deferred to restore section)
+        pos_raw           = s.get("open_position")    # legacy single-position key
+        new_positions_raw = s.get("open_positions")   # new multi-underlying key (None if old file)
     except Exception as exc:
         print(f"[STATE] Restore failed ({exc}) — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
         return
@@ -805,31 +819,60 @@ def _load_state() -> None:
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
         f"halted={_trading_halted}  soft={_soft_halted}  session={_session_date}"
     )
-    # Restore open position — route to correct underlying by underlying_symbol.
-    # Defaults to BANKNIFTY for legacy state files that lack the underlying_symbol field.
-    if pos_data is not None:
-        _pos_und_key = pos_data.get("underlying_symbol", _PRIMARY_OPTION_TARGET)
-        _pos_target  = _runtime_by_underlying.get(_pos_und_key)
-        if _pos_target is None:
-            print(f"[STATE] WARNING: unknown underlying '{_pos_und_key}' in open_position — skipping restore.")
-        else:
-            _pos_target.option_trader._position = OptionPosition(**pos_data)
-            _open_premium_cost = (
-                pos_data["entry_premium"] * pos_data["lot_size"] * pos_data["lots"]
+    # Restore open positions — multi-underlying (new format) or single migration (old format).
+    # Each position is parsed and restored independently; one failure does not block others.
+    # _open_premium_cost is accumulated from all successfully restored positions.
+    _positions_to_restore: dict[str, dict] = {}
+    if new_positions_raw is not None:
+        # New format: open_positions dict keyed by underlying
+        for _und_key_nf, _pos_entry_nf in new_positions_raw.items():
+            if _pos_entry_nf is not None:
+                _positions_to_restore[_und_key_nf] = _pos_entry_nf
+    elif pos_raw is not None:
+        # Old format: migrate single open_position to per-underlying dict
+        _legacy_und = pos_raw.get("underlying_symbol", _PRIMARY_OPTION_TARGET)
+        _positions_to_restore[_legacy_und] = pos_raw
+
+    for _und_key_r, _pos_raw_r in _positions_to_restore.items():
+        _pos_target_r = _runtime_by_underlying.get(_und_key_r)
+        if _pos_target_r is None:
+            print(f"[STATE] WARNING: unknown underlying '{_und_key_r}' in open_positions — skipping restore.")
+            continue
+        try:
+            _pos_data_r = dict(
+                underlying_symbol = str(_pos_raw_r["underlying_symbol"]),
+                contract_symbol   = str(_pos_raw_r["contract_symbol"]),
+                strike            = float(_pos_raw_r["strike"]),
+                option_type       = str(_pos_raw_r["option_type"]),
+                expiry_date       = date.fromisoformat(str(_pos_raw_r["expiry_date"])),
+                lot_size          = int(_pos_raw_r["lot_size"]),
+                lots              = int(_pos_raw_r["lots"]),
+                entry_premium     = float(_pos_raw_r["entry_premium"]),
+                entry_spot        = float(_pos_raw_r["entry_spot"]),
+                entry_iv          = float(_pos_raw_r["entry_iv"]),
+                direction         = str(_pos_raw_r["direction"]),
+                bar_index         = int(_pos_raw_r["bar_index"]),
+            )
+            _pos_target_r.option_trader._position = OptionPosition(**_pos_data_r)
+            _open_premium_cost += (
+                _pos_data_r["entry_premium"] * _pos_data_r["lot_size"] * _pos_data_r["lots"]
             )
             print(
-                f"[STATE] Open position restored: {pos_data['contract_symbol']}  "
-                f"lots={pos_data['lots']}  entry=₹{pos_data['entry_premium']:.2f}  "
-                f"direction={pos_data['direction']}  expiry={pos_data['expiry_date']}"
+                f"[STATE] Open position restored ({_und_key_r}): {_pos_data_r['contract_symbol']}  "
+                f"lots={_pos_data_r['lots']}  entry=₹{_pos_data_r['entry_premium']:.2f}  "
+                f"direction={_pos_data_r['direction']}  expiry={_pos_data_r['expiry_date']}"
             )
             # Re-link the DB rowid so write_trade_exit() can update the correct row.
             # Called before _db.start() — recover_open_trade_row() connects directly.
             _db.recover_open_trade_row(
-                contract_symbol=pos_data["contract_symbol"],
-                direction=pos_data["direction"],
-                entry_premium=pos_data["entry_premium"],
-                entry_bar_index=pos_data["bar_index"],
+                underlying=_und_key_r,
+                contract_symbol=_pos_data_r["contract_symbol"],
+                direction=_pos_data_r["direction"],
+                entry_premium=_pos_data_r["entry_premium"],
+                entry_bar_index=_pos_data_r["bar_index"],
             )
+        except Exception as _exc_r:
+            print(f"[STATE] Position restore for {_und_key_r} failed ({_exc_r}) — skipping.")
     _bnk = _runtime_by_underlying[_PRIMARY_OPTION_TARGET]  # needed for legacy bar_history path below
     # Rehydrate MarketContextBuilder from persisted bar history.
     # Separated from account-state restore so corrupt bar history never blocks position restore.
@@ -1228,7 +1271,10 @@ def _size_live_position(
         current_drawdown_fraction=drawdown,
         max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
         correlation_exposure_fraction=0.0,
-        open_position_count=1 if has_any_open_position() else 0,
+        open_position_count=sum(
+            1 for _s in _runtime_by_underlying.values()
+            if _s.option_trader.has_open_position()
+        ),
     )
 
     try:
@@ -1506,24 +1552,30 @@ def _handle_market_close_shutdown(reason: str) -> None:
 
     print(f"\n[MARKET CLOSE] Saving state and shutting down cleanly... ({reason})")
 
-    _pos_state = get_open_position_state()
-    if _pos_state is not None:
-        _p = _pos_state.option_trader._position
-        print(
-            f"[MARKET CLOSE] Open position carried: {_p.contract_symbol}  "
-            f"lots={_p.lots}  entry=₹{_p.entry_premium:.2f}  "
-            f"direction={_p.direction}  expiry={_p.expiry_date}"
-        )
+    _open_states_mc = [
+        s for s in _runtime_by_underlying.values()
+        if s.option_trader.has_open_position()
+    ]
+    if _open_states_mc:
+        for _os_mc in _open_states_mc:
+            _p_mc = _os_mc.option_trader._position
+            print(
+                f"[MARKET CLOSE] Open position carried ({_os_mc.option_underlying}): "
+                f"{_p_mc.contract_symbol}  lots={_p_mc.lots}  "
+                f"entry=₹{_p_mc.entry_premium:.2f}  direction={_p_mc.direction}  "
+                f"expiry={_p_mc.expiry_date}"
+            )
     else:
-        print("[MARKET CLOSE] No open position.")
+        print("[MARKET CLOSE] No open positions.")
 
     _save_state()
 
     try:
-        _pos_msg = (
-            f"open_position={_pos_state.option_trader._position.contract_symbol}"
-            if _pos_state is not None else "no_open_position"
-        )
+        _pos_syms = [
+            s.option_trader._position.contract_symbol
+            for s in _open_states_mc
+        ]
+        _pos_msg = f"open_positions={_pos_syms}" if _pos_syms else "no_open_positions"
         _db.write_runtime_event(
             "MARKET_CLOSE_SHUTDOWN",
             severity="INFO",
@@ -1913,7 +1965,7 @@ def on_ticks(raw_ticks):
                 if _closed is not None:
                     _equity += _closed.pnl
                     _peak_equity = max(_peak_equity, _equity)
-                    _open_premium_cost = 0.0
+                    _open_premium_cost = _compute_open_premium_cost()
                     _daily_pnl += _closed.pnl
                     if _closed.pnl < 0:
                         _consecutive_losses += 1
@@ -1935,6 +1987,7 @@ def on_ticks(raw_ticks):
                     )
                     try:
                         _db.write_trade_exit(
+                            underlying=_current_state.option_underlying,
                             exit_premium=_closed.exit_premium,
                             pnl=_closed.pnl,
                             bars_held=_closed.bars_held,
@@ -1954,9 +2007,12 @@ def on_ticks(raw_ticks):
                                 "position closed in memory, will re-evaluate after restart"
                             ),
                         )
-                    _summary = performance_tracker.calculate_summary(
-                        trades=[t.as_paper_trade() for t in _current_state.option_trader.completed_trades]
-                    )
+                    _all_completed = [
+                        t.as_paper_trade()
+                        for _s in _runtime_by_underlying.values()
+                        for t in _s.option_trader.completed_trades
+                    ]
+                    _summary = performance_tracker.calculate_summary(trades=_all_completed)
                     print_performance_summary(
                         total_trades=_summary.total_trades,
                         wins=_summary.winning_trades,
@@ -2103,11 +2159,11 @@ def on_ticks(raw_ticks):
                     reason="  |  ".join(_filter_parts),
                 )
 
-            # ── Entry gate: fresh strike, no open position, not hard-halted ─
+            # ── Entry gate: fresh strike, no open position for THIS underlying, not hard-halted ─
             _srec = _current_state.captured_strike_rec
             if (
                 _srec is not None
-                and not has_any_open_position()
+                and not _current_state.option_trader.has_open_position()
                 and not _trading_halted
                 and _session_ctx.allow_entry
                 and not _fvg_quality_reason
@@ -2163,7 +2219,7 @@ def on_ticks(raw_ticks):
                                     pass
                             else:
                             # ── Open position ─────────────────────────────────
-                                _open_premium_cost = _cost
+                                _open_premium_cost += _cost
                                 _current_state.option_trader.open(
                                     recommendation=_srec,
                                     direction=str(_mctx.bias),
