@@ -231,6 +231,65 @@ def main() -> int:
     if len(low_sm_entries) > 5:
         print(f"  ... ({len(low_sm_entries)-5} more)")
 
+    # ── Enhanced audit analysis (new format: runner-up, top-5, dominance) ────
+    enhanced = [r for r in audit if r.get("mode") != "shadow" and r.get("runner_up_contract")]
+    old_fmt   = [r for r in audit if r.get("mode") != "shadow" and not r.get("runner_up_contract")]
+    print(f"\n[STRIKE AUDIT — RUNNER-UP ANALYSIS]")
+    if not enhanced:
+        print(f"  (no enhanced-format records — run a new session after bfc30e8 commit)")
+        print(f"  {len(old_fmt)} old-format records available (no runner-up data)")
+    else:
+        # Per underlying: selected vs runner-up score separation
+        from collections import defaultdict as _dd
+        by_sym_enh: dict[str, list[dict]] = _dd(list)
+        for r in enhanced:
+            by_sym_enh[r.get("underlying", "?")].append(r)
+
+        for sym, recs_e in sorted(by_sym_enh.items()):
+            margins = [r["score_margin"] for r in recs_e if r.get("score_margin") is not None]
+            rup_same: list[str] = []
+            for r in recs_e:
+                sel  = r.get("selected_symbol", "")
+                rup  = r.get("runner_up_contract", "")
+                if sel and rup and sel == rup:
+                    rup_same.append(sel)
+            print(f"  {sym:12s}  records={len(recs_e)}"
+                  f"  avg_margin={sum(margins)/len(margins):.4f}" if margins else "")
+            if rup_same:
+                print(f"    !! {len(rup_same)} bars: selected == runner-up (suspicious)")
+            # Check strike dominance: is repeated strike score-driven?
+            strike_counts: dict[str, int] = _dd(int)
+            for r in recs_e:
+                sel = r.get("selected_symbol") or r.get("strike") or "?"
+                strike_counts[sel] += 1
+            top_strike, top_cnt = max(strike_counts.items(), key=lambda x: x[1])
+            print(f"    Most-selected strike: {top_strike}  ({top_cnt}/{len(recs_e)} bars)")
+            if top_cnt > len(recs_e) * 0.8:
+                print(f"    Score-driven (OI=1.0 for this strike every bar) — expected")
+
+        # OI block classification: true tie or missing data?
+        print(f"\n  Strike-quality block root cause (enhanced records):")
+        for r in enhanced[:3]:
+            fs  = r.get("factor_scores") or {}
+            sm  = r.get("score_margin") or 0
+            oi  = fs.get("oi_support") or 0
+            rup = r.get("runner_up_contract", "n/a")
+            top5 = r.get("top5") or []
+            oi_in_top5 = [c.get("oi_support", 0) for c in top5 if c.get("oi_support") is not None]
+            if sm < _MIN_SCORE_MARGIN and oi >= _MIN_OI_SUPPORT:
+                block_type = "SCORE_MARGIN_ONLY"
+            elif sm >= _MIN_SCORE_MARGIN and oi < _MIN_OI_SUPPORT:
+                block_type = "OI_ONLY"
+            elif sm < _MIN_SCORE_MARGIN and oi < _MIN_OI_SUPPORT:
+                block_type = "BOTH_GATES"
+            else:
+                block_type = "PASSES"
+            oi_range = f"{min(oi_in_top5):.3f}–{max(oi_in_top5):.3f}" if oi_in_top5 else "n/a"
+            print(f"    {r.get('underlying','?'):12s}  sm={sm:.3f}  oi={oi:.3f}  "
+                  f"block={block_type}  runner_up={rup}  top5_oi_range={oi_range}")
+        if len(enhanced) > 3:
+            print(f"    ... ({len(enhanced)-3} more enhanced records)")
+
     # ── Best and worst trade ──────────────────────────────────────────────────
     print(f"\n[BEST / WORST TRADE]")
     if closed_trades:

@@ -468,9 +468,80 @@ _LIVE_BARS_BEFORE_ENTRY: int = 20
 _MIN_SCORE_MARGIN_TIER23: float = 0.05   # min rank-1 minus rank-2 score gap
 _MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
 
+# ── Paper-only per-underlying gate overrides ─────────────────────────────────
+# These env vars allow paper-phase threshold experiments without touching defaults.
+# They do NOT affect real-funds behaviour when env vars are absent.
+# Defaults reproduce the current live thresholds exactly.
+#
+# Usage (paper run only — never real-funds):
+#   export PAPER_BANKNIFTY_SCORE_MARGIN_MIN=0.03
+#   export PAPER_NIFTY_OI_SUPPORT_MIN=0.08
+#
+# Each non-default value prints a [GATE CONFIG] + [WARNING] line at startup.
+import os as _os
+
+def _parse_gate_override(env_key: str, default: float) -> tuple[float, bool]:
+    """Return (value, is_override). is_override=True when env var is present."""
+    raw = _os.environ.get(env_key)
+    if raw is None:
+        return default, False
+    try:
+        v = float(raw)
+        return v, True
+    except ValueError:
+        return default, False
+
+_PAPER_BNK_SCORE_MARGIN, _BNK_SM_OVERRIDE = _parse_gate_override(
+    "PAPER_BANKNIFTY_SCORE_MARGIN_MIN", _MIN_SCORE_MARGIN_TIER23
+)
+_PAPER_BNK_OI_SUPPORT,  _BNK_OI_OVERRIDE = _parse_gate_override(
+    "PAPER_BANKNIFTY_OI_SUPPORT_MIN",   _MIN_OI_SUPPORT_TIER23
+)
+_PAPER_NIFTY_SCORE_MARGIN, _NIFTY_SM_OVERRIDE = _parse_gate_override(
+    "PAPER_NIFTY_SCORE_MARGIN_MIN", _MIN_SCORE_MARGIN_TIER23
+)
+_PAPER_NIFTY_OI_SUPPORT,   _NIFTY_OI_OVERRIDE = _parse_gate_override(
+    "PAPER_NIFTY_OI_SUPPORT_MIN",   _MIN_OI_SUPPORT_TIER23
+)
+_PAPER_SENSEX_SCORE_MARGIN, _SENSEX_SM_OVERRIDE = _parse_gate_override(
+    "PAPER_SENSEX_SCORE_MARGIN_MIN", _MIN_SCORE_MARGIN_TIER23
+)
+_PAPER_SENSEX_OI_SUPPORT,   _SENSEX_OI_OVERRIDE = _parse_gate_override(
+    "PAPER_SENSEX_OI_SUPPORT_MIN",   _MIN_OI_SUPPORT_TIER23
+)
+
+# Map underlying → effective thresholds (accounts for env overrides)
+_GATE_SCORE_MARGIN_BY_SYM: dict[str, float] = {
+    "BANKNIFTY": _PAPER_BNK_SCORE_MARGIN,
+    "NIFTY":     _PAPER_NIFTY_SCORE_MARGIN,
+    "SENSEX":    _PAPER_SENSEX_SCORE_MARGIN,
+}
+_GATE_OI_SUPPORT_BY_SYM: dict[str, float] = {
+    "BANKNIFTY": _PAPER_BNK_OI_SUPPORT,
+    "NIFTY":     _PAPER_NIFTY_OI_SUPPORT,
+    "SENSEX":    _PAPER_SENSEX_OI_SUPPORT,
+}
+
+def _print_gate_config() -> None:
+    """Print [GATE CONFIG] lines for any non-default per-underlying thresholds."""
+    overrides = [
+        ("BANKNIFTY", "score_margin", _BNK_SM_OVERRIDE, _PAPER_BNK_SCORE_MARGIN),
+        ("BANKNIFTY", "oi_support",   _BNK_OI_OVERRIDE, _PAPER_BNK_OI_SUPPORT),
+        ("NIFTY",     "score_margin", _NIFTY_SM_OVERRIDE, _PAPER_NIFTY_SCORE_MARGIN),
+        ("NIFTY",     "oi_support",   _NIFTY_OI_OVERRIDE, _PAPER_NIFTY_OI_SUPPORT),
+        ("SENSEX",    "score_margin", _SENSEX_SM_OVERRIDE, _PAPER_SENSEX_SCORE_MARGIN),
+        ("SENSEX",    "oi_support",   _SENSEX_OI_OVERRIDE, _PAPER_SENSEX_OI_SUPPORT),
+    ]
+    warned = False
+    for sym, field, is_override, val in overrides:
+        if is_override:
+            print(f"[GATE CONFIG] {sym} {field}_min={val} source=env/paper")
+            if not warned:
+                print("[WARNING] Paper calibration only — not real-funds approved.")
+                warned = True
+
 # Terminal mode: set LIVE_TERMINAL_MODE=debug for full StructureEvent repr.
 # Default compact mode suppresses verbose event output.
-import os as _os
 _TERMINAL_COMPACT: bool = _os.environ.get("LIVE_TERMINAL_MODE", "compact").lower() != "debug"
 
 # Capital protection limits
@@ -1159,6 +1230,7 @@ if _TIER2_RISK_FRAC > 0.025:
         f"[WARNING] Paper risk profile '{_PAPER_RISK_PROFILE}' uses "
         f"{_TIER2_RISK_FRAC * 100:.1f}% Tier2 risk — not approved for real funds."
     )
+_print_gate_config()  # print per-underlying gate overrides (no-op when all defaults)
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
 
@@ -2755,11 +2827,14 @@ def on_ticks(raw_ticks):
                                 _oi_supp = getattr(
                                     getattr(_srec, "breakdown", None), "oi_support", 1.0
                                 )
+                                _eff_oi_min = _GATE_OI_SUPPORT_BY_SYM.get(
+                                    _current_state.option_underlying, _MIN_OI_SUPPORT_TIER23
+                                )
                                 if (_effective_tier >= 2
-                                        and _oi_supp < _MIN_OI_SUPPORT_TIER23):
+                                        and _oi_supp < _eff_oi_min):
                                     _oi_reason = (
                                         f"INSUFFICIENT_CONFLUENCE oi_support={_oi_supp:.3f} "
-                                        f"< min={_MIN_OI_SUPPORT_TIER23} for tier={_effective_tier}"
+                                        f"< min={_eff_oi_min} for tier={_effective_tier}"
                                     )
                                     print_warning_block(
                                         "ENTRY CHECK BLOCKED",
@@ -2793,18 +2868,24 @@ def on_ticks(raw_ticks):
                                         _iv_attr  = getattr(_bd, "iv_attractiveness", None)
                                         _oi_supp2 = getattr(_bd, "oi_support", None)
                                         _sm_val   = _current_state.captured_score_margin
+                                        _eff_sm_min = _GATE_SCORE_MARGIN_BY_SYM.get(
+                                            _current_state.option_underlying, _MIN_SCORE_MARGIN_TIER23
+                                        )
+                                        _eff_sq_oi_min = _GATE_OI_SUPPORT_BY_SYM.get(
+                                            _current_state.option_underlying, _MIN_OI_SUPPORT_TIER23
+                                        )
                                         _sq_parts: list[str] = []
-                                        if _sm_val is not None and _sm_val < _MIN_SCORE_MARGIN_TIER23:
+                                        if _sm_val is not None and _sm_val < _eff_sm_min:
                                             _sq_parts.append(
-                                                f"score_margin={_sm_val:.3f}<{_MIN_SCORE_MARGIN_TIER23}"
+                                                f"score_margin={_sm_val:.3f}<{_eff_sm_min}"
                                             )
                                         if _iv_attr is not None and _iv_attr < _MIN_IV_ATTR_TIER23:
                                             _sq_parts.append(
                                                 f"iv_attr={_iv_attr:.3f}<{_MIN_IV_ATTR_TIER23}"
                                             )
-                                        if _oi_supp2 is not None and _oi_supp2 < _MIN_OI_SUPPORT_TIER23:
+                                        if _oi_supp2 is not None and _oi_supp2 < _eff_sq_oi_min:
                                             _sq_parts.append(
-                                                f"oi_support={_oi_supp2:.3f}<{_MIN_OI_SUPPORT_TIER23}"
+                                                f"oi_support={_oi_supp2:.3f}<{_eff_sq_oi_min}"
                                             )
                                         if _sq_parts:
                                             _sq_reason = (
