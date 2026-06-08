@@ -137,6 +137,17 @@ _CSV_TARGETS = {
     "SENSEX":    "sensex",
 }
 _MIN_CSV_BYTES = 50_000   # same filter as _find_warmstart_csv() in the pipeline
+
+
+def _end_date_size_key(p: Path) -> tuple:
+    """Match pipeline selection: latest end-date first, then largest file (more history)."""
+    try:
+        end_date = p.stem.split("_")[-1]
+    except Exception:
+        end_date = ""
+    return (end_date, p.stat().st_size)
+
+
 _csvs: dict[str, Path] = {}
 for sym, prefix in _CSV_TARGETS.items():
     candidates = [
@@ -144,7 +155,7 @@ for sym, prefix in _CSV_TARGETS.items():
         if p.stat().st_size >= _MIN_CSV_BYTES
     ]
     if candidates:
-        _csvs[sym] = max(candidates, key=lambda p: p.name)
+        _csvs[sym] = max(candidates, key=_end_date_size_key)
 
 print("=" * 60)
 print("  MCB FULL WARMSTART TESTS")

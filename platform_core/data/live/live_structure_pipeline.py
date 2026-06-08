@@ -1129,8 +1129,63 @@ def _load_state() -> None:
 # instances are not contaminated.  Does NOT touch equity, risk, or exec state.
 # Does NOT force bias — MCB builds its own classification from the data.
 
+def _csv_end_date_key(p: "Path") -> str:
+    """
+    Extract end-date string 'YYYY-MM-DD' from a warm-start filename.
+
+    Format: {prefix}_1m_{start-date}_{end-date}.csv
+    Returns '' when unparseable so unparseable files sort last.
+    """
+    try:
+        return p.stem.split("_")[-1]   # last segment is the end date
+    except Exception:
+        return ""
+
+
+def _csv_last_line_ts(p: "Path") -> "datetime | None":
+    """Return the timestamp from the last row with a parseable timestamp, or None."""
+    try:
+        import csv as _csv2
+        last_valid: "datetime | None" = None
+        with p.open(newline="", encoding="utf-8") as fh:
+            for row in _csv2.DictReader(fh):
+                ts_raw = row.get("timestamp") or row.get("date") or ""
+                try:
+                    ts = datetime.fromisoformat(ts_raw)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    last_valid = ts
+                except Exception:
+                    pass   # skip non-timestamp rows (padding, comments)
+        return last_valid
+    except Exception:
+        return None
+
+
+def _trading_days_since(last: "date", today: "date") -> int:
+    """Weekday count from day after last up to today (approximates trading days; ignores NSE holidays)."""
+    count = 0
+    d = last + timedelta(days=1)
+    while d <= today:
+        if d.weekday() < 5:
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
+_MCB_WARMSTART_STALE_DAYS: int = 3   # warn if warm-start data is older than this many trading days
+
+
 def _find_warmstart_csv(option_underlying: str) -> "Path | None":
-    """Return the lexicographically latest matching 1m CSV, or None."""
+    """
+    Return the warm-start CSV with the latest end-date among all matching files.
+
+    Selection:
+      - File must match {prefix}_1m_*.csv in data/.
+      - File must be >= 50 KB (filters out single-day or stub files).
+      - Among qualifying files, selects the one whose end-date in the filename
+        is most recent. When end-dates tie, larger file wins (more history).
+    """
     prefix = _MCB_WARMSTART_CSV_PREFIX.get(option_underlying)
     if not prefix:
         return None
@@ -1141,7 +1196,9 @@ def _find_warmstart_csv(option_underlying: str) -> "Path | None":
         p for p in data_dir.glob(f"{prefix}_1m_*.csv")
         if p.stat().st_size >= 50_000
     ]
-    return max(candidates, key=lambda p: p.name) if candidates else None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: (_csv_end_date_key(p), p.stat().st_size))
 
 
 def _csv_bars_to_livebars(csv_path: "Path", feed_symbol: str) -> "list[LiveBar]":
@@ -1209,7 +1266,30 @@ def _warm_start_mcb_from_csv() -> None:
                 f"[MCB WARMSTART] {key}: no CSV found in data/ — "
                 f"cold start (bias=NEUTRAL until bars accumulate)"
             )
+            print(
+                f"[MCB WARMSTART SOURCE] {key}: no file — "
+                f"run scripts/refresh_mcb_warmstart_data.py to fetch warm-start data"
+            )
             continue
+
+        # Print source info and staleness before loading.
+        _src_last_ts = _csv_last_line_ts(csv_path)
+        if _src_last_ts is not None:
+            _today = datetime.now(timezone.utc).date()
+            _age_td = _trading_days_since(_src_last_ts.date(), _today)
+            print(
+                f"[MCB WARMSTART SOURCE] {key}"
+                f"  file={csv_path.name}"
+                f"  last_ts={_src_last_ts.isoformat()[:19]}"
+                f"  age_trading_days={_age_td}"
+            )
+            if _age_td > _MCB_WARMSTART_STALE_DAYS:
+                print(
+                    f"[MCB WARMSTART STALE WARN] {key}: warm-start data is {_age_td} trading days old"
+                    f" — run scripts/refresh_mcb_warmstart_data.py before next live session"
+                )
+        else:
+            print(f"[MCB WARMSTART SOURCE] {key}  file={csv_path.name}  last_ts=unknown")
 
         bars_1m = _csv_bars_to_livebars(csv_path, und_state.feed_symbol)
         if not bars_1m:
