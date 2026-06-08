@@ -308,6 +308,9 @@ class UnderlyingRuntimeState:
     captured_strike_rec:   object | None = None
     captured_score_margin: float  | None = None  # rank1 - rank2 composite score
 
+    # ── MCB adaptation watch ───────────────────────────────────────────────
+    contra_bos_count:  int = 0   # BOS events opposing current MCB bias (session total)
+
 
 # MTF key normalisation (matches BacktestRunner convention)
 _MTF_KEY_MAP: dict[str, str] = {
@@ -468,77 +471,108 @@ _LIVE_BARS_BEFORE_ENTRY: int = 20
 _MIN_SCORE_MARGIN_TIER23: float = 0.05   # min rank-1 minus rank-2 score gap
 _MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
 
-# ── Paper-only per-underlying gate overrides ─────────────────────────────────
-# These env vars allow paper-phase threshold experiments without touching defaults.
-# They do NOT affect real-funds behaviour when env vars are absent.
-# Defaults reproduce the current live thresholds exactly.
+# ── Paper-only gate profiles and per-underlying overrides ─────────────────────
+# PAPER_GATE_PROFILE selects a named threshold set (paper sessions only).
+# Individual env vars (PAPER_BANKNIFTY_SCORE_MARGIN_MIN etc.) override the profile.
+# When no profile or override is set, all defaults reproduce current live thresholds.
 #
-# Usage (paper run only — never real-funds):
-#   export PAPER_BANKNIFTY_SCORE_MARGIN_MIN=0.03
-#   export PAPER_NIFTY_OI_SUPPORT_MIN=0.08
+# Profile = default:              score_margin=0.05, oi_support=0.10 for all underlyings
+# Profile = banknifty_experiment: BANKNIFTY score_margin=0.03 (others unchanged)
+# Profile = small_capital_experiment: BNK+NIFTY margin=0.03, NIFTY oi=0.08, SENSEX strict
 #
-# Each non-default value prints a [GATE CONFIG] + [WARNING] line at startup.
+# SENSEX is always kept at default strict unless PAPER_SENSEX_* is explicitly set.
+#
+# Usage:
+#   export PAPER_GATE_PROFILE=banknifty_experiment
+#   export PAPER_RISK_PROFILE=balanced
+#   PYTHONPATH=. python3 platform_core/data/live/live_structure_pipeline.py
+
 import os as _os
 
-def _parse_gate_override(env_key: str, default: float) -> tuple[float, bool]:
-    """Return (value, is_override). is_override=True when env var is present."""
+_PAPER_GATE_PROFILE: str = _os.environ.get("PAPER_GATE_PROFILE", "default").lower()
+
+# Named profile threshold tables — SENSEX kept strict in all profiles
+_PROFILE_GATE_TABLES: dict[str, dict[str, dict[str, float]]] = {
+    "default": {
+        "BANKNIFTY": {"score_margin": 0.05, "oi_support": 0.10},
+        "NIFTY":     {"score_margin": 0.05, "oi_support": 0.10},
+        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},
+    },
+    "banknifty_experiment": {
+        "BANKNIFTY": {"score_margin": 0.03, "oi_support": 0.10},
+        "NIFTY":     {"score_margin": 0.05, "oi_support": 0.10},
+        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},  # strict — unchanged
+    },
+    "small_capital_experiment": {
+        "BANKNIFTY": {"score_margin": 0.03, "oi_support": 0.10},
+        "NIFTY":     {"score_margin": 0.03, "oi_support": 0.08},
+        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},  # strict — unchanged
+    },
+}
+
+# Fall back to default for unknown profile names
+_active_profile_table = _PROFILE_GATE_TABLES.get(
+    _PAPER_GATE_PROFILE, _PROFILE_GATE_TABLES["default"]
+)
+_profile_is_non_default = (_PAPER_GATE_PROFILE != "default")
+
+
+def _get_gate_val(sym: str, metric: str, env_key: str) -> tuple[float, str]:
+    """Return (value, source_str) for one gate threshold.
+    Priority: explicit env var > profile > hardcoded default.
+    """
+    profile_val = _active_profile_table.get(sym, {}).get(
+        metric, _MIN_SCORE_MARGIN_TIER23 if metric == "score_margin" else _MIN_OI_SUPPORT_TIER23
+    )
     raw = _os.environ.get(env_key)
-    if raw is None:
-        return default, False
-    try:
-        v = float(raw)
-        return v, True
-    except ValueError:
-        return default, False
+    if raw is not None:
+        try:
+            return float(raw), "env"
+        except ValueError:
+            pass
+    return profile_val, ("profile" if _profile_is_non_default else "default")
 
-_PAPER_BNK_SCORE_MARGIN, _BNK_SM_OVERRIDE = _parse_gate_override(
-    "PAPER_BANKNIFTY_SCORE_MARGIN_MIN", _MIN_SCORE_MARGIN_TIER23
-)
-_PAPER_BNK_OI_SUPPORT,  _BNK_OI_OVERRIDE = _parse_gate_override(
-    "PAPER_BANKNIFTY_OI_SUPPORT_MIN",   _MIN_OI_SUPPORT_TIER23
-)
-_PAPER_NIFTY_SCORE_MARGIN, _NIFTY_SM_OVERRIDE = _parse_gate_override(
-    "PAPER_NIFTY_SCORE_MARGIN_MIN", _MIN_SCORE_MARGIN_TIER23
-)
-_PAPER_NIFTY_OI_SUPPORT,   _NIFTY_OI_OVERRIDE = _parse_gate_override(
-    "PAPER_NIFTY_OI_SUPPORT_MIN",   _MIN_OI_SUPPORT_TIER23
-)
-_PAPER_SENSEX_SCORE_MARGIN, _SENSEX_SM_OVERRIDE = _parse_gate_override(
-    "PAPER_SENSEX_SCORE_MARGIN_MIN", _MIN_SCORE_MARGIN_TIER23
-)
-_PAPER_SENSEX_OI_SUPPORT,   _SENSEX_OI_OVERRIDE = _parse_gate_override(
-    "PAPER_SENSEX_OI_SUPPORT_MIN",   _MIN_OI_SUPPORT_TIER23
-)
 
-# Map underlying → effective thresholds (accounts for env overrides)
-_GATE_SCORE_MARGIN_BY_SYM: dict[str, float] = {
-    "BANKNIFTY": _PAPER_BNK_SCORE_MARGIN,
-    "NIFTY":     _PAPER_NIFTY_SCORE_MARGIN,
-    "SENSEX":    _PAPER_SENSEX_SCORE_MARGIN,
+# Build final per-underlying dicts with source tracking
+_gate_sm: dict[str, tuple[float, str]] = {
+    s: _get_gate_val(s, "score_margin", f"PAPER_{s}_SCORE_MARGIN_MIN")
+    for s in ("BANKNIFTY", "NIFTY", "SENSEX")
 }
-_GATE_OI_SUPPORT_BY_SYM: dict[str, float] = {
-    "BANKNIFTY": _PAPER_BNK_OI_SUPPORT,
-    "NIFTY":     _PAPER_NIFTY_OI_SUPPORT,
-    "SENSEX":    _PAPER_SENSEX_OI_SUPPORT,
+_gate_oi: dict[str, tuple[float, str]] = {
+    s: _get_gate_val(s, "oi_support", f"PAPER_{s}_OI_SUPPORT_MIN")
+    for s in ("BANKNIFTY", "NIFTY", "SENSEX")
 }
 
-def _print_gate_config() -> None:
-    """Print [GATE CONFIG] lines for any non-default per-underlying thresholds."""
-    overrides = [
-        ("BANKNIFTY", "score_margin", _BNK_SM_OVERRIDE, _PAPER_BNK_SCORE_MARGIN),
-        ("BANKNIFTY", "oi_support",   _BNK_OI_OVERRIDE, _PAPER_BNK_OI_SUPPORT),
-        ("NIFTY",     "score_margin", _NIFTY_SM_OVERRIDE, _PAPER_NIFTY_SCORE_MARGIN),
-        ("NIFTY",     "oi_support",   _NIFTY_OI_OVERRIDE, _PAPER_NIFTY_OI_SUPPORT),
-        ("SENSEX",    "score_margin", _SENSEX_SM_OVERRIDE, _PAPER_SENSEX_SCORE_MARGIN),
-        ("SENSEX",    "oi_support",   _SENSEX_OI_OVERRIDE, _PAPER_SENSEX_OI_SUPPORT),
-    ]
-    warned = False
-    for sym, field, is_override, val in overrides:
-        if is_override:
-            print(f"[GATE CONFIG] {sym} {field}_min={val} source=env/paper")
-            if not warned:
-                print("[WARNING] Paper calibration only — not real-funds approved.")
-                warned = True
+_GATE_SCORE_MARGIN_BY_SYM: dict[str, float] = {s: v for s, (v, _) in _gate_sm.items()}
+_GATE_OI_SUPPORT_BY_SYM:   dict[str, float] = {s: v for s, (v, _) in _gate_oi.items()}
+
+_gate_experiment_active: bool = (
+    _profile_is_non_default
+    or any(src == "env" for _, src in list(_gate_sm.values()) + list(_gate_oi.values()))
+)
+
+
+def _print_gate_startup() -> None:
+    """Print full gate configuration table at startup."""
+    print(
+        f"[GATE PROFILE] profile={_PAPER_GATE_PROFILE}"
+        f"  paper_only=true"
+        f"  real_funds_approved={'false' if _gate_experiment_active else 'true_if_default'}"
+    )
+    for sym in ("BANKNIFTY", "NIFTY", "SENSEX"):
+        sm_val, sm_src = _gate_sm[sym]
+        oi_val, oi_src = _gate_oi[sym]
+        print(
+            f"[GATE CONFIG] {sym:12s}"
+            f"  score_margin_min={sm_val:.3f} ({sm_src})"
+            f"  oi_support_min={oi_val:.3f} ({oi_src})"
+        )
+    if _gate_experiment_active:
+        print("[WARNING] Paper gate experiment active — not approved for real funds.")
+
+
+# MCB adaptation watch: log diagnostic when MCB stays anchored while structure opposes
+_MCB_CONTRA_BOS_WARN_THRESHOLD: int = 3  # warn after this many opposing BOS events per session
 
 # Terminal mode: set LIVE_TERMINAL_MODE=debug for full StructureEvent repr.
 # Default compact mode suppresses verbose event output.
@@ -1230,7 +1264,7 @@ if _TIER2_RISK_FRAC > 0.025:
         f"[WARNING] Paper risk profile '{_PAPER_RISK_PROFILE}' uses "
         f"{_TIER2_RISK_FRAC * 100:.1f}% Tier2 risk — not approved for real funds."
     )
-_print_gate_config()  # print per-underlying gate overrides (no-op when all defaults)
+_print_gate_startup()  # print gate profile + per-underlying thresholds at every startup
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
 
@@ -2765,12 +2799,30 @@ def on_ticks(raw_ticks):
                                         f"CONTEXT_CONTRADICTION_REJECTED "
                                         f"mcb=SHORT structure={_ev_type}_BULLISH at bar={_bar_count}"
                                     )
+                                    _current_state.contra_bos_count += 1
+                                    if _current_state.contra_bos_count >= _MCB_CONTRA_BOS_WARN_THRESHOLD:
+                                        print(
+                                            f"[MCB ADAPTATION WATCH] underlying={_current_state.option_underlying}"
+                                            f" bias=SHORT conf={_mctx.confidence:.2f}"
+                                            f" opposite_bos_count={_current_state.contra_bos_count}"
+                                            f" bar={_bar_count}"
+                                            f" — diagnostic only, no execution change"
+                                        )
                                     break
                                 if (_bias_str == "LONG" and _is_structural and _ev_side == "bearish"):
                                     _pre_entry_block = (
                                         f"CONTEXT_CONTRADICTION_REJECTED "
                                         f"mcb=LONG structure={_ev_type}_BEARISH at bar={_bar_count}"
                                     )
+                                    _current_state.contra_bos_count += 1
+                                    if _current_state.contra_bos_count >= _MCB_CONTRA_BOS_WARN_THRESHOLD:
+                                        print(
+                                            f"[MCB ADAPTATION WATCH] underlying={_current_state.option_underlying}"
+                                            f" bias=LONG conf={_mctx.confidence:.2f}"
+                                            f" opposite_bos_count={_current_state.contra_bos_count}"
+                                            f" bar={_bar_count}"
+                                            f" — diagnostic only, no execution change"
+                                        )
                                     break
 
                     # [B1] Underlying-level cooldown after stop

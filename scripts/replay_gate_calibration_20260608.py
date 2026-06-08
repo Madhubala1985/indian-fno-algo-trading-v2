@@ -53,33 +53,33 @@ class GateConfig:
 _CONFIGS: list[GateConfig] = [
     GateConfig(
         name="A_BASELINE",
-        desc="Current live gates: score_margin≥0.05, oi_support≥0.10",
+        desc="Current live gates (default): score_margin≥0.05, oi_support≥0.10",
         score_margin_by_sym={"BANKNIFTY": 0.05, "NIFTY": 0.05, "SENSEX": 0.05},
         oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.10, "SENSEX": 0.10},
     ),
     GateConfig(
         name="B_BNK_MARGIN_03",
-        desc="BANKNIFTY score_margin≥0.03 (others unchanged)",
+        desc="banknifty_experiment: BANKNIFTY score_margin≥0.03 (others unchanged)",
         score_margin_by_sym={"BANKNIFTY": 0.03, "NIFTY": 0.05, "SENSEX": 0.05},
         oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.10, "SENSEX": 0.10},
     ),
     GateConfig(
-        name="C_NIFTY_OI_08",
-        desc="NIFTY oi_support≥0.08 (others unchanged)",
+        name="C_BNK_MARGIN_035",
+        desc="BANKNIFTY score_margin≥0.035 — midpoint experiment",
+        score_margin_by_sym={"BANKNIFTY": 0.035, "NIFTY": 0.05, "SENSEX": 0.05},
+        oi_support_by_sym=  {"BANKNIFTY": 0.10,  "NIFTY": 0.10, "SENSEX": 0.10},
+    ),
+    GateConfig(
+        name="D_NIFTY_OI08_MARGIN03",
+        desc="small_capital_experiment: NIFTY oi≥0.08 + margin≥0.03, BNK margin≥0.03",
+        score_margin_by_sym={"BANKNIFTY": 0.03, "NIFTY": 0.03, "SENSEX": 0.05},
+        oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.08, "SENSEX": 0.10},
+    ),
+    GateConfig(
+        name="E_SENSEX_STRICT_UNCHANGED",
+        desc="SENSEX strict mode unchanged — baseline for SENSEX analysis",
         score_margin_by_sym={"BANKNIFTY": 0.05, "NIFTY": 0.05, "SENSEX": 0.05},
-        oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.08, "SENSEX": 0.10},
-    ),
-    GateConfig(
-        name="D_COMBINED_CONSERVATIVE",
-        desc="BANKNIFTY margin≥0.03 + NIFTY oi≥0.08, SENSEX unchanged",
-        score_margin_by_sym={"BANKNIFTY": 0.03, "NIFTY": 0.05, "SENSEX": 0.05},
-        oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.08, "SENSEX": 0.10},
-    ),
-    GateConfig(
-        name="E_SENSEX_DIAGNOSTIC",
-        desc="SENSEX margin≥0.01 + oi≥0.03 — DIAGNOSTIC ONLY",
-        score_margin_by_sym={"BANKNIFTY": 0.05, "NIFTY": 0.05, "SENSEX": 0.01},
-        oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.10, "SENSEX": 0.03},
+        oi_support_by_sym=  {"BANKNIFTY": 0.10, "NIFTY": 0.10, "SENSEX": 0.10},
         diagnostic_only=True,
     ),
 ]
@@ -181,6 +181,19 @@ class SyntheticTrade:
     note: str = ""
 
 
+def _audit_ts_to_ist_hhmm(audit_ts: str) -> str:
+    """Convert UTC ISO audit timestamp to IST HH:MM string for OHLCV lookup."""
+    try:
+        hour   = int(audit_ts[11:13])
+        minute = int(audit_ts[14:16])
+        total_minutes = hour * 60 + minute + 330  # +5h30m = 330 minutes
+        ist_hour   = (total_minutes // 60) % 24
+        ist_minute = total_minutes % 60
+        return f"{ist_hour:02d}:{ist_minute:02d}"
+    except Exception:
+        return ""
+
+
 def _simulate_trades(
     passing_recs: list[dict],
     spot_by_bar: dict[str, dict[int, float]],
@@ -189,18 +202,18 @@ def _simulate_trades(
 ) -> list[SyntheticTrade]:
     """
     For each passing audit record, simulate a 1-lot trade.
-    Maps audit timestamps to OHLCV bar indices using minute-level alignment.
-    Only possible for bars where OHLCV is available (09:15–09:59 window).
+    Maps audit timestamps (UTC ISO) → IST HH:MM → OHLCV bar index.
+    With full-day OHLCV (375 bars), most session entries are mappable.
     """
-    # Build {sym: {minute_str: bar_index}}  e.g. "09:31" -> 16
+    # Build {sym: {hhmm_ist: bar_index}}
     ts_to_bar: dict[str, dict[str, int]] = {}
     for sym, rows in ohlcv_by_sym.items():
         ts_to_bar[sym] = {}
         for i, row in enumerate(rows):
             ts = row.get("timestamp", "")
-            # Extract HH:MM from ISO timestamp
+            # OHLCV timestamps are in IST ("+05:30") — extract HH:MM directly
             try:
-                hhmm = ts[11:16]  # "09:15"
+                hhmm = ts[11:16]
                 ts_to_bar[sym][hhmm] = i
             except Exception:
                 pass
@@ -208,27 +221,16 @@ def _simulate_trades(
     trades: list[SyntheticTrade] = []
 
     for rec in passing_recs:
-        sym     = rec.get("underlying", "UNKNOWN")
-        bias    = rec.get("bias", "UNKNOWN")
-        premium = rec.get("premium") or rec.get("price") or 0.0
-        delta   = abs(rec.get("delta") or 0.40)
-        lot_sz  = _LOT_SIZES.get(sym, 15)
+        sym      = rec.get("underlying", "UNKNOWN")
+        bias     = rec.get("bias", "UNKNOWN")
+        premium  = rec.get("premium") or rec.get("price") or 0.0
+        delta    = abs(rec.get("delta") or 0.40)
+        lot_sz   = _LOT_SIZES.get(sym, 15)
         audit_ts = rec.get("ts", "")
 
-        # Extract HH:MM from audit timestamp (UTC ISO); convert to IST (+5:30)
-        try:
-            hour   = int(audit_ts[11:13])
-            minute = int(audit_ts[14:16])
-            hour_ist   = (hour + 5) % 24
-            minute_ist = (minute + 30) % 60
-            if minute + 30 >= 60:
-                hour_ist = (hour + 6) % 24
-            hhmm_ist = f"{hour_ist:02d}:{minute_ist:02d}"
-        except Exception:
-            hhmm_ist = ""
-
-        bar_idx = ts_to_bar.get(sym, {}).get(hhmm_ist, -1)
-        ohlcv   = ohlcv_by_sym.get(sym, [])
+        hhmm_ist = _audit_ts_to_ist_hhmm(audit_ts)
+        bar_idx  = ts_to_bar.get(sym, {}).get(hhmm_ist, -1)
+        ohlcv    = ohlcv_by_sym.get(sym, [])
 
         if bar_idx == -1 or not ohlcv:
             # Outside available OHLCV window — cannot simulate PnL
@@ -329,7 +331,9 @@ def _report_config(
     with_pnl  = [t for t in trades if t.pnl is not None]
     ohlcv_gap = [t for t in trades if t.note == "OUTSIDE_OHLCV_WINDOW"]
 
-    print(f"\n  *** PARTIAL_SESSION_DATA_45_BARS — OHLCV covers 09:15–09:59 only ***")
+    _n_ohlcv = max(len(ohlcv_by_sym.get(s, [])) for s in ("BANKNIFTY", "NIFTY", "SENSEX")) if ohlcv_by_sym else 0
+    _ohlcv_tag = "FULL_DAY" if _n_ohlcv >= 300 else f"PARTIAL_SESSION_{_n_ohlcv}_BARS"
+    print(f"\n  *** {_ohlcv_tag} — OHLCV {_n_ohlcv} bars ***")
     print(f"  *** REPLAY_LIMITED_BY_SYNTHETIC_PREMIUMS — delta-only premium est ***")
     print(f"  Entries in OHLCV window (PnL estimable): {len(with_pnl)}")
     print(f"  Entries outside OHLCV window (no PnL):  {len(ohlcv_gap)}")
@@ -341,26 +345,37 @@ def _report_config(
         losers     = [t for t in with_pnl if (t.pnl or 0) <= 0]
         pnls       = [t.pnl for t in with_pnl]
 
-        # Dedup: in reality, only ONE position per underlying at a time
-        # Count unique entry bars per underlying (first entry per underlying only)
-        unique_entries_by_sym: dict[str, list[SyntheticTrade]] = defaultdict(list)
+        # Direction alignment: was entry in direction of actual spot move?
+        with_dir = [t for t in with_pnl if t.pnl is not None]
+        aligned = 0
+        for t in with_dir:
+            # entry_spot to final = spot_delta, used in pnl calc
+            # pnl > 0 means trade profited => direction was right
+            if (t.pnl or 0) > 0:
+                aligned += 1
+        pct_aligned = aligned / len(with_dir) * 100 if with_dir else 0
+
+        # Dedup: first entry per underlying only
         seen_sym: set[str] = set()
+        unique_trades: list[SyntheticTrade] = []
         for t in with_pnl:
             if t.underlying not in seen_sym:
                 seen_sym.add(t.underlying)
-                unique_entries_by_sym[t.underlying].append(t)
+                unique_trades.append(t)
 
-        unique_trades = [t for tlist in unique_entries_by_sym.values() for t in tlist]
         print(f"\n  Unique entries (1 per underlying, first pass): {len(unique_trades)}")
         for t in unique_trades:
             pnl_str = f"₹{t.pnl:+,.0f}" if t.pnl is not None else "n/a"
+            dir_ok  = "direction_aligned" if (t.pnl or 0) > 0 else "direction_opposed"
             print(f"    {t.underlying:12s}  {t.symbol:30s}  "
-                  f"prem={t.entry_premium:.0f}  {pnl_str}  {t.exit_reason}  ({t.note})")
+                  f"bias={t.bias}  prem={t.entry_premium:.0f}  {pnl_str}  "
+                  f"{t.exit_reason}  {dir_ok}  ({t.note})")
 
-        print(f"\n  All {len(with_pnl)} simulated entries (including repeats within session):")
+        print(f"\n  All {len(with_pnl)} simulated entries (including repeats):")
         print(f"    Total PnL (synthetic) : ₹{total_pnl:+,.0f}")
         print(f"    Win rate              : {len(winners)}/{len(with_pnl)} "
               f"({len(winners)/len(with_pnl)*100:.0f}%)")
+        print(f"    Direction aligned     : {aligned}/{len(with_dir)} ({pct_aligned:.0f}%)")
         print(f"    Avg trade PnL         : ₹{mean(pnls):+,.0f}")
         print(f"    Worst trade PnL       : ₹{min(pnls):+,.0f}")
         print(f"    Stop-loss exits       : {len(stops)}")
@@ -470,10 +485,20 @@ def main() -> None:
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    ohlcv_by_sym_pre: dict[str, list[dict]] = {}
+    for sym in ["BANKNIFTY", "NIFTY", "SENSEX"]:
+        ohlcv_by_sym_pre[sym] = _load_ohlcv(sym)
+    _sample_rows = next((r for r in ohlcv_by_sym_pre.values() if r), [])
+    _ohlcv_first = _sample_rows[0]["timestamp"][:16] if _sample_rows else "?"
+    _ohlcv_last  = _sample_rows[-1]["timestamp"][:16] if _sample_rows else "?"
+    _ohlcv_n     = len(_sample_rows)
+    _is_full_day = _ohlcv_n >= 300
+    _session_label = f"FULL_DAY_{_ohlcv_n}_BARS" if _is_full_day else f"PARTIAL_SESSION_{_ohlcv_n}_BARS"
+
     print(f"\n{'═' * 70}")
     print(f"  GATE CALIBRATION REPLAY — 2026-06-08")
-    print(f"  *** PARTIAL_SESSION_DATA_45_BARS (09:15–09:59 IST) ***")
-    print(f"  *** REPLAY_LIMITED_BY_SYNTHETIC_PREMIUMS           ***")
+    print(f"  *** {_session_label} ({_ohlcv_first} → {_ohlcv_last} IST) ***")
+    print(f"  *** REPLAY_LIMITED_BY_SYNTHETIC_PREMIUMS (delta approx)    ***")
     print(f"{'═' * 70}")
 
     audit = _load_audit()
@@ -483,11 +508,10 @@ def main() -> None:
 
     print(f"\n  Audit records: {len(audit)} (mode=live)")
 
-    ohlcv_by_sym: dict[str, list[dict]] = {}
+    ohlcv_by_sym: dict[str, list[dict]] = ohlcv_by_sym_pre
     for sym in ["BANKNIFTY", "NIFTY", "SENSEX"]:
-        rows = _load_ohlcv(sym)
-        ohlcv_by_sym[sym] = rows
-        status = f"{len(rows)} bars (09:15–09:59)" if rows else "NOT FOUND"
+        rows = ohlcv_by_sym[sym]
+        status = f"{len(rows)} bars ({_ohlcv_first[11:16]}–{_ohlcv_last[11:16]} IST)" if rows else "NOT FOUND"
         print(f"  OHLCV {sym:12s}: {status}")
 
     # June 8 direction summary
