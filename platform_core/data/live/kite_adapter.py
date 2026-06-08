@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging as _logging
 import threading
 import time
 from collections.abc import Callable
@@ -9,6 +10,22 @@ from decimal import Decimal
 
 from kiteconnect import KiteConnect
 from kiteconnect import KiteTicker
+
+
+class _SuppressNullKiteClose(_logging.Filter):
+    """Suppress spurious 'Connection closed: None - None' from pykiteconnect.
+
+    pykiteconnect/ticker.py always logs this via log.error() on clean teardown
+    (code=None, reason=None). Real disconnects have non-None codes and are also
+    surfaced by our own on_close callback, so suppressing only the null variant
+    loses nothing diagnostically.
+    """
+
+    def filter(self, record: _logging.LogRecord) -> bool:
+        return record.getMessage() != "Connection closed: None - None"
+
+
+_logging.getLogger("kiteconnect.ticker").addFilter(_SuppressNullKiteClose())
 
 from platform_core.data.option_chain_ingestion import (
     OptionChainSnapshot,
