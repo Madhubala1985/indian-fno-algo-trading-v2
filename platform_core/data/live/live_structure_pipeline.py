@@ -530,7 +530,9 @@ def _get_gate_val(sym: str, metric: str, env_key: str) -> tuple[float, str]:
             return float(raw), "env"
         except ValueError:
             pass
-    return profile_val, ("profile" if _profile_is_non_default else "default")
+    _default_val = _MIN_SCORE_MARGIN_TIER23 if metric == "score_margin" else _MIN_OI_SUPPORT_TIER23
+    src = "profile" if profile_val != _default_val else "default"
+    return profile_val, src
 
 
 # Build final per-underlying dicts with source tracking
@@ -1076,7 +1078,7 @@ def _load_state() -> None:
                 for tf in sorted(_bars_by_tf.keys()):
                     for bar in _bars_by_tf[tf]:
                         _und_state.market_ctx_builder.update(bar=bar, timeframe=tf)
-                _restore_summary[_und] = f"tf={len(_bars_by_tf)}"
+                _restore_summary[_und] = f"restored_history_tfs={len(_bars_by_tf)}"
             except Exception as exc:
                 print(f"[STATE] {_und} history restore failed ({exc}) — cold start for {_und}.")
                 _restore_summary[_und] = "FAILED"
@@ -1085,9 +1087,9 @@ def _load_state() -> None:
         try:
             _bnk_ctx = _runtime_by_underlying[_PRIMARY_OPTION_TARGET].market_ctx_builder.build()
             print(
-                f"[STATE] BANKNIFTY MCB: bias={_bnk_ctx.bias}  "
+                f"[STATE] BANKNIFTY MCB pre-warmstart: bias={_bnk_ctx.bias}  "
                 f"conf={_bnk_ctx.confidence:.2f}  "
-                f"ready={list(_bnk_ctx.timeframes_with_history)}"
+                f"mcb_ready_timeframes={list(_bnk_ctx.timeframes_with_history)}"
             )
         except Exception:
             pass
@@ -1179,10 +1181,14 @@ def _warm_start_mcb_from_csv() -> None:
     For each underlying:
       - Skips if the state file already has >= 20 bars of 15m history.
       - Finds the latest matching CSV in data/.
-      - Feeds bars through a private MultiTimeframeBuilder → 15m, 1h, 4h bars.
-      - Feeds bars through a private DailyBarAccumulator → 1d bars.
-      - Updates market_ctx_builder for all relevant timeframes.
-      - Prints a concise readiness summary.
+      - Saves any intraday bars that were restored from state (June 8 context).
+      - Resets the MCB classifiers so older CSV timestamps are accepted without
+        rejection. (Without reset, state bars from June 8 set _last_timestamp in
+        RegimeClassifier, causing all April-May CSV bars to be silently dropped.)
+      - Feeds CSV bars through a private MultiTimeframeBuilder → 15m, 1h, 4h bars.
+      - Feeds CSV bars through a private DailyBarAccumulator → 1d bars.
+      - Re-feeds saved intraday state bars on top (newer timestamps → accepted).
+      - Prints a truthful readiness summary including WARN for any loaded-but-not-ready TF.
     """
     for key, und_state in _runtime_by_underlying.items():
         existing_15m = len(und_state.bar_history.get("15m", []))
@@ -1210,6 +1216,20 @@ def _warm_start_mcb_from_csv() -> None:
             print(f"[MCB WARMSTART] {key}: CSV {csv_path.name} is empty or unreadable — cold start")
             continue
 
+        # Collect intraday state bars before resetting the MCB.
+        # These carry the most recent session context and will be re-fed on top of the CSV.
+        _state_bars_to_replay: list[tuple[str, "LiveBar"]] = []
+        for _tf in sorted(und_state.bar_history.keys()):
+            for _raw in und_state.bar_history.get(_tf, []):
+                try:
+                    _state_bars_to_replay.append((_tf, _dict_to_bar(_raw)))
+                except Exception:
+                    pass
+
+        # Reset so CSV bars (older timestamps) are not rejected by the strictly-increasing
+        # timestamp invariant that RegimeClassifier enforces per timeframe.
+        und_state.market_ctx_builder.reset()
+
         warmup_mtf   = MultiTimeframeBuilder()
         warmup_daily = DailyBarAccumulator(symbol=und_state.feed_symbol)
         counts: dict[str, int] = {"1m": 0, "15m": 0, "1h": 0, "4h": 0, "1d": 0}
@@ -1229,10 +1249,20 @@ def _warm_start_mcb_from_csv() -> None:
                 und_state.market_ctx_builder.update(bar=daily_bar, timeframe="1d")
                 counts["1d"] += 1
 
+        # Re-feed intraday state bars (newer timestamps accepted on top of CSV).
+        _refed = 0
+        for _stf, _sbar in _state_bars_to_replay:
+            try:
+                und_state.market_ctx_builder.update(bar=_sbar, timeframe=_stf)
+                _refed += 1
+            except Exception:
+                pass
+
         print(
             f"[MCB WARMSTART] {key}: loaded {csv_path.name}  "
             f"1m={counts['1m']}  15m={counts['15m']}  "
             f"1h={counts['1h']}  4h={counts['4h']}  1d={counts['1d']}"
+            + (f"  (+{_refed} intraday state bars re-fed)" if _refed else "")
         )
         try:
             _ctx = und_state.market_ctx_builder.build()
@@ -1242,6 +1272,14 @@ def _warm_start_mcb_from_csv() -> None:
                 f"bias={_ctx.bias}  conf={_ctx.confidence:.2f}  "
                 f"timeframes_ready={_tfs}"
             )
+            _ready_set = set(_tfs)
+            for _etf in sorted({"1m", "15m", "1h", "4h", "1d"} - _ready_set):
+                _loaded = counts.get(_etf, 0)
+                if _loaded > 0:
+                    print(
+                        f"[MCB WARMSTART WARN] {key} {_etf}: loaded={_loaded} bars"
+                        f" but not ready — check CSV coverage"
+                    )
         except Exception as exc:
             print(f"[MCB WARMSTART] {key}: MCB build check failed ({exc})")
 
