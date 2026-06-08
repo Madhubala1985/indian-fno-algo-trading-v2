@@ -397,9 +397,37 @@ _state_by_feed: dict[str, UnderlyingRuntimeState] = {
 # Tier 1 (Defensive): entered when drawdown is elevated
 # Tier 2 (Normal):    default operating mode
 # Tier 3 (Aggressive): only when equity is above initial, low drawdown, high confidence
-_TIER1_RISK_FRAC: float = 0.010   # 1.0% of equity at risk
-_TIER2_RISK_FRAC: float = 0.020   # 2.0% of equity at risk
-_TIER3_RISK_FRAC: float = 0.035   # 3.5% of equity at risk
+_TIER1_RISK_FRAC: float = 0.010   # 1.0% of equity at risk — fixed (never profile-adjusted)
+
+# ── Paper risk profile — small-capital calibration ───────────────────────────
+# PAPER_RISK_PROFILE: conservative (default, real-fund safe) | balanced | aggressive
+# balanced/aggressive raise risk fractions suitable for paper-only accounts.
+# At ₹300k the default 2% budget (₹6k) is below the 1-lot floor for all
+# near-ATM index options (SENSEX ₹6,624 / NIFTY ₹6,825 / BANKNIFTY ₹8,550).
+# balanced mode lifts Tier2/Tier3 to 4%, enabling SENSEX + NIFTY at ₹300k.
+_PAPER_RISK_PROFILE: str = os.environ.get("PAPER_RISK_PROFILE", "conservative").lower()
+if _PAPER_RISK_PROFILE not in ("conservative", "balanced", "aggressive"):
+    _PAPER_RISK_PROFILE = "conservative"
+
+_TIER2_RISK_FRAC: float = (
+    float(os.environ["PAPER_TIER2_RISK_FRAC"])
+    if os.environ.get("PAPER_TIER2_RISK_FRAC")
+    else 0.040 if _PAPER_RISK_PROFILE in ("balanced", "aggressive")
+    else 0.020
+)
+_TIER3_RISK_FRAC: float = (
+    float(os.environ["PAPER_TIER3_RISK_FRAC"])
+    if os.environ.get("PAPER_TIER3_RISK_FRAC")
+    else 0.040 if _PAPER_RISK_PROFILE in ("balanced", "aggressive")
+    else 0.035
+)
+# Max single-trade risk as fraction of session-opening equity used by the
+# min-lot override.  All other safety gates still apply.
+_PAPER_MAX_SINGLE_TRADE_RISK_FRAC: float = (
+    float(os.environ["PAPER_MAX_SINGLE_TRADE_RISK_FRAC"])
+    if os.environ.get("PAPER_MAX_SINGLE_TRADE_RISK_FRAC")
+    else _TIER2_RISK_FRAC
+)
 _TIER1_MAX_LOTS:  int   = 1
 _TIER2_MAX_LOTS:  int   = 3
 _TIER3_MAX_LOTS:  int   = 5
@@ -1119,6 +1147,18 @@ print(
     f"  max_open_positions={_MAX_OPEN_POSITIONS}"
     f"  source={'env:PAPER_STARTING_CAPITAL' if os.environ.get('PAPER_STARTING_CAPITAL') else 'default'}"
 )
+print(
+    f"[RISK CONFIG] profile={_PAPER_RISK_PROFILE}"
+    f"  capital=₹{_INITIAL_EQUITY:,.0f}"
+    f"  tier2={_TIER2_RISK_FRAC * 100:.1f}%"
+    f"  tier3={_TIER3_RISK_FRAC * 100:.1f}%"
+    f"  max_single_trade={_PAPER_MAX_SINGLE_TRADE_RISK_FRAC * 100:.1f}%"
+)
+if _TIER2_RISK_FRAC > 0.025:
+    print(
+        f"[WARNING] Paper risk profile '{_PAPER_RISK_PROFILE}' uses "
+        f"{_TIER2_RISK_FRAC * 100:.1f}% Tier2 risk — not approved for real funds."
+    )
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
 
@@ -1274,8 +1314,10 @@ def _determine_risk_tier(confidence: float) -> int:
     drawdown = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
     if drawdown >= _TIER1_DD_ENTRY:
         return 1
+    # Tier 3 activates only when the session OPENED above the startup threshold —
+    # same-day profits cannot promote tier within the current session.
     if (
-        _equity >= _session_opening_equity * (1.0 + _TIER3_MIN_GAIN)
+        _session_opening_equity >= _INITIAL_EQUITY * (1.0 + _TIER3_MIN_GAIN)
         and drawdown < _TIER3_MAX_DD
         and confidence >= _TIER3_CONF_GATE
     ):
@@ -1450,10 +1492,29 @@ def _size_live_position(
     drawdown      = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
     heat          = min(_open_premium_cost / max(_equity, 1.0), 1.0)
 
+    # Compute spread_bps from actual bid/ask on the selected contract when
+    # available; fall back to a conservative 30 bps for liquid index options.
+    # (The previous hardcoded 50 bps exceeded the penalty cap of 40 bps and
+    # permanently zeroed the spread component of liquidity_scale.)
+    _bid = getattr(rec, "bid_price", None)
+    _ask = getattr(rec, "ask_price", None)
+    if (
+        _bid is not None and _ask is not None
+        and _ask > _bid >= 0.0
+        and entry_premium > 0.0
+    ):
+        _spread_bps = (_ask - _bid) / entry_premium * 10_000.0
+    else:
+        _spread_bps = 30.0  # conservative fallback: liquid Indian index options
+
     # Use session-opening equity as sizing basis so intraday profits do not
     # inflate the risk budget within the same session.  Losses still reduce
     # available capital correctly since _equity falls below _session_opening_equity.
     _sizing_equity = max(min(_equity, _session_opening_equity), 1.0)
+    _open_pos_count = sum(
+        1 for _s in _runtime_by_underlying.values()
+        if _s.option_trader.has_open_position()
+    )
     portfolio = PortfolioRiskSnapshot(
         equity=_sizing_equity,
         available_cash=max(_sizing_equity - _open_premium_cost, 0.0),
@@ -1461,14 +1522,11 @@ def _size_live_position(
         current_drawdown_fraction=drawdown,
         max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
         correlation_exposure_fraction=0.0,
-        open_position_count=sum(
-            1 for _s in _runtime_by_underlying.values()
-            if _s.option_trader.has_open_position()
-        ),
+        open_position_count=_open_pos_count,
     )
 
     try:
-        return sizer.size_position(
+        _result = sizer.size_position(
             request=PositionSizingRequest(
                 underlying_symbol=rec.underlying_symbol,
                 timestamp=datetime.now(timezone.utc),
@@ -1484,7 +1542,7 @@ def _size_live_position(
                 actionability_score=min(rec.composite_score, 1.0),
                 realized_volatility_ratio=max(state.last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
                 liquidity_score=min(rec.breakdown.liquidity, 1.0),
-                spread_bps=50.0,
+                spread_bps=_spread_bps,
                 slippage_bps_estimate=10.0,
                 expected_correlation_to_book=0.0,
                 portfolio=portfolio,
@@ -1513,6 +1571,76 @@ def _size_live_position(
             ),
             metadata={"fallback_reason": str(exc)},
         )
+
+    # ── Min-lot override for small-capital paper accounts ─────────────────────
+    # When the position sizer rejects due to INSUFFICIENT_RISK_BUDGET, allow
+    # exactly 1 lot if the absolute risk of that single lot is within
+    # _PAPER_MAX_SINGLE_TRADE_RISK_FRAC of session-opening equity AND the
+    # resulting premium heat fits within the remaining portfolio heat.
+    #
+    # This override does NOT bypass:
+    #   strike quality  |  confluence (OI)  |  context contradiction
+    #   portfolio heat  |  daily loss halt  |  warm-start lockout
+    #   position limit  |  stop cooldown    |  market session filters
+    # Those gates all execute after _size_live_position returns.
+    if (
+        not _result.tradable
+        and _result.rejection_reason == "INSUFFICIENT_RISK_BUDGET"
+    ):
+        _risk_per_lot  = entry_premium * _MAX_OPTION_PREMIUM_LOSS_FRACTION * rec.lot_size
+        _max_risk      = _sizing_equity * _PAPER_MAX_SINGLE_TRADE_RISK_FRAC
+        _heat_per_lot  = entry_premium * rec.lot_size / max(_equity, 1.0)
+        _remaining_heat = max(0.0, _MAX_HEAT_FRACTION - heat)
+        _bd = _result.breakdown
+        _tier_fracs    = {0: _SOFT_HALT_RISK_FRAC, 1: _TIER1_RISK_FRAC,
+                          2: _TIER2_RISK_FRAC, 3: _TIER3_RISK_FRAC}
+        print(
+            f"\n[SIZING_BREAKDOWN] {rec.underlying_symbol}"
+            f"  contract={getattr(rec, 'option_symbol', '?')}"
+            f"  premium=₹{entry_premium:.2f}"
+            f"  lot_size={rec.lot_size}"
+            f"  min_lots=1"
+            f"  risk_per_lot=₹{_risk_per_lot:.0f}"
+            f"  premium_cost_per_lot=₹{entry_premium * rec.lot_size:.0f}"
+            f"  heat_per_lot={_heat_per_lot:.4f}"
+            f"  risk_frac={_tier_fracs.get(tier, _TIER2_RISK_FRAC) * 100:.1f}%"
+            f"  max_single_trade={_PAPER_MAX_SINGLE_TRADE_RISK_FRAC * 100:.1f}%"
+            f"  base_budget=₹{_bd.base_risk_budget:.0f}"
+            f"  eff_budget=₹{_bd.effective_risk_budget:.0f}"
+            f"  spread_bps_used={_spread_bps:.1f}"
+            f"  vol_scale={_bd.volatility_scale:.3f}"
+            f"  liq_scale={_bd.liquidity_scale:.3f}"
+            f"  open_positions={_open_pos_count}"
+            f"  reason=INSUFFICIENT_RISK_BUDGET"
+        )
+        if _risk_per_lot <= _max_risk and _heat_per_lot <= _remaining_heat:
+            print(
+                f"[MIN LOT OVERRIDE] {rec.underlying_symbol}"
+                f"  contract={getattr(rec, 'option_symbol', '?')}"
+                f"  lots=1"
+                f"  reason=MIN_LOT_OVERRIDE_WITHIN_RISK_CAP"
+                f"  risk_per_lot=₹{_risk_per_lot:.0f}"
+                f"  max_risk_cap=₹{_max_risk:.0f}"
+                f"  ({_PAPER_MAX_SINGLE_TRADE_RISK_FRAC * 100:.1f}%)"
+                f"  spread_bps_used={_spread_bps:.1f}"
+            )
+            return PositionSizingResult(
+                underlying_symbol=rec.underlying_symbol,
+                timestamp=datetime.now(timezone.utc),
+                direction=str(market_ctx.bias),
+                recommended_units=rec.lot_size,
+                recommended_lots=1,
+                notional_exposure=entry_premium * rec.lot_size,
+                estimated_risk_amount=_risk_per_lot,
+                estimated_round_trip_cost=entry_premium * rec.lot_size * (_spread_bps / 10_000.0 + 0.001),
+                tradable=True,
+                rejection_reason=None,
+                breakdown=_result.breakdown,
+                metadata={"min_lot_override": "MIN_LOT_OVERRIDE_WITHIN_RISK_CAP",
+                          "lot_size": rec.lot_size},
+            )
+
+    return _result
 
 
 def _shadow_counter(underlying: str) -> dict:
