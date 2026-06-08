@@ -488,6 +488,16 @@ _MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
 #   PYTHONPATH=. python3 platform_core/data/live/live_structure_pipeline.py
 
 import os as _os
+from platform_core.execution.execution_router import ExecutionRouter as _ExecutionRouter
+
+# ── Execution mode ────────────────────────────────────────────────────────────
+# paper        — default; paper trading only; no broker API calls
+# real_dry_run — creates real OrderIntent, validates, logs, no place_order call
+# real_armed   — fail-closed unless all real-money interlocks pass
+_EXECUTION_MODE: str = _os.environ.get("EXECUTION_MODE", "paper").lower()
+if _EXECUTION_MODE not in ("paper", "real_dry_run", "real_armed"):
+    print(f"[EXECUTION MODE] WARNING: unknown mode={_EXECUTION_MODE!r} — falling back to paper")
+    _EXECUTION_MODE = "paper"
 
 _PAPER_GATE_PROFILE: str = _os.environ.get("PAPER_GATE_PROFILE", "default").lower()
 
@@ -1399,6 +1409,12 @@ try:
 except Exception:
     pass
 
+# Execution router — mode is paper by default; real_dry_run and real_armed are
+# opt-in via EXECUTION_MODE env var.  Router is always created; paper mode is a no-op.
+_exec_router = _ExecutionRouter(mode=_EXECUTION_MODE)
+_exec_router.startup_print()
+_session_tag: str = _session_ts if "_session_ts" in dir() else "live"
+
 
 ENGINES = {}
 SWING_DETECTORS = {}
@@ -2153,6 +2169,21 @@ def _eod_force_close_all() -> None:
             )
         except Exception:
             pass
+        # Execution router exit for EOD force-close
+        try:
+            _exec_router.route_exit(
+                underlying    = key,
+                tradingsymbol = _closed.contract_symbol,
+                lots          = _closed.lots,
+                lot_size      = _closed.lot_size,
+                exit_premium  = _closed.exit_premium,
+                reason        = "EOD_FORCE_CLOSE",
+                session_tag   = _session_tag,
+                risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
+                db            = _db,
+            )
+        except Exception:
+            pass
 
         if _save_state():
             trade_logger.log_trade(trade=_closed.as_paper_trade())
@@ -2684,6 +2715,21 @@ def on_ticks(raw_ticks):
                         )
                     except Exception:
                         pass
+                    # Execution router exit — paper=no-op, dry-run/real=log exit intent
+                    try:
+                        _exec_router.route_exit(
+                            underlying    = _current_state.option_underlying,
+                            tradingsymbol = _closed.contract_symbol,
+                            lots          = _closed.lots,
+                            lot_size      = _closed.lot_size,
+                            exit_premium  = _closed.exit_premium,
+                            reason        = str(_closed.exit_reason),
+                            session_tag   = _session_tag,
+                            risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
+                            db            = _db,
+                        )
+                    except Exception:
+                        pass
                     if _save_state():
                         trade_logger.log_trade(trade=_closed.as_paper_trade())
                     else:
@@ -3176,6 +3222,38 @@ def on_ticks(raw_ticks):
                                                     fvg_quality=_current_state.fvg_quality,
                                                     equity=_equity,
                                                     drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                )
+                                            except Exception:
+                                                pass
+                                            # Execution router — paper=no-op, dry-run/real=log order intent
+                                            try:
+                                                _exec_router.route_entry(
+                                                    underlying    = _srec.underlying_symbol,
+                                                    tradingsymbol = _srec.option_symbol,
+                                                    lots          = _lots,
+                                                    lot_size      = _srec.lot_size,
+                                                    premium       = _srec.last_traded_price,
+                                                    direction     = str(_mctx.bias),
+                                                    session_tag   = _session_tag,
+                                                    strategy_context = {
+                                                        "bias": str(_mctx.bias),
+                                                        "conf_raw": _mctx.confidence,
+                                                        "conf_eff": _effective_conf,
+                                                        "tier": _tier_label,
+                                                    },
+                                                    risk_context  = {
+                                                        "equity": _equity,
+                                                        "drawdown": round(
+                                                            max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)), 4
+                                                        ),
+                                                    },
+                                                    strike_context = {
+                                                        "strike": _srec.strike_price,
+                                                        "expiry": _srec.expiry_date.isoformat(),
+                                                        "option_type": _srec.option_type,
+                                                        "premium": _srec.last_traded_price,
+                                                    },
+                                                    db = _db,
                                                 )
                                             except Exception:
                                                 pass

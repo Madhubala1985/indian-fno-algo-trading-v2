@@ -233,6 +233,10 @@ def archive_previous_session() -> None:
 def build_env(args: argparse.Namespace) -> dict[str, str]:
     env = os.environ.copy()
 
+    # Execution mode — default paper; opt-in to real_dry_run for tomorrow's test
+    exec_mode = getattr(args, "execution_mode", "paper") or "paper"
+    env["EXECUTION_MODE"] = exec_mode
+
     # Gate profile
     if args.profile:
         env["PAPER_GATE_PROFILE"] = args.profile
@@ -267,11 +271,13 @@ def start_pipeline(env: dict[str, str]) -> subprocess.Popen:
     ]
 
     _heading("STARTING LIVE PIPELINE")
-    _info(f"Command : {' '.join(cmd)}")
-    _info(f"Log     : {log_path}")
-    _info(f"Profile : PAPER_GATE_PROFILE={env.get('PAPER_GATE_PROFILE')}")
-    _info(f"Capital : PAPER_STARTING_CAPITAL={env.get('PAPER_STARTING_CAPITAL')}")
-    _info(f"Risk    : PAPER_RISK_PROFILE={env.get('PAPER_RISK_PROFILE')}")
+    _info(f"Command        : {' '.join(cmd)}")
+    _info(f"Log            : {log_path}")
+    _info(f"Execution mode : EXECUTION_MODE={env.get('EXECUTION_MODE', 'paper')}")
+    _info(f"Real orders    : {'true' if env.get('EXECUTION_MODE') == 'real_armed' else 'false'}")
+    _info(f"Profile        : PAPER_GATE_PROFILE={env.get('PAPER_GATE_PROFILE')}")
+    _info(f"Capital        : PAPER_STARTING_CAPITAL={env.get('PAPER_STARTING_CAPITAL')}")
+    _info(f"Risk           : PAPER_RISK_PROFILE={env.get('PAPER_RISK_PROFILE')}")
     print()
 
     log_fh = log_path.open("w", buffering=1)
@@ -344,6 +350,10 @@ def main() -> int:
                         help="Override PAPER_GATE_PROFILE (e.g. banknifty_experiment)")
     parser.add_argument("--capital", type=int, default=0,
                         help="Override PAPER_STARTING_CAPITAL (e.g. 300000)")
+    parser.add_argument("--execution-mode", default="paper",
+                        choices=["paper", "real_dry_run", "real_armed"],
+                        dest="execution_mode",
+                        help="Execution mode: paper (default) | real_dry_run | real_armed")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the plan but do not start the pipeline")
     args = parser.parse_args()
@@ -352,6 +362,19 @@ def main() -> int:
 
     if args.dry_run:
         print("  [DRY-RUN] No pipeline will be started.")
+
+    # real_armed requires explicit interlock env vars — fail-closed before preflight
+    if args.execution_mode == "real_armed":
+        from platform_core.execution.broker_adapter import _check_real_interlocks
+        ok, missing = _check_real_interlocks()
+        if not ok:
+            print("\n[SUPERVISOR] real_armed requested but interlocks are not set:")
+            for m in missing:
+                print(f"  [REAL ORDER BLOCKED] missing interlock={m}")
+            print("[SUPERVISOR] Set all required env vars before using real_armed.")
+            return 1
+
+    _info(f"Execution mode: {args.execution_mode}")
 
     preflight_ok = run_preflight(args.run_oi_diagnostics)
     if not preflight_ok:

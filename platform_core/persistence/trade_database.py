@@ -115,6 +115,52 @@ CREATE INDEX IF NOT EXISTS idx_pt_trades_session    ON pt_trades (session_id, st
 CREATE INDEX IF NOT EXISTS idx_pt_decisions_session ON pt_decisions (session_id);
 CREATE INDEX IF NOT EXISTS idx_pt_se_session        ON pt_structure_events (session_id, bar_index);
 CREATE INDEX IF NOT EXISTS idx_pt_re_session        ON pt_runtime_events (session_id);
+
+CREATE TABLE IF NOT EXISTS pt_order_intents (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id         INTEGER,
+    mode             TEXT    NOT NULL,
+    underlying       TEXT    NOT NULL,
+    tradingsymbol    TEXT    NOT NULL,
+    exchange         TEXT    NOT NULL,
+    transaction_type TEXT    NOT NULL,
+    quantity         INTEGER NOT NULL,
+    order_type       TEXT    NOT NULL,
+    price            REAL    NOT NULL DEFAULT 0.0,
+    status           TEXT    NOT NULL,
+    reason           TEXT    NOT NULL,
+    created_ts       TEXT    NOT NULL,
+    raw_intent_json  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pt_broker_orders (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    intent_id         INTEGER NOT NULL,
+    broker            TEXT    NOT NULL,
+    broker_order_id   TEXT    NOT NULL,
+    mode              TEXT    NOT NULL,
+    status            TEXT    NOT NULL,
+    average_price     REAL    NOT NULL DEFAULT 0.0,
+    filled_quantity   INTEGER NOT NULL DEFAULT 0,
+    pending_quantity  INTEGER NOT NULL DEFAULT 0,
+    placed_ts         TEXT    NOT NULL,
+    updated_ts        TEXT    NOT NULL,
+    raw_response_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pt_order_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    broker_order_id TEXT    NOT NULL,
+    event_type      TEXT    NOT NULL,
+    status          TEXT    NOT NULL,
+    message         TEXT    NOT NULL DEFAULT '',
+    raw_json        TEXT,
+    created_ts      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pt_oi_mode       ON pt_order_intents (mode, created_ts);
+CREATE INDEX IF NOT EXISTS idx_pt_bo_intent     ON pt_broker_orders  (intent_id);
+CREATE INDEX IF NOT EXISTS idx_pt_oe_order      ON pt_order_events   (broker_order_id);
 """
 
 # ── Queue sentinels ─────────────────────────────────────────────────────────────
@@ -455,6 +501,103 @@ class TradeDatabase:
             "created_at":  _utc_now(),
         }))
 
+    # ── Order lifecycle API (real_dry_run / real_armed) ───────────────────────
+
+    def write_order_intent(
+        self,
+        *,
+        mode:             str,
+        underlying:       str,
+        tradingsymbol:    str,
+        exchange:         str,
+        transaction_type: str,
+        quantity:         int,
+        order_type:       str,
+        price:            float    = 0.0,
+        status:           str      = "PENDING",
+        reason:           str      = "",
+        raw_intent_json:  str      = "",
+        trade_id:         int | None = None,
+    ) -> int:
+        """
+        Write an order intent record.  Returns the new rowid (synchronous).
+        For fire-and-forget callers that do not need the rowid, discard it.
+        """
+        if not self._is_operational():
+            return -1
+        import sqlite3 as _sq3
+        ts = _utc_now()
+        try:
+            conn = _sq3.connect(self._db_path)
+            cur = conn.execute(
+                """
+                INSERT INTO pt_order_intents
+                  (trade_id, mode, underlying, tradingsymbol, exchange,
+                   transaction_type, quantity, order_type, price,
+                   status, reason, created_ts, raw_intent_json)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (trade_id, mode, underlying, tradingsymbol, exchange,
+                 transaction_type, quantity, order_type, price,
+                 status, reason, ts, raw_intent_json),
+            )
+            conn.commit()
+            rowid = cur.lastrowid
+            conn.close()
+            return rowid if rowid is not None else -1
+        except Exception:
+            return -1
+
+    def write_broker_order(
+        self,
+        *,
+        intent_id:         int,
+        broker:            str,
+        broker_order_id:   str,
+        mode:              str,
+        status:            str,
+        average_price:     float = 0.0,
+        filled_quantity:   int   = 0,
+        pending_quantity:  int   = 0,
+        raw_response_json: str   = "",
+    ) -> None:
+        if not self._is_operational():
+            return
+        ts = _utc_now()
+        self._queue.put(("broker_order", {
+            "intent_id":         intent_id,
+            "broker":            broker,
+            "broker_order_id":   broker_order_id,
+            "mode":              mode,
+            "status":            status,
+            "average_price":     average_price,
+            "filled_quantity":   filled_quantity,
+            "pending_quantity":  pending_quantity,
+            "placed_ts":         ts,
+            "updated_ts":        ts,
+            "raw_response_json": raw_response_json,
+        }))
+
+    def write_order_event(
+        self,
+        *,
+        broker_order_id: str,
+        event_type:      str,
+        status:          str,
+        message:         str = "",
+        raw_json:        str = "",
+    ) -> None:
+        if not self._is_operational():
+            return
+        self._queue.put(("order_event", {
+            "broker_order_id": broker_order_id,
+            "event_type":      event_type,
+            "status":          status,
+            "message":         message,
+            "raw_json":        raw_json,
+            "created_ts":      _utc_now(),
+        }))
+
     # ── Background worker ──────────────────────────────────────────────────────
 
     def _worker(self) -> None:
@@ -502,6 +645,10 @@ class TradeDatabase:
                     self._insert_structure_events_batch(conn, payload)
                 elif kind == "runtime_event":
                     self._insert_runtime_event(conn, payload)
+                elif kind == "broker_order":
+                    self._insert_broker_order(conn, payload)
+                elif kind == "order_event":
+                    self._insert_order_event(conn, payload)
                 conn.commit()
             except Exception as exc:
                 print(f"[DB] Write error ({exc})", file=sys.stderr)
@@ -639,6 +786,36 @@ class TradeDatabase:
             (
                 p["session_id"], p["run_mode"], p["event_type"], p["severity"],
                 p["message"], p["equity"], p["drawdown"], p["bar_index"], p["created_at"],
+            ),
+        )
+
+    def _insert_broker_order(self, conn: sqlite3.Connection, p: dict) -> None:
+        conn.execute(
+            """
+            INSERT INTO pt_broker_orders (
+                intent_id, broker, broker_order_id, mode, status,
+                average_price, filled_quantity, pending_quantity,
+                placed_ts, updated_ts, raw_response_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                p["intent_id"], p["broker"], p["broker_order_id"],
+                p["mode"], p["status"], p["average_price"],
+                p["filled_quantity"], p["pending_quantity"],
+                p["placed_ts"], p["updated_ts"], p["raw_response_json"],
+            ),
+        )
+
+    def _insert_order_event(self, conn: sqlite3.Connection, p: dict) -> None:
+        conn.execute(
+            """
+            INSERT INTO pt_order_events (
+                broker_order_id, event_type, status, message, raw_json, created_ts
+            ) VALUES (?,?,?,?,?,?)
+            """,
+            (
+                p["broker_order_id"], p["event_type"], p["status"],
+                p["message"], p["raw_json"], p["created_ts"],
             ),
         )
 
