@@ -3371,3 +3371,238 @@ No legacy PaperBroker call-sites survive in the live pipeline.
 > round-trip observed and clean for BANKNIFTY, NIFTY, and SENSEX; CSV duplicate bug
 > investigated and fixed; SENSEX BFO rollover behaviour confirmed stable.**
 
+---
+
+## 38. Live-Readiness and Real Dry-Run Infrastructure — 2026-06-08
+
+### A. Current Objective
+
+- **We are not using real funds.** No real orders have been placed at any point.
+- The next goal is to run a supervised live session in `real_dry_run` mode.  
+  In this mode the paper broker drives all P&L (completely unchanged); the new execution layer validates every OrderIntent and logs it to the DB, but never calls `kite.place_order`.
+- The real broker order infrastructure (OrderIntent → KiteDryRunBrokerAdapter → pt_order_intents) exists and is fail-closed.  Real order placement requires 9 explicit env-var interlocks and `EXECUTION_MODE=real_armed`; neither is set.
+- Paper / backtest / live / dry-run lifecycle must remain aligned.  No strategy logic, gate thresholds, MCB/FVG/BOS/OR/session logic, or strike weights have been changed during this phase.
+
+---
+
+### B. Completed Fixes Since Last PROJECT_STATUS Update
+
+Commits documented here for the first time (after `e010a5c`):
+
+| Hash | Commit message | What changed |
+|---|---|---|
+| `ae7b876` | Warm-start MCB from historical CSV data | MCB cold-start eliminated: 1m CSV fed into all five MCB timeframes (1m/15m/1h/4h/1d) before first bar arrives.  `reset + feed_csv + re-feed state bars` pattern; `DailyBarAccumulator` used for correct OHLCV accumulation. |
+| `f53dffc` | Make trade CSV logging idempotent | `TradeLogger` now de-duplicates on `(entry_ts, contract_symbol)` before appending; pre-existing duplicate row (BANKNIFTY03JUN) from §37d is harmless going forward. |
+| `89efa03` | Force close paper positions at market close | EOD sweep at 15:30 IST: all open `OptionPaperTrader` positions force-closed, exit written to DB/CSV/state, `paper_trading_state.json` flushed clean.  Prevents orphan positions across sessions. |
+| `fa9912d` | Add live decision quality safety gates | Warm-start lockout (MCB not ready → no entries); 30 % premium-loss stop semantics clarified; stop cooldown (no re-entry within N bars after stop); low-OI rejection; insufficient-confluence rejection; execution context printed clearly on each decision. |
+| `5785233` | Harden intelligence-layer live validation gates | Structure-exit lowercase bug fixed (`bos` → `BOS`); context-contradiction guard added; strike-quality gate (`min_strike_score` check); compact terminal mode (`LIVE_TERMINAL_MODE=compact`); trade-quality analyser added (`analyze_live_trade_quality.py`). |
+| `777f203` | Add capital-aware live paper risk controls | `PAPER_STARTING_CAPITAL` env var (default 300 000); capital-tier max-positions table; no same-day profit tier-up (equity ceiling is starting capital only). |
+| `0136017` | Add dynamic small-capital paper risk sizing | `PAPER_RISK_PROFILE` env var; `balanced` profile = 4 % risk per trade; `spread_bps` fix; min-lot override capped within total risk; detailed sizing diagnostics printed on each entry. |
+| `bfc30e8` | Add post-market strike and gate calibration diagnostics | Runner-up / top-5 strike audit in `logs/strike_selection_audit.jsonl`; OI-support diagnostic (`diagnose_oi_support.py`); gate-calibration analyser; MCB warm-start analyser; daily reflection framework (`generate_daily_reflection.py`). |
+| `12fdbd8` | Add adaptive gate replay and calibration workflow | `replay_gate_calibration.py` — full-day OHLCV replay with per-gate statistics; calibration report generated post-session without mutating live policy. |
+| `3d47bf0` | Add paper gate profiles and full-day replay support | `PAPER_GATE_PROFILE` env var; `banknifty_experiment` profile lowers BANKNIFTY score margin to 0.03 (paper-only); `small_capital_experiment`; SENSEX strict defaults unchanged; all experiments print not-real-funds-approved warning. |
+| `caa8a6a` | Fix full multi-timeframe MCB warm-start readiness | Root cause: state bars with newer timestamps blocked older CSV warm-start bars.  Fix: `reset()` MCB, feed CSV first, then re-feed state bars.  All five timeframes (1m/15m/1h/4h/1d) now reach `is_ready()` before first live bar. |
+| `e851697` | Add rolling MCB warm-start data refresh | `scripts/refresh_mcb_warmstart_data.py`; auto-selects freshest CSV per symbol; warns if data is more than 3 trading days stale; refreshes 25 trading days of 1m history. |
+| `acbfe67` | Add supervised live validation workflow | `scripts/run_supervised_live_session.py` — one-command supervised session runner: preflight → archive → pipeline subprocess + tee log → post-market validation.  `update_live_issue_register.py`; `generate_daily_reflection.py`; OI diagnostics integration; `_SuppressNullKiteClose` log filter removes pykiteconnect teardown noise. |
+| `fa1bf7e` | Add real-market execution infrastructure in dry-run mode | `EXECUTION_MODE=paper\|real_dry_run\|real_armed`; `OrderIntent` dataclass; `PaperBrokerAdapter` / `KiteDryRunBrokerAdapter` / `KiteLiveBrokerAdapter`; `ExecutionRouter`; three order-lifecycle DB tables (`pt_order_intents`, `pt_broker_orders`, `pt_order_events`); 9-interlock fail-closed gate; `real_funds_readiness_check.py`; full regression verification run — 45/45 dry-run tests PASS. |
+
+---
+
+### C. Current Architecture State
+
+```
+Market Data (Kite WebSocket 1m ticks)
+  └─► ValidationPipeline → BarBuilder
+        └─► StructureEngine (SwingDetector → LiquiditySweep → BOS → CHOCH → FVG → SR)
+              └─► MCB Context (HTFBiasEngine 1m/15m/1h/4h/1d warm-started from CSV)
+                    └─► Gate Profiles (PAPER_GATE_PROFILE: default / banknifty_experiment / small_capital_experiment)
+                          └─► Strike Selection (8-factor: delta/IV/theta/OI/liquidity/spread/score/expiry)
+                                └─► Capital/Risk Sizing (PAPER_STARTING_CAPITAL, PAPER_RISK_PROFILE, balanced 4%)
+                                      └─► OptionPaperTrader (entry/exit/P&L — unchanged paper mechanics)
+                                      │     └─► TradeLogger (idempotent CSV) + TradeDatabase (SQLite) + StateFile
+                                      │
+                                      └─► ExecutionRouter (EXECUTION_MODE env var)
+                                            ├─► PaperBrokerAdapter      (paper — pass-through no-op)
+                                            ├─► KiteDryRunBrokerAdapter (real_dry_run — logs intent, no API call)
+                                            └─► KiteLiveBrokerAdapter   (real_armed — 9-interlock gate, not reachable today)
+                                                  └─► pt_order_intents / pt_broker_orders / pt_order_events (DB)
+
+Post-session:
+  validate_live_lifecycle_state.py → update_live_issue_register.py → generate_daily_reflection.py
+```
+
+---
+
+### D. Risk and Capital State
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `PAPER_STARTING_CAPITAL` | 300 000 | Set via env var; default ₹3 00 000 |
+| `PAPER_RISK_PROFILE` | `balanced` | 4 % risk per trade on starting capital |
+| Max risk per trade | ₹12 000 (4 % of ₹3 00 000) | Computed from starting capital only |
+| `MAX_OPEN_POSITIONS` | 2 | One per underlying at most |
+| Intraday profit tier-up | **Disabled** | Equity ceiling = starting capital during session |
+| Min-lot override | Allowed within risk cap | If 1 lot > risk cap, entry blocked |
+| Real account size | ~₹2–3 L (planned) | Not used; real funds not approved |
+| Real funds status | **NO-GO** | `real_funds_readiness_check.py` → `REAL_FUNDS_READY=NO` |
+
+---
+
+### E. Gate/Profile State
+
+| Profile | Underlying | Score margin | Notes |
+|---|---|---|---|
+| `default` | All | Unchanged (original thresholds) | Production default |
+| `banknifty_experiment` | BANKNIFTY only | Lowered to 0.03 | Paper-only; prints NOT-REAL-FUNDS-APPROVED warning |
+| `small_capital_experiment` | All | Unchanged | Adjusts capital floor only |
+| SENSEX | SENSEX | Strict | Thin OI evidence; remains strict until live chain validated |
+| NIFTY | NIFTY | Unchanged | OI support requires live chain validation before any loosening |
+
+No gate thresholds were changed for production. All experiments print a clear not-real-funds-approved banner at startup. Gate lowering requires explicit `PAPER_GATE_PROFILE` env var.
+
+---
+
+### F. MCB Warm-Start State
+
+- **Full 5-timeframe readiness fixed** (`caa8a6a`): all of 1m/15m/1h/4h/1d reach `is_ready()` before first live bar.  Root cause was timestamp ordering conflict; fix is reset + CSV feed + state re-feed.
+- **Rolling warm-start refresh** (`e851697`): `scripts/refresh_mcb_warmstart_data.py` fetches 25 trading days of 1m history per symbol from Kite historical API.
+- **Auto-selection**: freshest CSV per symbol selected by end-date key; stale-data warning at 3 trading days.
+- **Refresh command** must be run before each session when the most recent CSV is more than 3 trading days old.
+
+---
+
+### G. Real-Market Execution Infrastructure
+
+#### Execution modes
+
+| Mode | Env var value | Behaviour |
+|---|---|---|
+| Paper (default) | `paper` or unset | `PaperBrokerAdapter` — pass-through no-op; no new DB writes; paper P&L path unchanged |
+| Dry-run | `real_dry_run` | `KiteDryRunBrokerAdapter` — validates OrderIntent, prints `[DRY_RUN_ORDER_INTENT]`, writes to `pt_order_intents`; **never calls `kite.place_order`** |
+| Live (blocked) | `real_armed` | `KiteLiveBrokerAdapter` — calls `kite.place_order` only after all 9 interlocks pass; not reachable today |
+
+#### OrderIntent validation rules
+
+1. `tradingsymbol` must contain `CE` or `PE` — raw index symbols rejected.
+2. SENSEX/BANKEX → exchange must be `BFO`; BANKNIFTY/NIFTY/FINNIFTY → `NFO`.
+3. `transaction_type` must be `BUY` or `SELL`.
+4. `quantity == lots × lot_size > 0` — mismatch rejected.
+5. `product` in {NRML, MIS, CNC, BO, CO}.
+6. `order_type` in {MARKET, LIMIT, SL, SL-M}; LIMIT requires `price > 0`.
+7. No real orders during CLOSING / PRE_OPEN / POST_CLOSE session phases.
+8. No real orders when market is closed.
+
+#### Real-money safety interlocks (all 9 required for `real_armed`)
+
+```
+REAL_TRADING_ENABLED=true
+REAL_TRADING_CONFIRMATION=I_UNDERSTAND_REAL_MONEY_RISK
+BROKER_LIVE_ORDERS_ALLOWED=true
+MAX_REAL_CAPITAL=<value>
+MAX_REAL_ORDER_VALUE=<value>
+MAX_REAL_DAILY_LOSS=<value>
+REAL_ALLOWED_UNDERLYINGS=<value>
+REAL_ALLOWED_EXCHANGES=<value>
+REAL_MAX_LOTS_PER_ORDER=<value>
+```
+
+Any missing interlock → `get_broker_adapter()` falls back to `KiteDryRunBrokerAdapter` (fail-closed).
+
+#### DB order lifecycle tables (added `fa1bf7e`, `IF NOT EXISTS`)
+
+| Table | Purpose |
+|---|---|
+| `pt_order_intents` | One row per validated OrderIntent (paper/dry-run/live) |
+| `pt_broker_orders` | Broker acknowledgement (order_id, status, mode) |
+| `pt_order_events` | Status-change events per order |
+
+**`order_id` is not fill confirmation.** `filled=False` on all dry-run and live results until explicit broker status/trades confirmation is received.
+
+---
+
+### H. Validation Results — 2026-06-08 (post `fa1bf7e`)
+
+| Suite | Result |
+|---|---|
+| `test_real_execution_dry_run.py` | **45/45 PASS** |
+| `test_supervised_live_session.py` | **16/16 PASS** |
+| `test_mcb_warmstart_freshness.py` | **23/23 PASS** |
+| `test_mcb_full_warmstart.py` | **50/50 PASS** |
+| `test_gate_profiles.py` | **35/35 PASS** |
+| `test_small_capital_risk_engine.py` | **33/33 PASS** |
+| `test_live_decision_safety.py` | **35/35 PASS** |
+| `test_eod_force_close.py` | **22/22 PASS** |
+| `test_trade_logger_idempotency.py` | **14/14 PASS** |
+| `test_strike_selector_sanity.py` | **13/13 PASS** |
+| `validate_live_lifecycle_state.py` | **FAILs: 0 / WARNs: 0 — PASS** |
+| `analyze_live_trade_quality.py` | **PASS_FOR_NEXT_PAPER_RUN** |
+| `validate_symbol_backtest_support.py` | **ALL CONFIG OK** |
+| `real_funds_readiness_check.py` | **REAL_FUNDS_READY=NO** (correct) |
+| `py_compile` all changed files | **OK** |
+| `run_backtest.py` (single-symbol regression) | **PASS** — trades, P&L, equity all correct |
+
+---
+
+### I. Remaining Known Issues / Blockers
+
+1. **No real_dry_run live session yet** — `pt_order_intents` table has no production records; `real_funds_readiness_check.py` "Dry-run tested" check remains FAIL until a live dry-run session is observed.
+2. **Paper/dry-run trade count** — need ≥ 5 completed paper/dry-run trades across ≥ 2 sessions before readiness check can pass "Paper trades" gate.
+3. **OI diagnostics in live market** — `diagnose_oi_support.py` has not been run during market hours; NIFTY and SENSEX OI support quality unconfirmed against live chain.
+4. **SENSEX strict thresholds remain** — thin live OI evidence; not loosened until live chain validates OI depth.
+5. **NIFTY live chain quality** — `validate_option_chain_support.py --symbol NIFTY` passes statically; live OI during session not yet confirmed.
+6. **LOT SIZE CONSTANTS STALE** (from §36e, not yet fixed) — `REFERENCE_LOT_SIZES` uses BANKNIFTY=15, NIFTY=75, SENSEX=10; Kite master is 30/65/20.  Paper-trading signal correctness unaffected; **pre-production real-funds blocker**.
+7. **Per-underlying state containers not yet per-instance** (from §35c items 3–6) — MCB/OptionPaperTrader/FVGEngine are partially per-underlying; full isolation not verified under simultaneous multi-underlying live conditions.
+8. **SENSEX BFO rollover monitoring** — same-day expiry observed on 2026-06-04; next-expiry behaviour not confirmed in production.
+9. **validate_option_chain_support.py format-specifier bug** — cosmetic; script still reports FAIL for BANKNIFTY/NIFTY despite valid chain data.
+
+---
+
+### J. Exact Next Commands
+
+**Refresh warm-start data (run before each session if CSV > 3 days old):**
+```bash
+PYTHONPATH=. python3 scripts/refresh_mcb_warmstart_data.py
+```
+
+**Next supervised live session — real_dry_run mode:**
+```bash
+PYTHONPATH=. python3 scripts/run_supervised_live_session.py \
+  --capital 300000 \
+  --execution-mode real_dry_run
+```
+
+**With optional flags for full diagnostic coverage:**
+```bash
+PYTHONPATH=. python3 scripts/run_supervised_live_session.py \
+  --capital 300000 \
+  --execution-mode real_dry_run \
+  --run-oi-diagnostics
+```
+
+**Real-funds readiness check (always run after session):**
+```bash
+PYTHONPATH=. python3 scripts/real_funds_readiness_check.py || true
+```
+
+**Post-session validation suite:**
+```bash
+PYTHONPATH=. python3 scripts/validate_live_lifecycle_state.py || true
+PYTHONPATH=. python3 scripts/update_live_issue_register.py
+PYTHONPATH=. python3 scripts/generate_daily_reflection.py
+PYTHONPATH=. python3 scripts/analyze_live_trade_quality.py || true
+```
+
+---
+
+### K. Final Status — 2026-06-08
+
+| Mode | Status | Reason |
+|---|---|---|
+| Paper live (default) | **GO** | All tests pass; lifecycle validator clean; paper mechanics untouched |
+| Real dry-run | **GO** | Infrastructure proven; 45/45 dry-run tests pass; no real orders possible |
+| Real funds | **NO-GO** | `REAL_FUNDS_READY=NO`; no completed dry-run live sessions yet; interlocks not configured; lot-size constants stale |
+
+> The execution router is wired and fail-closed.  Tomorrow's session runs in `real_dry_run`
+> mode — paper P&L as usual, plus dry-run order-intent logging to `pt_order_intents`.
+> Real funds remain blocked until `real_funds_readiness_check.py` passes all 11 checks.
+
