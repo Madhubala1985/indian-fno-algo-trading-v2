@@ -328,13 +328,20 @@ _fvg_scorer        = FVGQualityScorer()
 _IST               = timezone(timedelta(hours=5, minutes=30))  # Indian Standard Time
 _SESSION_CLOSE_TOD = 15 * 60 + 30  # 15:30 IST — market-close shutdown trigger (minutes since midnight)
 
-# ── Virtual account — ₹10,00,000 capital model ───────────────────────────────
-# Set to match BacktestConfig.initial_equity (₹10,00,000) so live paper trading
-# uses the same sizing calibration as the validated 440-trade baseline.
-# At ₹1,00,000 the effective risk budget (₹1,006 at Tier 2) is below the
-# BANKNIFTY 15-unit lot threshold (≥₹3,000 needed) → INSUFFICIENT_RISK_BUDGET
-# on every bar.  See PROJECT_STATUS §34 for full mathematical proof.
-_INITIAL_EQUITY: float = 1_000_000.0  # ₹10,00,000 — aligns with backtest baseline
+# ── Virtual account — capital model ──────────────────────────────────────────
+# Configurable via PAPER_STARTING_CAPITAL env var (default ₹10,00,000).
+# For real account paper runs: PAPER_STARTING_CAPITAL=300000
+# At < ₹3,00,000 the system sizes to 1 lot per trade and caps simultaneous
+# open positions to 2 to keep portfolio heat under 10%.
+# At < ₹5,00,000 open positions are capped at 2; otherwise the default is 3.
+_INITIAL_EQUITY: float = float(os.environ.get("PAPER_STARTING_CAPITAL", "1000000"))
+
+# Capital-tier simultaneous position limit.  Prevents portfolio heat breaching
+# 10% at small capital (e.g. 2 × 1-lot SENSEX ≈ 7.6% heat at ₹300k).
+_MAX_OPEN_POSITIONS: int = int(os.environ.get(
+    "MAX_OPEN_POSITIONS",
+    "1" if _INITIAL_EQUITY < 300_000 else "2" if _INITIAL_EQUITY < 500_000 else "3",
+))
 _REFERENCE_IV:   float = 0.18         # baseline IV for vol-ratio scaling
 
 # ── Per-underlying runtime state ───────────────────────────────────────────────
@@ -1107,6 +1114,11 @@ def _warm_start_mcb_from_csv() -> None:
 
 
 _acquire_pid_lock()   # must run before _load_state so state is never shared by two instances
+print(
+    f"[CAPITAL CONFIG] starting_capital=₹{_INITIAL_EQUITY:,.0f}"
+    f"  max_open_positions={_MAX_OPEN_POSITIONS}"
+    f"  source={'env:PAPER_STARTING_CAPITAL' if os.environ.get('PAPER_STARTING_CAPITAL') else 'default'}"
+)
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
 
@@ -1263,7 +1275,7 @@ def _determine_risk_tier(confidence: float) -> int:
     if drawdown >= _TIER1_DD_ENTRY:
         return 1
     if (
-        _equity >= _INITIAL_EQUITY * (1.0 + _TIER3_MIN_GAIN)
+        _equity >= _session_opening_equity * (1.0 + _TIER3_MIN_GAIN)
         and drawdown < _TIER3_MAX_DD
         and confidence >= _TIER3_CONF_GATE
     ):
@@ -1436,12 +1448,15 @@ def _size_live_position(
     entry_premium = rec.last_traded_price
     stop_premium  = max(entry_premium * _STOP_LOSS_PCT, 0.01)
     drawdown      = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
-    available     = max(_equity - _open_premium_cost, 0.0)
     heat          = min(_open_premium_cost / max(_equity, 1.0), 1.0)
 
+    # Use session-opening equity as sizing basis so intraday profits do not
+    # inflate the risk budget within the same session.  Losses still reduce
+    # available capital correctly since _equity falls below _session_opening_equity.
+    _sizing_equity = max(min(_equity, _session_opening_equity), 1.0)
     portfolio = PortfolioRiskSnapshot(
-        equity=max(_equity, 1.0),
-        available_cash=available,
+        equity=_sizing_equity,
+        available_cash=max(_sizing_equity - _open_premium_cost, 0.0),
         current_portfolio_heat=heat,
         current_drawdown_fraction=drawdown,
         max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
@@ -2508,6 +2523,19 @@ def on_ticks(raw_ticks):
                     # ── Pre-entry safety checks [A] warmup  [B] cooldown ─────
                     _pre_entry_block: str | None = None
                     _bars_since_stop = _bar_count - _current_state.last_stop_bar
+
+                    # [A0] Capital-tier simultaneous position limit.
+                    # Prevents portfolio heat from breaching 10% at small capital.
+                    _cur_open = sum(
+                        1 for _s in _runtime_by_underlying.values()
+                        if _s.option_trader.has_open_position()
+                    )
+                    if _cur_open >= _MAX_OPEN_POSITIONS:
+                        _pre_entry_block = (
+                            f"CAPITAL_TIER_POSITION_LIMIT "
+                            f"open_positions={_cur_open}/{_MAX_OPEN_POSITIONS} "
+                            f"capital=₹{_session_opening_equity:,.0f}"
+                        )
 
                     # [A] Live bar warmup gate
                     if _current_state.live_bars_seen < _LIVE_BARS_BEFORE_ENTRY:
