@@ -181,7 +181,7 @@ class StrikeAuditLogger:
         # ── Terminal line ──────────────────────────────────────────────────────
         margin_str  = f"margin={score_margin:.3f}" if score_margin is not None else "margin=n/a"
         dist_str    = (f"dist={atm_dist:+.0f}" if atm_dist is not None else "dist=n/a")
-        factor_tops = self._dominant_factors(bd)
+        factor_tops = self._dominant_factors(bd)  # also used in JSONL record below
         flag_str    = f" [{','.join(flags)}]" if flags else ""
         if self._mode == "shadow":
             print(
@@ -199,6 +199,9 @@ class StrikeAuditLogger:
             )
 
         # ── JSONL record ───────────────────────────────────────────────────────
+        _chain_max_oi_est = max((c.open_interest for c in candidates), default=0)
+        _oi_ctx = getattr(result, "oi_context_summary", {}) or {}
+
         record = {
             "ts":               datetime.now(timezone.utc).isoformat(),
             "mode":             self._mode,
@@ -210,6 +213,7 @@ class StrikeAuditLogger:
             "expiry":           best.expiry_date.isoformat(),
             "dte":              best.days_to_expiry,
             "selected_symbol":  best.option_symbol,
+            "runner_up_contract": recs[1].option_symbol if len(recs) >= 2 else None,
             "strike":           best.strike_price,
             "option_type":      best.option_type,
             "premium":          best.last_traded_price,
@@ -223,6 +227,7 @@ class StrikeAuditLogger:
             "score_margin":     score_margin,
             "atm_dist":         atm_dist,
             "rank2_score":      recs[1].composite_score if len(recs) >= 2 else None,
+            "selected_reason":  factor_tops,
             "factor_scores": {
                 "delta_fitness":      bd.delta_fitness,
                 "oi_support":         bd.oi_support,
@@ -243,16 +248,44 @@ class StrikeAuditLogger:
             ),
             "top5": [
                 {
-                    "rank":   r.rank,
-                    "symbol": r.option_symbol,
-                    "strike": r.strike_price,
-                    "score":  r.composite_score,
-                    "delta":  r.delta,
-                    "iv":     r.implied_volatility,
-                    "oi":     r.open_interest,
+                    "rank":             r.rank,
+                    "symbol":           r.option_symbol,
+                    "strike":           r.strike_price,
+                    "option_type":      r.option_type,
+                    "expiry":           r.expiry_date.isoformat(),
+                    "dte":              r.days_to_expiry,
+                    "score":            r.composite_score,
+                    "delta":            r.delta,
+                    "iv":               r.implied_volatility,
+                    "oi":               r.open_interest,        # backward-compat alias
+                    "oi_raw":           r.open_interest,        # explicit raw OI
+                    "oi_support":       r.breakdown.oi_support, # normalized [0,1]: raw_oi/chain_max_oi
+                    "liquidity":        r.breakdown.liquidity,
+                    "theta_efficiency": r.breakdown.theta_efficiency,
+                    "gex_score":        r.breakdown.gex_proximity,
+                    "atm_dist":         (r.strike_price - atm) if atm is not None else None,
+                    "breakdown": {
+                        "delta_fitness":     r.breakdown.delta_fitness,
+                        "oi_support":        r.breakdown.oi_support,
+                        "oi_activity":       r.breakdown.oi_activity,
+                        "gex_proximity":     r.breakdown.gex_proximity,
+                        "iv_attractiveness": r.breakdown.iv_attractiveness,
+                        "liquidity":         r.breakdown.liquidity,
+                        "max_pain_distance": r.breakdown.max_pain_distance,
+                        "theta_efficiency":  r.breakdown.theta_efficiency,
+                    },
                 }
                 for r in recs[:5]
             ],
+            "chain_max_oi_est": _chain_max_oi_est,
+            "chain_oi_context": {
+                "available":               _oi_ctx.get("available", False),
+                "max_pain_strike":         _oi_ctx.get("max_pain_strike"),
+                "highest_total_oi_strike": _oi_ctx.get("highest_total_oi_strike"),
+                "total_put_oi":            _oi_ctx.get("total_put_oi"),
+                "total_call_oi":           _oi_ctx.get("total_call_oi"),
+                "put_call_ratio":          _oi_ctx.get("put_call_ratio_oi"),
+            },
             "flags":         flags,
             "candidates_in": result.candidates_evaluated,
             "candidates_ok": result.candidates_passed_filters,
