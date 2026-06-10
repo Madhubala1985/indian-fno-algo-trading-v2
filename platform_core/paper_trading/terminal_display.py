@@ -384,7 +384,10 @@ def print_performance_summary(
     """Magenta-bordered performance summary block."""
     cf = _magenta
     win_rate = wins / total_trades if total_trades > 0 else 0.0
-    ret = (equity / max(initial_equity, 1.0)) - 1.0
+    # Session return is PnL over starting capital.  (equity/initial - 1) is
+    # wrong whenever equity was restored from a state file created with a
+    # different capital basis than initial_equity.
+    ret = total_pnl / max(initial_equity, 1.0)
     pnl_str = f"+₹{total_pnl:,.2f}" if total_pnl >= 0 else f"₹{total_pnl:,.2f}"
     avg_str = f"+₹{avg_pnl:,.2f}" if avg_pnl >= 0 else f"₹{avg_pnl:,.2f}"
 

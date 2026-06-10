@@ -99,21 +99,101 @@ def load_audit_rows(audit_path: Path, date_str: str | None = None) -> list[dict]
 
 def count_order_intents(db_path: Path, date_str: str | None = None) -> int:
     """Count pt_order_intents rows (optionally for one YYYY-MM-DD date)."""
+    return sum(order_intents_by_mode(db_path, date_str).values())
+
+
+_KNOWN_EXECUTION_MODES = ("paper", "real_dry_run", "real_armed")
+
+
+def order_intents_by_mode(db_path: Path, date_str: str | None = None) -> dict[str, int]:
+    """
+    Count pt_order_intents rows per execution mode (optionally one date).
+    Missing/unrecognized modes are classified UNKNOWN, never real_dry_run.
+    """
     if not db_path.exists():
-        return 0
+        return {}
     try:
         conn = sqlite3.connect(str(db_path))
         if date_str:
-            n = conn.execute(
-                "SELECT COUNT(*) FROM pt_order_intents WHERE created_ts LIKE ?",
+            rows = conn.execute(
+                "SELECT mode, COUNT(*) FROM pt_order_intents "
+                "WHERE created_ts LIKE ? GROUP BY mode",
                 (f"{date_str}%",),
-            ).fetchone()[0]
+            ).fetchall()
         else:
-            n = conn.execute("SELECT COUNT(*) FROM pt_order_intents").fetchone()[0]
+            rows = conn.execute(
+                "SELECT mode, COUNT(*) FROM pt_order_intents GROUP BY mode"
+            ).fetchall()
         conn.close()
-        return int(n)
+        counts: dict[str, int] = {}
+        for mode, n in rows:
+            key = mode if mode in _KNOWN_EXECUTION_MODES else "UNKNOWN"
+            counts[key] = counts.get(key, 0) + int(n)
+        return counts
     except Exception:
-        return 0
+        return {}
+
+
+def session_evidence(log_path: Path | None, db_path: Path,
+                     date_str: str | None = None) -> dict:
+    """
+    Derive what the session ACTUALLY ran from evidence (log banner + DB),
+    never from this analyzer's own environment.
+
+    Returns dict with:
+      execution_mode   — derived mode ("UNKNOWN" when no evidence)
+      mode_source      — where it came from (log / db / log+db / none)
+      mode_from_log    — [EXECUTION MODE] banner value or None
+      modes_from_db    — pt_order_intents mode counts (date-filtered)
+      mode_mismatch    — True when log and DB evidence disagree
+      capital_from_log — [CAPITAL CONFIG] starting_capital or None
+      state_equity_from_log — [STATE CAPITAL]/[STATE] Restored equity or None
+    """
+    mode_log: str | None = None
+    capital_log: float | None = None
+    state_equity_log: float | None = None
+    if log_path is not None and log_path.exists():
+        import re
+        try:
+            for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = re.search(r"\[EXECUTION MODE\]\s+(\S+)", line)
+                if m and m.group(1) in _KNOWN_EXECUTION_MODES:
+                    mode_log = m.group(1)
+                m = re.search(r"\[CAPITAL CONFIG\] starting_capital=₹([\d,]+)", line)
+                if m:
+                    capital_log = float(m.group(1).replace(",", ""))
+                m = re.search(r"\[STATE CAPITAL\] equity=₹([\d,]+)", line)
+                if m:
+                    state_equity_log = float(m.group(1).replace(",", ""))
+                m = re.search(r"\[STATE\] Restored: equity=₹([\d,]+)", line)
+                if m and state_equity_log is None:
+                    state_equity_log = float(m.group(1).replace(",", ""))
+        except Exception:
+            pass
+
+    modes_db = order_intents_by_mode(db_path, date_str)
+    db_modes = [m for m in modes_db if m != "UNKNOWN"]
+    mode_db  = db_modes[0] if len(db_modes) == 1 else None
+
+    mismatch = (mode_log is not None and mode_db is not None and mode_log != mode_db)
+    if mode_log and mode_db:
+        derived, source = mode_log, ("log+db" if not mismatch else "log (DB DISAGREES)")
+    elif mode_log:
+        derived, source = mode_log, "log"
+    elif mode_db:
+        derived, source = mode_db, "db"
+    else:
+        derived, source = "UNKNOWN", "none"
+
+    return {
+        "execution_mode":        derived,
+        "mode_source":           source,
+        "mode_from_log":         mode_log,
+        "modes_from_db":         modes_db,
+        "mode_mismatch":         mismatch,
+        "capital_from_log":      capital_log,
+        "state_equity_from_log": state_equity_log,
+    }
 
 
 def load_decisions(db_path: Path, session_id: str | None = None) -> list[dict]:
@@ -550,8 +630,10 @@ def write_markdown_report(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Near-miss entry analyzer (read-only)")
-    parser.add_argument("--capital", type=float, default=DEFAULT_CAPITAL,
-                        help="Capital model for risk feasibility (default 400000)")
+    parser.add_argument("--capital", type=float, default=None,
+                        help="Capital model for risk feasibility "
+                             "(default: session's [CAPITAL CONFIG] from the live log, "
+                             f"else {DEFAULT_CAPITAL:,.0f})")
     parser.add_argument("--date", default="",
                         help="Filter audit rows to YYYY-MM-DD (default: all)")
     args = parser.parse_args()
@@ -561,6 +643,17 @@ def main() -> int:
         print("[ERROR] No logs/live_run_*.log found — run a live session first.")
         return 1
 
+    # Session evidence: execution mode + capital come from the actual session
+    # (log banner + DB records), never from this analyzer's own environment.
+    evidence = session_evidence(log_path, LOGS_DIR / "trades.db",
+                                args.date or None)
+    if args.capital is not None:
+        capital, capital_src = args.capital, "--capital"
+    elif evidence["capital_from_log"] is not None:
+        capital, capital_src = evidence["capital_from_log"], "session log [CAPITAL CONFIG]"
+    else:
+        capital, capital_src = DEFAULT_CAPITAL, "analyzer default"
+
     audit_rows = load_audit_rows(LOGS_DIR / "strike_selection_audit.jsonl",
                                  args.date or None)
     decisions  = load_decisions(LOGS_DIR / "trades.db")
@@ -569,15 +662,25 @@ def main() -> int:
         print("[NEAR-MISS] No strike audit rows found — nothing to analyze.")
         return 0
 
-    analysis = analyze(audit_rows, decisions, capital=args.capital)
-    print_report(analysis, args.capital, log_path)
+    analysis = analyze(audit_rows, decisions, capital=capital)
+    print_report(analysis, capital, log_path)
+    print(f"\n  Capital source : {capital_src}")
+    if evidence["state_equity_from_log"] is not None:
+        print(f"  Session state  : equity=₹{evidence['state_equity_from_log']:,.0f} (from log)")
+    print(
+        f"  Execution mode : {evidence['execution_mode']} "
+        f"(source={evidence['mode_source']}  "
+        f"log={evidence['mode_from_log'] or 'n/a'}  "
+        f"db_modes={evidence['modes_from_db'] or '{}'})"
+    )
+    if evidence["mode_mismatch"]:
+        print("  [WARN] Execution-mode evidence MISMATCH between log and DB — investigate.")
 
     # Dry-run shadow probe — diagnostic only, never writes order intents
-    execution_mode = os.environ.get("EXECUTION_MODE", "paper").lower()
-    intents_count  = count_order_intents(LOGS_DIR / "trades.db", args.date or None)
+    intents_count = count_order_intents(LOGS_DIR / "trades.db", args.date or None)
     probe_lines = shadow_intent_probe(
         analysis["results"],
-        execution_mode=execution_mode,
+        execution_mode=evidence["execution_mode"],
         intents_count=intents_count,
     )
     print()
@@ -585,7 +688,7 @@ def main() -> int:
         print(f"  {ln}")
 
     report = write_markdown_report(
-        analysis, args.capital, log_path, probe_lines, LOGS_DIR
+        analysis, capital, log_path, probe_lines, LOGS_DIR
     )
     if report is not None:
         print(f"\n  Markdown report: {report}")

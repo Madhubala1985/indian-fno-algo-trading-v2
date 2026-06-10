@@ -234,34 +234,65 @@ def check_no_orphan_positions() -> bool:
         return False
 
 
-def check_dry_run_tested() -> bool:
-    # Check if any dry-run order records exist in DB
-    db_path = LOGS_DIR / "trades.db"
+_KNOWN_EXECUTION_MODES = ("paper", "real_dry_run", "real_armed")
+
+
+def order_intent_mode_counts(db_path: Path) -> dict[str, int] | None:
+    """
+    Count pt_order_intents rows per execution mode.
+
+    Rows whose mode is missing/empty/unrecognized are classified as UNKNOWN
+    and must never be counted as dry-run evidence.  Returns None when the
+    DB or table is missing.
+    """
     if not db_path.exists():
-        _fail("trades.db not found — dry-run order lifecycle not tested")
-        return False
+        return None
     try:
         conn = sqlite3.connect(str(db_path))
-        # Check table exists
         tbls = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
         if "pt_order_intents" not in tbls:
             conn.close()
-            _fail("pt_order_intents table missing — dry-run lifecycle not tested")
-            return False
-        count = conn.execute(
-            "SELECT COUNT(*) FROM pt_order_intents WHERE mode='real_dry_run'"
-        ).fetchone()[0]
+            return None
+        counts: dict[str, int] = {}
+        for mode, n in conn.execute(
+            "SELECT mode, COUNT(*) FROM pt_order_intents GROUP BY mode"
+        ).fetchall():
+            key = mode if mode in _KNOWN_EXECUTION_MODES else "UNKNOWN"
+            counts[key] = counts.get(key, 0) + int(n)
         conn.close()
-        if count >= 1:
-            _ok(f"Dry-run order lifecycle tested ({count} intent record(s))")
-            return True
-        _fail("No real_dry_run records in pt_order_intents — run a dry-run session first")
+        return counts
+    except Exception:
+        return None
+
+
+def check_dry_run_tested(db_path: Path | None = None) -> bool:
+    # Dry-run evidence requires pt_order_intents rows with mode='real_dry_run'.
+    # Paper intents (or rows with missing/unknown mode) never satisfy this.
+    db_path = db_path or (LOGS_DIR / "trades.db")
+    if not db_path.exists():
+        _fail("trades.db not found — dry-run order lifecycle not tested")
         return False
-    except Exception as exc:
-        _fail(f"DB check failed: {exc}")
+    counts = order_intent_mode_counts(db_path)
+    if counts is None:
+        _fail("pt_order_intents table missing — dry-run lifecycle not tested")
         return False
+    dry     = counts.get("real_dry_run", 0)
+    paper   = counts.get("paper", 0)
+    unknown = counts.get("UNKNOWN", 0)
+    if paper:
+        _warn(f"{paper} paper intent record(s) present — NOT counted as dry-run evidence")
+    if unknown:
+        _warn(f"{unknown} intent record(s) with missing/unknown execution_mode — "
+              f"classified UNKNOWN, NOT counted as dry-run evidence")
+    if dry >= 1:
+        _ok(f"Dry-run order lifecycle tested ({dry} intent record(s) "
+            f"with execution_mode='real_dry_run')")
+        return True
+    _fail("No execution_mode='real_dry_run' records in pt_order_intents — "
+          "run a dry-run session first")
+    return False
 
 
 def check_eod_close_tested() -> bool:

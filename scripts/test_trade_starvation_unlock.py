@@ -361,6 +361,136 @@ check("dry-run exit succeeds without place_order",
       result_exit.success and not _place_order_called)
 
 
+# ── Test 11: requested capital mismatch never silently continues ─────────────
+print("\n[Test 11] --capital 400000 with old ₹300k state: explicit archive/refuse")
+
+import json as _json
+
+_STATE_300K = {
+    "starting_capital": 300000.0,
+    "equity": 297938.73, "peak_equity": 300000.0, "daily_pnl": -2061.27,
+    "consecutive_losses": 3, "trading_halted": True, "halt_reason": "x",
+    "soft_halted": False, "soft_halt_reason": "",
+    "session_date": "2026-06-10", "session_opening_equity": 300000.0,
+    "open_position": None,
+    "open_positions": {"NIFTY": None, "BANKNIFTY": None, "SENSEX": None},
+}
+
+with tempfile.TemporaryDirectory() as td:
+    tdp = Path(td)
+    state = tdp / "paper_trading_state.json"
+    arch  = tdp / "archive"
+
+    # mismatch + no open positions → state is ARCHIVED (explicit reset)
+    state.write_text(_json.dumps(_STATE_300K))
+    action, detail = _runner.resolve_state_capital(400000.0, state, arch)
+    check("mismatch (no open pos) → action=archived", action == "archived", detail[:90])
+    check("state file physically moved out of the way", not state.exists())
+    check("archived copy exists in archive dir",
+          any(arch.glob("paper_trading_state_*.json")))
+    check("action is never a silent continue",
+          action in ("fresh", "match", "archived", "refuse"))
+
+    # matching capital → continue
+    state.write_text(_json.dumps(_STATE_300K))
+    action_m, _ = _runner.resolve_state_capital(300000.0, state, arch)
+    check("matching capital → action=match (state kept)",
+          action_m == "match" and state.exists())
+
+    # mismatch WITH open positions → refuse, state untouched
+    _state_open = dict(_STATE_300K)
+    _state_open["open_positions"] = {"NIFTY": {"contract_symbol": "X"},
+                                     "BANKNIFTY": None, "SENSEX": None}
+    state.write_text(_json.dumps(_state_open))
+    action_r, detail_r = _runner.resolve_state_capital(400000.0, state, arch)
+    check("mismatch + open positions → action=refuse",
+          action_r == "refuse", detail_r[:90])
+    check("refused state file untouched", state.exists())
+
+    # no state file → fresh
+    state.unlink()
+    action_f, _ = _runner.resolve_state_capital(400000.0, state, arch)
+    check("no state file → action=fresh", action_f == "fresh")
+
+    # legacy state without starting_capital → inferred from peak, still explicit
+    _legacy = {k: v for k, v in _STATE_300K.items() if k != "starting_capital"}
+    state.write_text(_json.dumps(_legacy))
+    action_l, detail_l = _runner.resolve_state_capital(400000.0, state, arch)
+    check("legacy state (no starting_capital) → still archived, not continued",
+          action_l == "archived", detail_l[:90])
+
+# Pipeline-side guard (defense in depth): _load_state refuses on mismatch
+_pipe_src = (ROOT / "platform_core" / "data" / "live"
+             / "live_structure_pipeline.py").read_text(encoding="utf-8")
+check("pipeline _load_state has capital-mismatch guard",
+      "[STATE CAPITAL MISMATCH]" in _pipe_src)
+check("pipeline default policy is refuse (fail-closed)",
+      'PAPER_STATE_CAPITAL_MISMATCH", "refuse"' in _pipe_src)
+check("pipeline prints [STATE CAPITAL] equity/peak at startup",
+      "[STATE CAPITAL] equity=" in _pipe_src)
+check("state file now records starting_capital",
+      '"starting_capital":      _INITIAL_EQUITY' in _pipe_src)
+
+
+# ── Test 12: performance return = total_pnl / starting_capital ───────────────
+print("\n[Test 12] Performance summary return uses PnL over starting capital")
+
+from platform_core.paper_trading.terminal_display import print_performance_summary
+
+buf_ret = io.StringIO()
+with contextlib.redirect_stdout(buf_ret):
+    print_performance_summary(
+        total_trades=3, wins=0, losses=3,
+        total_pnl=-2061.27, avg_pnl=-687.09,
+        equity=297938.73, initial_equity=300000.0,
+    )
+_out_ret = buf_ret.getvalue()
+check("₹-2,061 on ₹3L reports -0.69% (not -25%)",
+      "-0.69%" in _out_ret, _out_ret.strip().splitlines()[-2][-40:])
+check("no -25% artifact even with mismatched equity basis",
+      "-25" not in _out_ret)
+
+buf_ret2 = io.StringIO()
+with contextlib.redirect_stdout(buf_ret2):
+    print_performance_summary(
+        total_trades=3, wins=0, losses=3,
+        total_pnl=-2061.27, avg_pnl=-687.09,
+        equity=297938.73, initial_equity=400000.0,
+    )
+check("same PnL on ₹4L capital reports -0.52%",
+      "-0.52%" in buf_ret2.getvalue())
+
+
+# ── Test 13: hard gates logged + OI floor rejected before sizing ─────────────
+print("\n[Test 13] Entry hard-gate snapshot + pre-sizing OI rejection")
+
+check("pipeline logs [ENTRY HARD GATES] snapshot before opening",
+      "[ENTRY HARD GATES]" in _pipe_src)
+check("pipeline logs [ENTRY SOFT GATES] snapshot before opening",
+      "[ENTRY SOFT GATES]" in _pipe_src)
+check("hard-gate snapshot includes contradiction field",
+      "contradiction=False" in _pipe_src)
+check("soft-gate snapshot names the active profile",
+      "[ENTRY SOFT GATES] profile=" in _pipe_src)
+
+# OI hard floor must reject BEFORE sizing/order intent: the [B3] pre-entry
+# confluence check must appear before _size_live_position in the entry flow.
+_b3_idx     = _pipe_src.find("[B3] Confluence hard floor")
+_sizing_idx = _pipe_src.find("_sizing = _size_live_position(")
+check("pre-sizing OI confluence gate exists", _b3_idx != -1)
+check("OI hard floor rejects before sizing is invoked",
+      _b3_idx != -1 and _sizing_idx != -1 and _b3_idx < _sizing_idx,
+      f"b3@{_b3_idx} sizing@{_sizing_idx}")
+
+# Contradiction check is structural — no profile reference inside the gate
+_contra_idx = _pipe_src.find("[A2] Context contradiction")
+_contra_end = _pipe_src.find("[B1]", _contra_idx) if _contra_idx != -1 else -1
+_contra_blk = _pipe_src[_contra_idx:_contra_end] if _contra_idx != -1 and _contra_end != -1 else ""
+check("contradiction gate has no profile-based bypass",
+      _contra_idx != -1 and "_PAPER_GATE_PROFILE" not in _contra_blk
+      and "profile" not in _contra_blk.lower())
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 passed = sum(1 for _, ok, _ in _results if ok)
 total = len(_results)

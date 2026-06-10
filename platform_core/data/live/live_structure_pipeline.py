@@ -879,6 +879,7 @@ def _save_state() -> bool:
     _pos_state = get_open_position_state()
     pos = _pos_state.option_trader._position if _pos_state is not None else None
     state = {
+        "starting_capital":      _INITIAL_EQUITY,
         "equity":                _equity,
         "peak_equity":           _peak_equity,
         "daily_pnl":             _daily_pnl,
@@ -959,6 +960,7 @@ def _load_state() -> None:
 
     if not _STATE_FILE.exists():
         print(f"[STATE] No state file — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
+        print(f"[STATE CAPITAL] equity=₹{_INITIAL_EQUITY:,.0f} peak=₹{_INITIAL_EQUITY:,.0f}")
         return
     try:
         s = json.loads(_STATE_FILE.read_text())
@@ -981,6 +983,64 @@ def _load_state() -> None:
     except Exception as exc:
         print(f"[STATE] Restore failed ({exc}) — starting fresh.  equity=₹{_INITIAL_EQUITY:,.0f}")
         return
+
+    # ── Capital consistency guard ─────────────────────────────────────────
+    # The state file records the starting capital it was created with
+    # (legacy files predate the field — peak_equity is the best available
+    # proxy).  A session must NEVER silently continue on an equity basis
+    # that conflicts with the requested PAPER_STARTING_CAPITAL: either the
+    # operator explicitly archives the old state, or startup is refused.
+    _state_capital_raw = s.get("starting_capital")
+    _state_capital     = (
+        float(_state_capital_raw) if _state_capital_raw is not None else peak
+    )
+    _state_capital_src = "state" if _state_capital_raw is not None else "inferred_from_peak"
+    if abs(_state_capital - _INITIAL_EQUITY) > 0.5:
+        _has_open_positions = bool(pos_raw) or any(
+            v for v in (new_positions_raw or {}).values()
+        )
+        _mismatch_policy = os.environ.get(
+            "PAPER_STATE_CAPITAL_MISMATCH", "refuse"
+        ).lower().strip()
+        print(
+            f"\n{'='*62}\n"
+            f"[STATE CAPITAL MISMATCH]\n"
+            f"  requested  : ₹{_INITIAL_EQUITY:,.0f} (PAPER_STARTING_CAPITAL)\n"
+            f"  state file : ₹{_state_capital:,.0f} ({_state_capital_src})  "
+            f"equity=₹{eq:,.0f}  peak=₹{peak:,.0f}\n"
+            f"  open_positions_in_state={_has_open_positions}\n"
+            f"{'='*62}"
+        )
+        if _has_open_positions:
+            print(
+                "[STATE CAPITAL MISMATCH] State holds OPEN positions — refusing "
+                "to start.  Close/flatten via the original capital config or "
+                "resolve the state file manually."
+            )
+            raise SystemExit(3)
+        if _mismatch_policy == "archive_reset":
+            _arch_dir = _STATE_FILE.parent / "archive"
+            _arch_dir.mkdir(parents=True, exist_ok=True)
+            _arch_path = _arch_dir / (
+                f"paper_trading_state_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.json"
+            )
+            _STATE_FILE.rename(_arch_path)
+            print(
+                f"[STATE CAPITAL MISMATCH] policy=archive_reset — state archived "
+                f"to {_arch_path} — starting fresh at ₹{_INITIAL_EQUITY:,.0f}"
+            )
+            print(f"[STATE CAPITAL] equity=₹{_INITIAL_EQUITY:,.0f} peak=₹{_INITIAL_EQUITY:,.0f}")
+            return
+        print(
+            "[STATE CAPITAL MISMATCH] Refusing to start (fail-closed).  Either:\n"
+            "  - rerun with the state file's capital, or\n"
+            "  - archive/reset the state for a new session "
+            "(PAPER_STATE_CAPITAL_MISMATCH=archive_reset or the supervised "
+            "runner's state-capital resolution), or\n"
+            "  - move logs/paper_trading_state.json aside manually."
+        )
+        raise SystemExit(3)
+
     # All values parsed successfully — assign atomically
     _equity                 = eq
     _peak_equity            = peak
@@ -1008,6 +1068,7 @@ def _load_state() -> None:
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
         f"halted={_trading_halted}  soft={_soft_halted}  session={_session_date}"
     )
+    print(f"[STATE CAPITAL] equity=₹{_equity:,.0f} peak=₹{_peak_equity:,.0f}")
     # Restore open positions — multi-underlying (new format) or single migration (old format).
     # Each position is parsed and restored independently; one failure does not block others.
     # _open_premium_cost is accumulated from all successfully restored positions.
@@ -3001,6 +3062,23 @@ def on_ticks(raw_ticks):
                             f"bars_since_stop={_bars_since_stop}/{_SAME_CONTRACT_STOP_COOLDOWN_BARS}"
                         )
 
+                    # [B3] Confluence hard floor (Tier2/3): OI support is a HARD
+                    # gate and must reject BEFORE sizing / order-intent creation.
+                    # No gate profile may relax it below the 0.10 floor.
+                    _pre_oi_supp = getattr(
+                        getattr(_srec, "breakdown", None), "oi_support", 1.0
+                    )
+                    _pre_oi_min = _GATE_OI_SUPPORT_BY_SYM.get(
+                        _current_state.option_underlying, _MIN_OI_SUPPORT_TIER23
+                    )
+                    if (_pre_entry_block is None
+                            and _effective_tier >= 2
+                            and _pre_oi_supp < _pre_oi_min):
+                        _pre_entry_block = (
+                            f"INSUFFICIENT_CONFLUENCE oi_support={_pre_oi_supp:.3f} "
+                            f"< min={_pre_oi_min} for tier={_effective_tier}"
+                        )
+
                     if _pre_entry_block is not None:
                         print_warning_block(
                             "ENTRY CHECK BLOCKED",
@@ -3158,6 +3236,32 @@ def on_ticks(raw_ticks):
                                             except Exception:
                                                 pass
                                         else:
+                                            # ── Hard/soft gate snapshot ───────
+                                            # Auditable record that every hard
+                                            # gate passed before this entry.
+                                            # Profiles relax SOFT gates only.
+                                            _sm_snap = _current_state.captured_score_margin
+                                            print(
+                                                f"[ENTRY HARD GATES] symbol={_srec.option_symbol}"
+                                                f" contradiction=False"
+                                                f" warm_start=passed({_current_state.live_bars_seen}/{_LIVE_BARS_BEFORE_ENTRY})"
+                                                f" oi_ok=True({_pre_oi_supp:.3f}>={_pre_oi_min})"
+                                                f" risk_ok=True(lots={_lots})"
+                                                f" heat_ok=True(cost=₹{_cost:,.0f})"
+                                                f" contract_ok=True"
+                                                f" cooldown_ok=True"
+                                                f" position_limit_ok=True({_cur_open}/{_MAX_OPEN_POSITIONS})"
+                                                f" halt_ok=True"
+                                            )
+                                            print(
+                                                f"[ENTRY SOFT GATES] profile={_PAPER_GATE_PROFILE}"
+                                                f" score_margin="
+                                                + (f"{_sm_snap:.4f}" if _sm_snap is not None else "n/a")
+                                                + f"(min={_GATE_SCORE_MARGIN_BY_SYM.get(_current_state.option_underlying, _MIN_SCORE_MARGIN_TIER23)})"
+                                                f" confluence={_pre_oi_supp:.3f}"
+                                                f"(min={_pre_oi_min})"
+                                                f" tier={_effective_tier}"
+                                            )
                                             # ── Open position ─────────────────
                                             _open_premium_cost += _cost
                                             _current_state.option_trader.open(

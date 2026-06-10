@@ -213,6 +213,67 @@ def run_preflight(run_oi_diagnostics: bool) -> bool:
     return ok
 
 
+# ── Paper state capital resolution ──────────────────────────────────────────
+
+def resolve_state_capital(
+    requested_capital: float,
+    state_path: Path | None = None,
+    archive_dir: Path | None = None,
+) -> tuple[str, str]:
+    """
+    Resolve a conflict between the requested starting capital and the
+    capital basis of an existing logs/paper_trading_state.json.
+
+    Returns (action, detail) where action is one of:
+      "fresh"    — no state file; pipeline starts at requested capital
+      "match"    — state capital equals requested capital; state continues
+      "archived" — capitals conflict, no open positions; state file moved to
+                   logs/archive/paper_trading_state_<ts>.json (explicit reset)
+      "refuse"   — capitals conflict AND state holds open positions; the
+                   session must NOT start
+
+    A mismatched state is NEVER silently continued.
+    """
+    state_path  = state_path  or (LOGS_DIR / "paper_trading_state.json")
+    archive_dir = archive_dir or ARCHIVE
+    if not state_path.exists():
+        return "fresh", f"no state file — starting fresh at ₹{requested_capital:,.0f}"
+    try:
+        s = json.loads(state_path.read_text())
+    except Exception as exc:
+        return "refuse", f"state file unreadable ({exc}) — resolve manually"
+
+    raw_cap = s.get("starting_capital")
+    state_capital = float(raw_cap) if raw_cap is not None else float(s.get("peak_equity", 0.0))
+    cap_src = "state" if raw_cap is not None else "inferred_from_peak"
+    if abs(state_capital - requested_capital) <= 0.5:
+        return "match", (
+            f"state capital ₹{state_capital:,.0f} matches requested "
+            f"₹{requested_capital:,.0f} — continuing"
+        )
+
+    has_open = bool(s.get("open_position")) or any(
+        v for v in (s.get("open_positions") or {}).values()
+    )
+    if has_open:
+        return "refuse", (
+            f"state capital ₹{state_capital:,.0f} ({cap_src}) conflicts with "
+            f"requested ₹{requested_capital:,.0f} AND state holds open "
+            f"positions — refusing to start"
+        )
+
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    dest = archive_dir / (
+        f"paper_trading_state_{_now_ist().strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    shutil.move(str(state_path), str(dest))
+    return "archived", (
+        f"state capital ₹{state_capital:,.0f} ({cap_src}) conflicts with "
+        f"requested ₹{requested_capital:,.0f} — archived state to {dest} — "
+        f"new supervised session starts fresh at ₹{requested_capital:,.0f}"
+    )
+
+
 # ── Archive ─────────────────────────────────────────────────────────────────
 
 def archive_previous_session() -> None:
@@ -457,6 +518,19 @@ def main() -> int:
         return 0
 
     env  = build_env(args)
+
+    # Capital/state consistency: never silently continue an old-capital state.
+    _heading("STATE CAPITAL RESOLUTION")
+    _requested_capital = float(env.get("PAPER_STARTING_CAPITAL", "0") or 0)
+    _action, _detail = resolve_state_capital(_requested_capital)
+    if _action == "refuse":
+        _fail(f"[STATE CAPITAL] {_detail}")
+        print("\n[SUPERVISOR] State capital conflict — fix state before starting.")
+        return 1
+    _ok(f"[STATE CAPITAL] action={_action}: {_detail}")
+    # Defense-in-depth: the pipeline's own _load_state() guard stays fail-closed.
+    env["PAPER_STATE_CAPITAL_MISMATCH"] = "refuse"
+
     proc = start_pipeline(env)
 
     exit_code = 0

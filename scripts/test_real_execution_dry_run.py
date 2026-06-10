@@ -387,6 +387,133 @@ check("SENSEX exchange=BFO", _req_exch("SENSEX") == "BFO",
       f"got {_req_exch('SENSEX')}")
 
 
+# ── Test 13: dry-run readiness evidence requires mode='real_dry_run' ─────────
+print("\n[Test 13] Readiness: paper/unknown intents never count as dry-run evidence")
+
+import importlib.util as _ilu
+
+
+def _load_script(name: str):
+    spec = _ilu.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+_rfc = _load_script("real_funds_readiness_check")
+
+_INTENT_DDL = """
+CREATE TABLE pt_order_intents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER, mode TEXT NOT NULL, underlying TEXT NOT NULL,
+    tradingsymbol TEXT NOT NULL, exchange TEXT NOT NULL,
+    transaction_type TEXT NOT NULL, quantity INTEGER NOT NULL,
+    order_type TEXT NOT NULL, price REAL NOT NULL DEFAULT 0.0,
+    status TEXT NOT NULL, reason TEXT NOT NULL, created_ts TEXT NOT NULL,
+    raw_intent_json TEXT
+);
+"""
+
+
+def _make_intent_db(path: Path, modes: list[str]) -> None:
+    conn = sqlite3.connect(str(path))
+    conn.executescript(_INTENT_DDL)
+    for i, m in enumerate(modes):
+        conn.execute(
+            "INSERT INTO pt_order_intents (mode, underlying, tradingsymbol, "
+            "exchange, transaction_type, quantity, order_type, status, reason, "
+            "created_ts) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (m, "NIFTY", "NIFTY2661623400CE", "NFO", "BUY", 75, "MARKET",
+             "X", "ENTRY", f"2026-06-10T06:0{i}:00+00:00"),
+        )
+    conn.commit()
+    conn.close()
+
+
+with tempfile.TemporaryDirectory() as _td:
+    _tdp = Path(_td)
+
+    db_paper = _tdp / "paper.db"
+    _make_intent_db(db_paper, ["paper", "paper", "paper"])
+    check("paper-only intents do NOT satisfy dry-run readiness",
+          _rfc.check_dry_run_tested(db_paper) is False)
+
+    db_dry = _tdp / "dry.db"
+    _make_intent_db(db_dry, ["real_dry_run", "real_dry_run"])
+    check("real_dry_run intents DO satisfy dry-run readiness",
+          _rfc.check_dry_run_tested(db_dry) is True)
+
+    db_mixed = _tdp / "mixed.db"
+    _make_intent_db(db_mixed, ["paper", "", "legacy_mode"])
+    check("missing/unknown modes classified UNKNOWN, not dry-run",
+          _rfc.check_dry_run_tested(db_mixed) is False)
+    counts = _rfc.order_intent_mode_counts(db_mixed)
+    check("UNKNOWN bucket counts malformed modes",
+          counts.get("UNKNOWN") == 2 and counts.get("paper") == 1,
+          str(counts))
+    check("no real_dry_run rows inferred from unknown modes",
+          counts.get("real_dry_run", 0) == 0)
+
+
+# ── Test 14: analyzer derives execution mode from session evidence ───────────
+print("\n[Test 14] Analyzer reports the session's actual execution mode")
+
+_nm = _load_script("analyze_near_miss_entries")
+
+with tempfile.TemporaryDirectory() as _td:
+    _tdp = Path(_td)
+    log = _tdp / "live_run_20260610_114507.log"
+    log.write_text(
+        "[CAPITAL CONFIG] starting_capital=₹400,000  max_open_positions=2\n"
+        "[STATE] Restored: equity=₹300,000  peak=₹300,000\n"
+        "[EXECUTION MODE] real_dry_run\n",
+        encoding="utf-8",
+    )
+    db = _tdp / "trades.db"
+    _make_intent_db(db, ["real_dry_run", "real_dry_run"])
+
+    ev = _nm.session_evidence(log, db)
+    check("mode derived as real_dry_run (not analyzer env)",
+          ev["execution_mode"] == "real_dry_run", str(ev["execution_mode"]))
+    check("mode source is log+db", ev["mode_source"] == "log+db")
+    check("no log/db mismatch flagged", not ev["mode_mismatch"])
+    check("capital read from [CAPITAL CONFIG]",
+          ev["capital_from_log"] == 400000.0, str(ev["capital_from_log"]))
+    check("state equity read from log",
+          ev["state_equity_from_log"] == 300000.0,
+          str(ev["state_equity_from_log"]))
+
+    # Env must not influence the derived mode
+    _old_env = os.environ.get("EXECUTION_MODE")
+    os.environ["EXECUTION_MODE"] = "paper"
+    try:
+        ev2 = _nm.session_evidence(log, db)
+        check("EXECUTION_MODE env ignored by evidence derivation",
+              ev2["execution_mode"] == "real_dry_run")
+    finally:
+        if _old_env is None:
+            os.environ.pop("EXECUTION_MODE", None)
+        else:
+            os.environ["EXECUTION_MODE"] = _old_env
+
+    # DB-only evidence (no log) and unknown-only DB
+    ev3 = _nm.session_evidence(None, db)
+    check("DB-only evidence → real_dry_run (source=db)",
+          ev3["execution_mode"] == "real_dry_run" and ev3["mode_source"] == "db")
+
+    db_unknown = _tdp / "unknown.db"
+    _make_intent_db(db_unknown, ["legacy_mode"])
+    ev4 = _nm.session_evidence(None, db_unknown)
+    check("unknown-mode rows → UNKNOWN, never real_dry_run",
+          ev4["execution_mode"] == "UNKNOWN", str(ev4["execution_mode"]))
+
+    # Log says paper but DB has real_dry_run rows → mismatch flagged
+    log_paper = _tdp / "live_run_paper.log"
+    log_paper.write_text("[EXECUTION MODE] paper\n", encoding="utf-8")
+    ev5 = _nm.session_evidence(log_paper, db)
+    check("log/db disagreement flagged as mismatch", ev5["mode_mismatch"])
+
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 passed = sum(1 for _, ok, _ in _results if ok)
 total  = len(_results)
