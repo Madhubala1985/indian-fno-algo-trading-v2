@@ -56,6 +56,7 @@ from platform_core.execution.broker_adapter import (
     _required_exchange,
     validate_order_intent,
 )
+from platform_core.execution.context_cooldown import cooldown_bars_from_env
 from platform_core.execution.gate_profiles import PROFILE_GATE_TABLES
 from platform_core.utils.live_log_resolver import resolve_current_live_log
 
@@ -71,6 +72,10 @@ MIN_LIQUIDITY_FACTOR  = 0.30    # acceptable liquidity factor score
 PREOPEN_END_IST       = (9, 30)
 CLOSING_START_IST     = (15, 0)
 CONTRADICTION_WINDOW  = timedelta(minutes=3)
+# Context-contradiction cooldown (bars ≈ minutes on 1m bars) — mirrors the
+# pipeline's hard gate.  A candidate within this window AFTER a contradiction
+# is UNSAFE and may never produce an intent under any profile.
+COOLDOWN_BARS         = cooldown_bars_from_env()
 
 PROFILES_COMPARED = ("default", "banknifty_experiment", "paper_trade_unlock")
 
@@ -287,6 +292,7 @@ def classify_near_miss(
     row: dict,
     *,
     had_contradiction: bool = False,
+    had_recent_contradiction: bool = False,
     capital: float = DEFAULT_CAPITAL,
 ) -> dict:
     """
@@ -346,6 +352,10 @@ def classify_near_miss(
     unsafe_reasons: list[str] = []
     if had_contradiction:
         unsafe_reasons.append("CONTEXT_CONTRADICTION")
+    if had_recent_contradiction and not had_contradiction:
+        unsafe_reasons.append(
+            f"RECENT_CONTEXT_CONTRADICTION within cooldown={COOLDOWN_BARS} bars"
+        )
     if in_restricted:
         unsafe_reasons.append("PREOPEN_OR_CLOSING")
     if oi < OI_HARD_FLOOR:
@@ -404,6 +414,7 @@ def classify_near_miss(
         "cost_one_lot":             cost,
         "in_restricted_session":    in_restricted,
         "had_contradiction":        had_contradiction,
+        "had_recent_contradiction": had_recent_contradiction,
         "would_intent_under_unlock": would_intent_under_unlock,
         "transaction_type":         "BUY",
         "quantity":                 lot_size,
@@ -425,12 +436,22 @@ def analyze(
         und = str(row.get("underlying", "?"))
         ts  = _parse_ts(row.get("ts", ""))
         had_contra = False
+        had_recent = False
         if ts is not None:
             for cts in contra_idx.get(und, []):
                 if abs((cts - ts).total_seconds()) <= CONTRADICTION_WINDOW.total_seconds():
                     had_contra = True
                     break
-        res = classify_near_miss(row, had_contradiction=had_contra, capital=capital)
+            # Cooldown window: candidate strictly AFTER a contradiction on the
+            # same underlying, within COOLDOWN_BARS bars (≈ minutes on 1m bars)
+            for cts in contra_idx.get(und, []):
+                delta = (ts - cts).total_seconds()
+                if 0.0 < delta <= COOLDOWN_BARS * 60.0:
+                    had_recent = True
+                    break
+        res = classify_near_miss(row, had_contradiction=had_contra,
+                                 had_recent_contradiction=had_recent,
+                                 capital=capital)
         res["mcb_conf"] = nearest_conf(decisions, und, ts)
         results.append(res)
         for p in PROFILES_COMPARED:

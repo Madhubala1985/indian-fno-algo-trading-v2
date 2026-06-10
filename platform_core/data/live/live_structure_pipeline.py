@@ -311,6 +311,10 @@ class UnderlyingRuntimeState:
     # ── MCB adaptation watch ───────────────────────────────────────────────
     contra_bos_count:  int = 0   # BOS events opposing current MCB bias (session total)
 
+    # ── Context-contradiction cooldown (HARD gate, profile-independent) ────
+    last_contradiction_bar:  int | None = None   # _bar_count at last context-contradiction rejection
+    last_contradiction_meta: dict = field(default_factory=dict)  # ts/reason/structure/mcb_bias
+
 
 # MTF key normalisation (matches BacktestRunner convention)
 _MTF_KEY_MAP: dict[str, str] = {
@@ -465,6 +469,17 @@ _MIN_OI_SUPPORT_TIER23: float = 0.10
 # Live bar warmup gate: require at least this many live bars before allowing entry.
 # Prevents entries driven purely by warm-start historical MCB state (no live confirmation).
 _LIVE_BARS_BEFORE_ENTRY: int = 20
+
+# Context-contradiction cooldown: after a context-contradiction rejection fires
+# for an underlying, block new entries on that underlying for N bars.  HARD gate —
+# applies to every profile and every execution mode (paper/real_dry_run/real_armed).
+# Proven defect (2026-06-10): NIFTY re-entered LONG 1 and 5 bars after bearish-BOS
+# contradictions; session ended at 3 consecutive losses and a capital halt.
+from platform_core.execution.context_cooldown import (
+    contradiction_cooldown_active as _contradiction_cooldown_active,
+    cooldown_bars_from_env as _cooldown_bars_from_env,
+)
+_CONTEXT_CONTRADICTION_COOLDOWN_BARS: int = _cooldown_bars_from_env()
 
 # Strike quality gate for Tier2/3: reject low-quality strikes that passed OI filter.
 # Proven defect (2026-06-04): SENSEX iv_attr=0.000 and all entries SCORE_MARGIN_LOW.
@@ -934,6 +949,13 @@ def _save_state() -> bool:
             und: und_state.last_atm_iv
             for und, und_state in _runtime_by_underlying.items()
         },
+        # Context-contradiction cooldown — intra-session only.  Restored after a
+        # same-session restart when still fresh; never carried across days.
+        "last_context_contradiction_by_underlying": {
+            und: (und_state.last_contradiction_meta or None)
+            if und_state.last_contradiction_bar is not None else None
+            for und, und_state in _runtime_by_underlying.items()
+        },
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1063,6 +1085,27 @@ def _load_state() -> None:
                     _und_state.last_atm_iv = float(_raw_iv)
                 except (TypeError, ValueError):
                     pass  # keep default for this underlying
+    # Context-contradiction cooldown restore — intra-session restarts only.
+    # Re-arm the cooldown from bar 0 when the stored contradiction is still
+    # fresh in wall-clock terms (1m bars ≈ minutes); stale/next-day records
+    # are ignored so no fragile cross-session blocking can occur.
+    _contra_by_und = s.get("last_context_contradiction_by_underlying") or {}
+    for _und, _contra_meta in _contra_by_und.items():
+        _und_state = _runtime_by_underlying.get(_und)
+        if _und_state is None or not _contra_meta:
+            continue
+        try:
+            _contra_ts  = datetime.fromisoformat(str(_contra_meta.get("ts", "")))
+            _age_min    = (datetime.now(timezone.utc) - _contra_ts).total_seconds() / 60.0
+        except Exception:
+            continue
+        if 0.0 <= _age_min <= float(_CONTEXT_CONTRADICTION_COOLDOWN_BARS):
+            _und_state.last_contradiction_bar  = 0
+            _und_state.last_contradiction_meta = dict(_contra_meta)
+            print(
+                f"[STATE] {_und}: context-contradiction cooldown re-armed "
+                f"(age={_age_min:.1f}m < {_CONTEXT_CONTRADICTION_COOLDOWN_BARS} bars)"
+            )
     print(
         f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
@@ -3022,6 +3065,14 @@ def on_ticks(raw_ticks):
                                         f"CONTEXT_CONTRADICTION_REJECTED "
                                         f"mcb=SHORT structure={_ev_type}_BULLISH at bar={_bar_count}"
                                     )
+                                    _current_state.last_contradiction_bar = _bar_count
+                                    _current_state.last_contradiction_meta = {
+                                        "ts":        datetime.now(timezone.utc).isoformat(),
+                                        "bar":       _bar_count,
+                                        "reason":    _pre_entry_block,
+                                        "structure": f"{_ev_type}_BULLISH",
+                                        "mcb_bias":  _bias_str,
+                                    }
                                     _current_state.contra_bos_count += 1
                                     if _current_state.contra_bos_count >= _MCB_CONTRA_BOS_WARN_THRESHOLD:
                                         print(
@@ -3037,6 +3088,14 @@ def on_ticks(raw_ticks):
                                         f"CONTEXT_CONTRADICTION_REJECTED "
                                         f"mcb=LONG structure={_ev_type}_BEARISH at bar={_bar_count}"
                                     )
+                                    _current_state.last_contradiction_bar = _bar_count
+                                    _current_state.last_contradiction_meta = {
+                                        "ts":        datetime.now(timezone.utc).isoformat(),
+                                        "bar":       _bar_count,
+                                        "reason":    _pre_entry_block,
+                                        "structure": f"{_ev_type}_BEARISH",
+                                        "mcb_bias":  _bias_str,
+                                    }
                                     _current_state.contra_bos_count += 1
                                     if _current_state.contra_bos_count >= _MCB_CONTRA_BOS_WARN_THRESHOLD:
                                         print(
@@ -3047,6 +3106,29 @@ def on_ticks(raw_ticks):
                                             f" — diagnostic only, no execution change"
                                         )
                                     break
+
+                    # [A3] Context-contradiction cooldown — HARD gate, applies to
+                    # ALL profiles and ALL execution modes (paper / real_dry_run /
+                    # real_armed).  Rejects BEFORE sizing and order-intent creation.
+                    if _pre_entry_block is None:
+                        _cd_blocked, _cd_bars_since = _contradiction_cooldown_active(
+                            _bar_count,
+                            _current_state.last_contradiction_bar,
+                            _CONTEXT_CONTRADICTION_COOLDOWN_BARS,
+                        )
+                        if _cd_blocked:
+                            print(
+                                f"[CONTEXT COOLDOWN BLOCK] "
+                                f"underlying={_current_state.option_underlying} "
+                                f"bars_since={_cd_bars_since} "
+                                f"cooldown={_CONTEXT_CONTRADICTION_COOLDOWN_BARS} "
+                                f"reason=recent_context_contradiction"
+                            )
+                            _pre_entry_block = (
+                                f"CONTEXT_COOLDOWN_BLOCK "
+                                f"bars_since={_cd_bars_since}/{_CONTEXT_CONTRADICTION_COOLDOWN_BARS} "
+                                f"last={_current_state.last_contradiction_meta.get('reason', '?')}"
+                            )
 
                     # [B1] Underlying-level cooldown after stop
                     if _pre_entry_block is None and _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:
@@ -3241,9 +3323,18 @@ def on_ticks(raw_ticks):
                                             # gate passed before this entry.
                                             # Profiles relax SOFT gates only.
                                             _sm_snap = _current_state.captured_score_margin
+                                            _cd_snap_since = (
+                                                _bar_count - _current_state.last_contradiction_bar
+                                                if _current_state.last_contradiction_bar is not None
+                                                else None
+                                            )
                                             print(
                                                 f"[ENTRY HARD GATES] symbol={_srec.option_symbol}"
                                                 f" contradiction=False"
+                                                f" contradiction_cooldown=False"
+                                                f"(bars_since="
+                                                + (str(_cd_snap_since) if _cd_snap_since is not None else "none")
+                                                + f"/{_CONTEXT_CONTRADICTION_COOLDOWN_BARS})"
                                                 f" warm_start=passed({_current_state.live_bars_seen}/{_LIVE_BARS_BEFORE_ENTRY})"
                                                 f" oi_ok=True({_pre_oi_supp:.3f}>={_pre_oi_min})"
                                                 f" risk_ok=True(lots={_lots})"

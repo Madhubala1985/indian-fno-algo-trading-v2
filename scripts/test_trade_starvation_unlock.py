@@ -484,11 +484,154 @@ check("OI hard floor rejects before sizing is invoked",
 
 # Contradiction check is structural — no profile reference inside the gate
 _contra_idx = _pipe_src.find("[A2] Context contradiction")
-_contra_end = _pipe_src.find("[B1]", _contra_idx) if _contra_idx != -1 else -1
+_contra_end = _pipe_src.find("[A3]", _contra_idx) if _contra_idx != -1 else -1
 _contra_blk = _pipe_src[_contra_idx:_contra_end] if _contra_idx != -1 and _contra_end != -1 else ""
 check("contradiction gate has no profile-based bypass",
       _contra_idx != -1 and "_PAPER_GATE_PROFILE" not in _contra_blk
       and "profile" not in _contra_blk.lower())
+
+
+# ── Test 14: context-contradiction cooldown (hard gate) ──────────────────────
+print("\n[Test 14] Context-contradiction cooldown blocks re-entry for N bars")
+
+from platform_core.execution.context_cooldown import (
+    DEFAULT_COOLDOWN_BARS,
+    contradiction_cooldown_active,
+    cooldown_bars_from_env,
+)
+
+# (1) Contradiction starts a cooldown for the same underlying
+blocked0, since0 = contradiction_cooldown_active(116, 116, 5)
+check("contradiction bar itself is inside cooldown", blocked0 and since0 == 0)
+
+# (2) Entry 1 bar after contradiction is blocked
+blocked1, since1 = contradiction_cooldown_active(117, 116, 5)
+check("entry 1 bar after contradiction blocked", blocked1 and since1 == 1)
+
+# (3) Entry 5 bars after contradiction blocked when cooldown=5
+blocked5, since5 = contradiction_cooldown_active(121, 116, 5)
+check("entry 5 bars after contradiction blocked (cooldown=5)",
+      blocked5 and since5 == 5)
+
+# (4) Entry 6 bars after contradiction allowed
+blocked6, since6 = contradiction_cooldown_active(122, 116, 5)
+check("entry 6 bars after contradiction allowed", not blocked6 and since6 == 6)
+
+# (5) Per-underlying: no contradiction recorded → never blocked
+blocked_none, since_none = contradiction_cooldown_active(117, None, 5)
+check("underlying with no contradiction is not blocked",
+      not blocked_none and since_none is None,
+      "NIFTY contradiction must not block BANKNIFTY")
+
+# Negative bars_since (bar-counter anomaly) fails closed
+blocked_neg, _ = contradiction_cooldown_active(100, 116, 5)
+check("negative bars_since fails closed (blocked)", blocked_neg)
+
+# cooldown=0 disables (tests/debug only)
+blocked_off, _ = contradiction_cooldown_active(117, 116, 0)
+check("cooldown=0 disables the gate", not blocked_off)
+
+# Env var configuration
+_old_cd = os.environ.pop("CONTEXT_CONTRADICTION_COOLDOWN_BARS", None)
+try:
+    check("default cooldown is 5 bars",
+          cooldown_bars_from_env() == 5 and DEFAULT_COOLDOWN_BARS == 5)
+    os.environ["CONTEXT_CONTRADICTION_COOLDOWN_BARS"] = "8"
+    check("env var overrides cooldown", cooldown_bars_from_env() == 8)
+    os.environ["CONTEXT_CONTRADICTION_COOLDOWN_BARS"] = "garbage"
+    check("invalid env value falls back to default", cooldown_bars_from_env() == 5)
+finally:
+    if _old_cd is None:
+        os.environ.pop("CONTEXT_CONTRADICTION_COOLDOWN_BARS", None)
+    else:
+        os.environ["CONTEXT_CONTRADICTION_COOLDOWN_BARS"] = _old_cd
+
+# (6) paper_trade_unlock cannot bypass: gate logic has no profile parameter,
+# and the pipeline's [A3] block never references the gate profile
+_a3_idx  = _pipe_src.find("[A3] Context-contradiction cooldown")
+_a3_end  = _pipe_src.find("[B1]", _a3_idx) if _a3_idx != -1 else -1
+_a3_blk  = _pipe_src[_a3_idx:_a3_end] if _a3_idx != -1 and _a3_end != -1 else ""
+check("pipeline has [A3] contradiction-cooldown gate", _a3_idx != -1)
+check("cooldown gate has no profile-based bypass",
+      _a3_blk != "" and "_PAPER_GATE_PROFILE" not in _a3_blk
+      and "EXECUTION_MODE" not in _a3_blk)
+import inspect as _inspect
+check("cooldown helper takes no profile/mode argument",
+      "profile" not in _inspect.signature(contradiction_cooldown_active).parameters
+      and "mode" not in _inspect.signature(contradiction_cooldown_active).parameters)
+
+# (7) Cooldown block occurs before sizing / order intent
+_sizing_idx2 = _pipe_src.find("_sizing = _size_live_position(")
+check("cooldown gate rejects before sizing",
+      _a3_idx != -1 and _sizing_idx2 != -1 and _a3_idx < _sizing_idx2,
+      f"a3@{_a3_idx} sizing@{_sizing_idx2}")
+check("pipeline logs [CONTEXT COOLDOWN BLOCK] on rejection",
+      "[CONTEXT COOLDOWN BLOCK]" in _pipe_src)
+check("contradiction is recorded per-underlying on runtime state",
+      "_current_state.last_contradiction_bar = _bar_count" in _pipe_src)
+check("hard-gate snapshot includes contradiction_cooldown field",
+      "contradiction_cooldown=False" in _pipe_src)
+
+# (8) Audit flags trades entered inside the cooldown window
+_audit = _load_script("audit_executed_trade_decisions")
+
+_log_ev = {"execution_mode": "paper", "profile": "paper_trade_unlock",
+           "hard_gate_lines": [], "soft_gate_lines": []}
+_trade2 = {
+    "id": 2, "underlying": "NIFTY", "contract_symbol": "NIFTY2661623400CE",
+    "entry_ts": "2026-06-10T06:55:01+00:00", "exit_ts": "2026-06-10T07:04:00+00:00",
+    "entry_premium": 174.85, "exit_premium": 170.99, "pnl": -752.15, "state": "CLOSED",
+}
+_decs = [
+    {"id": 829, "underlying": "NIFTY", "bar_index": 116,
+     "bar_ts": "2026-06-10T06:54:01+00:00",
+     "outcome": "CONTEXT_CONTRADICTION_REJECTED"},
+    {"id": 832, "underlying": "NIFTY", "bar_index": 119,
+     "bar_ts": "2026-06-10T06:55:01+00:00", "outcome": "ENTRY_TIER2"},
+]
+_audits_rows = [{"selected_symbol": "NIFTY2661623400CE",
+                 "ts": "2026-06-10T06:55:01+00:00", "score_margin": 0.068}]
+_res2 = _audit.audit_trade(_trade2, _decs, _audits_rows, [], _log_ev)
+check("audit FAILs trade entered 3 bars after contradiction",
+      any("ENTERED_WITHIN_CONTRADICTION_COOLDOWN" in f for f in _res2["failures"]),
+      str(_res2["failures"]))
+check("audit reports bars_since_last_context_contradiction",
+      _res2["bars_since_last_context_contradiction"] == 3)
+
+_decs_far = [
+    {"id": 800, "underlying": "NIFTY", "bar_index": 110,
+     "bar_ts": "2026-06-10T06:48:01+00:00",
+     "outcome": "CONTEXT_CONTRADICTION_REJECTED"},
+    {"id": 832, "underlying": "NIFTY", "bar_index": 119,
+     "bar_ts": "2026-06-10T06:55:01+00:00", "outcome": "ENTRY_TIER2"},
+]
+_res_far = _audit.audit_trade(_trade2, _decs_far, _audits_rows, [], _log_ev)
+check("audit passes entry 9 bars after contradiction",
+      not any("COOLDOWN" in f for f in _res_far["failures"]),
+      str(_res_far["failures"]))
+
+# (9) Near-miss analyzer marks recent contradiction UNSAFE
+_res_recent = _nm.classify_near_miss(_row(), had_recent_contradiction=True)
+check("recent contradiction → UNSAFE_NEAR_MISS",
+      _res_recent["classification"] == "UNSAFE_NEAR_MISS")
+check("RECENT_CONTEXT_CONTRADICTION in unsafe reasons",
+      any("RECENT_CONTEXT_CONTRADICTION" in r for r in _res_recent["unsafe_reasons"]))
+check("no intent under unlock within cooldown",
+      not _res_recent["would_intent_under_unlock"])
+
+# End-to-end: analyze() detects the cooldown window from decision rows
+_e2e_decisions = [{
+    "underlying": "BANKNIFTY", "outcome": "CONTEXT_CONTRADICTION_REJECTED",
+    "bar_ts": "2026-06-09T10:58:00+05:30", "conf_raw": 1.0,
+}]
+_e2e = _nm.analyze([_row(ts="2026-06-09T11:00:00+05:30")], _e2e_decisions)
+_e2e_res = _e2e["results"][0]
+check("analyze() flags candidate 2 min after contradiction",
+      _e2e_res["had_recent_contradiction"]
+      and _e2e_res["classification"] == "UNSAFE_NEAR_MISS",
+      _e2e_res["classification"])
+
+# (10) covered by Test 10 above: real_dry_run never calls kite.place_order
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────

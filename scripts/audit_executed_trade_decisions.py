@@ -43,6 +43,10 @@ LOGS_DIR = ROOT / "logs"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from platform_core.execution.context_cooldown import (
+    contradiction_cooldown_active,
+    cooldown_bars_from_env,
+)
 from platform_core.utils.live_log_resolver import resolve_current_live_log
 
 _DECISION_MATCH_WINDOW   = 90.0          # seconds: trade entry_ts ↔ decision bar_ts
@@ -173,11 +177,25 @@ def audit_trade(trade: dict, decisions: list[dict], audits: list[dict],
     ]
     contra_same_bar = False
     contra_recent: dict | None = None
+    bars_since_contra: int | None = None
+    cooldown_bars = cooldown_bars_from_env()
+    cooldown_violated = False
     if decision is not None:
+        entry_bar = decision.get("bar_index")
         contra_same_bar = any(
-            d.get("bar_index") == decision.get("bar_index") for d in contras
+            d.get("bar_index") == entry_bar for d in contras
         )
-    if entry_ts is not None:
+        # Bars since the most recent contradiction at-or-before the entry bar
+        prior_bars = [d.get("bar_index") for d in contras
+                      if isinstance(d.get("bar_index"), int)
+                      and d.get("bar_index") <= entry_bar]
+        if prior_bars:
+            last_contra_bar = max(prior_bars)
+            cooldown_violated, bars_since_contra = contradiction_cooldown_active(
+                entry_bar, last_contra_bar, cooldown_bars
+            )
+    elif entry_ts is not None:
+        # No decision row — fall back to wall-clock evidence (WARN only)
         for d in contras:
             dts = _parse_ts(d.get("bar_ts"))
             if dts is None or dts > entry_ts:
@@ -228,6 +246,19 @@ def audit_trade(trade: dict, decisions: list[dict], audits: list[dict],
         failures.append("ENTERED_ON_CONTRADICTION_BAR")
         if profile == "paper_trade_unlock":
             failures.append("PAPER_TRADE_UNLOCK_HARD_GATE_BYPASS")
+    if cooldown_violated and not contra_same_bar:
+        failures.append(
+            f"ENTERED_WITHIN_CONTRADICTION_COOLDOWN "
+            f"bars_since={bars_since_contra}<={cooldown_bars}"
+        )
+        # Only a bypass accusation when the session ran with the cooldown gate
+        # (evidenced by a hard-gate snapshot); pre-gate sessions are flagged by
+        # the cooldown failure above without claiming a bypass.
+        if profile == "paper_trade_unlock" and hard_snap is not None:
+            failures.append("PAPER_TRADE_UNLOCK_HARD_GATE_BYPASS")
+    if decision is None and contras:
+        warnings.append("CONTRADICTION_HISTORY_UNMATCHED (no decision row — "
+                        "cooldown could not be evaluated by bar index)")
     if contra_recent is not None and not contra_same_bar:
         warnings.append(
             f"CONTRADICTION_WITHIN_3MIN_BEFORE_ENTRY "
@@ -254,6 +285,8 @@ def audit_trade(trade: dict, decisions: list[dict], audits: list[dict],
         "execution_mode":  execution_mode,
         "order_intent_id": entry_intent.get("id") if entry_intent else None,
         "exit_intent_id":  exit_intent.get("id") if exit_intent else None,
+        "bars_since_last_context_contradiction": bars_since_contra,
+        "contradiction_cooldown_bars": cooldown_bars,
         "failures":        failures,
         "warnings":        warnings,
     }
@@ -311,6 +344,10 @@ def main() -> int:
               f"score_margin={r['score_margin']}")
         print(f"    execution_mode  : {r['execution_mode']}")
         print(f"    order_intent_id : entry={r['order_intent_id']}  exit={r['exit_intent_id']}")
+        _bs = r["bars_since_last_context_contradiction"]
+        print(f"    contra_cooldown : bars_since="
+              f"{_bs if _bs is not None else 'none'}"
+              f"  cooldown={r['contradiction_cooldown_bars']}")
         print(f"    hard_gates      : {r['hard_gate_snapshot']}")
         print(f"    soft_gates      : {r['soft_gate_snapshot']}")
         for f in r["failures"]:
