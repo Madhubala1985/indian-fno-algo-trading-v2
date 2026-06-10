@@ -479,7 +479,10 @@ _MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
 # Profile = default:              score_margin=0.05, oi_support=0.10 for all underlyings
 # Profile = banknifty_experiment: BANKNIFTY score_margin=0.03 (others unchanged)
 # Profile = small_capital_experiment: BNK+NIFTY margin=0.03, NIFTY oi=0.08, SENSEX strict
+# Profile = paper_trade_unlock:   margin=0.015 all, oi=0.10 — paper/real_dry_run ONLY,
+#                                 rejected fail-closed under real_armed
 #
+# Profile tables live in platform_core/execution/gate_profiles.py (import-safe).
 # SENSEX is always kept at default strict unless PAPER_SENSEX_* is explicitly set.
 #
 # Usage:
@@ -489,6 +492,10 @@ _MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
 
 import os as _os
 from platform_core.execution.execution_router import ExecutionRouter as _ExecutionRouter
+from platform_core.execution.gate_profiles import (
+    PROFILE_GATE_TABLES as _PROFILE_GATE_TABLES,
+    validate_profile_mode as _validate_profile_mode,
+)
 
 # ── Execution mode ────────────────────────────────────────────────────────────
 # paper        — default; paper trading only; no broker API calls
@@ -501,24 +508,13 @@ if _EXECUTION_MODE not in ("paper", "real_dry_run", "real_armed"):
 
 _PAPER_GATE_PROFILE: str = _os.environ.get("PAPER_GATE_PROFILE", "default").lower()
 
-# Named profile threshold tables — SENSEX kept strict in all profiles
-_PROFILE_GATE_TABLES: dict[str, dict[str, dict[str, float]]] = {
-    "default": {
-        "BANKNIFTY": {"score_margin": 0.05, "oi_support": 0.10},
-        "NIFTY":     {"score_margin": 0.05, "oi_support": 0.10},
-        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},
-    },
-    "banknifty_experiment": {
-        "BANKNIFTY": {"score_margin": 0.03, "oi_support": 0.10},
-        "NIFTY":     {"score_margin": 0.05, "oi_support": 0.10},
-        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},  # strict — unchanged
-    },
-    "small_capital_experiment": {
-        "BANKNIFTY": {"score_margin": 0.03, "oi_support": 0.10},
-        "NIFTY":     {"score_margin": 0.03, "oi_support": 0.08},
-        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},  # strict — unchanged
-    },
-}
+# Paper-only profiles must never run armed — fail closed before anything starts.
+_profile_ok, _profile_reject_reason = _validate_profile_mode(
+    _PAPER_GATE_PROFILE, _EXECUTION_MODE
+)
+if not _profile_ok:
+    print(f"[GATE PROFILE BLOCKED] {_profile_reject_reason}")
+    raise SystemExit(2)
 
 # Fall back to default for unknown profile names
 _active_profile_table = _PROFILE_GATE_TABLES.get(
@@ -579,7 +575,9 @@ def _print_gate_startup() -> None:
             f"  score_margin_min={sm_val:.3f} ({sm_src})"
             f"  oi_support_min={oi_val:.3f} ({oi_src})"
         )
-    if _gate_experiment_active:
+    if _PAPER_GATE_PROFILE == "paper_trade_unlock":
+        print("[WARNING] Paper trade-unlock experiment — not approved for real funds.")
+    elif _gate_experiment_active:
         print("[WARNING] Paper gate experiment active — not approved for real funds.")
 
 

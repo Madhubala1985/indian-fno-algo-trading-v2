@@ -169,6 +169,36 @@ sm, oi = _import_pipeline_gate_tables("garbage_profile_name")
 check("unknown profile → BNK sm=0.05", abs(sm["BANKNIFTY"] - 0.05) < 1e-9)
 check("unknown profile → NIFTY oi=0.10", abs(oi["NIFTY"] - 0.10) < 1e-9)
 
+# ── Test 7b: real gate_profiles module matches and adds paper_trade_unlock ────
+print("\n[Test 7b] platform_core.execution.gate_profiles module")
+from platform_core.execution.gate_profiles import (
+    PROFILE_GATE_TABLES as _REAL_TABLES,
+    PAPER_ONLY_PROFILES as _REAL_PAPER_ONLY,
+    validate_profile_mode as _real_validate,
+)
+
+for prof in ("default", "banknifty_experiment", "small_capital_experiment"):
+    sm, oi = _import_pipeline_gate_tables(prof)
+    real = _REAL_TABLES[prof]
+    match = all(
+        abs(real[s]["score_margin"] - sm[s]) < 1e-9
+        and abs(real[s]["oi_support"] - oi[s]) < 1e-9
+        for s in ("BANKNIFTY", "NIFTY", "SENSEX")
+    )
+    check(f"module table matches inline replica for {prof}", match)
+
+for s in ("BANKNIFTY", "NIFTY", "SENSEX"):
+    t = _REAL_TABLES["paper_trade_unlock"][s]
+    check(f"paper_trade_unlock {s} sm=0.015 oi=0.10",
+          abs(t["score_margin"] - 0.015) < 1e-9 and abs(t["oi_support"] - 0.10) < 1e-9)
+
+_ok_armed, _reason = _real_validate("paper_trade_unlock", "real_armed")
+check("paper_trade_unlock rejected under real_armed", not _ok_armed, _reason[:60])
+check("all experiment profiles are paper-only",
+      {"paper_trade_unlock", "banknifty_experiment",
+       "small_capital_experiment"} <= set(_REAL_PAPER_ONLY))
+check("default never paper-only", "default" not in _REAL_PAPER_ONLY)
+
 # ── Test 8: full-day fetch detects partial data ────────────────────────────────
 print("\n[Test 8] Full-day fetch validates bar count")
 _MIN_BARS = 300

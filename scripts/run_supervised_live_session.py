@@ -46,6 +46,15 @@ LOGS_DIR = ROOT / "logs"
 DATA_DIR = ROOT / "data"
 ARCHIVE  = LOGS_DIR / "archive"
 
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from platform_core.execution.gate_profiles import validate_profile_mode
+from platform_core.utils.live_log_resolver import (
+    resolve_current_live_log,
+    write_current_live_log,
+)
+
 _IST      = timezone(timedelta(hours=5, minutes=30))
 _MIN_CSV_BYTES   = 50_000
 _STALE_THRESHOLD = 3     # trading days
@@ -243,6 +252,26 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     elif "PAPER_GATE_PROFILE" not in env:
         env["PAPER_GATE_PROFILE"] = "default"
 
+    # Paper-only profiles must never run armed — fail closed here too,
+    # independent of the identical check in main() and the pipeline itself.
+    profile_ok, reject_reason = validate_profile_mode(
+        env["PAPER_GATE_PROFILE"], exec_mode
+    )
+    if not profile_ok:
+        raise SystemExit(f"[SUPERVISOR] {reject_reason}")
+
+    # paper_trade_unlock — ₹4L / 5% paper-risk trade-unlock experiment.
+    # Sets the full env block so the pipeline runs the experiment exactly.
+    if env["PAPER_GATE_PROFILE"] == "paper_trade_unlock":
+        env["PAPER_RISK_PROFILE"]                 = "balanced"
+        env["PAPER_TIER2_RISK_FRAC"]              = "0.05"
+        env["PAPER_TIER3_RISK_FRAC"]              = "0.05"
+        env["PAPER_MAX_SINGLE_TRADE_RISK_FRAC"]   = "0.05"
+        env["MAX_OPEN_POSITIONS"]                 = "2"
+        env["LIVE_TERMINAL_MODE"]                 = "compact"
+        if not args.capital and "PAPER_STARTING_CAPITAL" not in env:
+            env["PAPER_STARTING_CAPITAL"] = "400000"
+
     # Capital
     if args.capital:
         env["PAPER_STARTING_CAPITAL"] = str(args.capital)
@@ -279,6 +308,25 @@ def start_pipeline(env: dict[str, str]) -> subprocess.Popen:
     _info(f"Capital        : PAPER_STARTING_CAPITAL={env.get('PAPER_STARTING_CAPITAL')}")
     _info(f"Risk           : PAPER_RISK_PROFILE={env.get('PAPER_RISK_PROFILE')}")
     print()
+    # Explicit config banner (the pipeline prints its own authoritative copy)
+    _capital = float(env.get("PAPER_STARTING_CAPITAL", "0") or 0)
+    print(f"[CAPITAL CONFIG] starting_capital=₹{_capital:,.0f}")
+    _tier2 = float(env.get("PAPER_TIER2_RISK_FRAC", "0") or 0)
+    if _tier2 > 0:
+        print(f"[RISK CONFIG] tier2={_tier2 * 100:.1f}%")
+    _profile = env.get("PAPER_GATE_PROFILE", "default")
+    if _profile == "paper_trade_unlock":
+        print(
+            f"[GATE PROFILE] profile={_profile} paper_only=true real_funds_approved=false"
+        )
+        print("[WARNING] Paper trade-unlock experiment — not approved for real funds.")
+    print(f"[EXECUTION MODE] {env.get('EXECUTION_MODE', 'paper')}")
+    print(f"[REAL ORDERS ENABLED] {'true' if env.get('EXECUTION_MODE') == 'real_armed' else 'false'}")
+    print()
+
+    # Point current_live_log.txt at this session's log so post-market tools
+    # never grep a stale/archived path.
+    write_current_live_log(LOGS_DIR, log_path)
 
     log_fh = log_path.open("w", buffering=1)
 
@@ -314,10 +362,21 @@ def start_pipeline(env: dict[str, str]) -> subprocess.Popen:
 def run_post_market(dry_run: bool) -> None:
     _heading("POST-MARKET VALIDATION")
 
+    # Repair a stale current_live_log pointer before any consumer runs
+    try:
+        resolved = resolve_current_live_log(LOGS_DIR)
+        if resolved is None:
+            _warn("No logs/live_run_*.log found — post-market scripts may fail")
+        else:
+            _info(f"Current live log : {resolved.name}")
+    except Exception as exc:
+        _warn(f"current_live_log resolution failed: {exc}")
+
     scripts = [
         ("Lifecycle validator",  ["scripts/validate_live_lifecycle_state.py"]),
         ("Issue register",       ["scripts/update_live_issue_register.py"]),
         ("Daily reflection",     ["scripts/generate_daily_reflection.py"]),
+        ("Near-miss analyzer",   ["scripts/analyze_near_miss_entries.py"]),
     ]
 
     for label, args in scripts:
@@ -347,7 +406,8 @@ def main() -> int:
     parser.add_argument("--run-oi-diagnostics", action="store_true",
                         help="Run OI diagnostics during preflight (market hours only)")
     parser.add_argument("--profile", default="",
-                        help="Override PAPER_GATE_PROFILE (e.g. banknifty_experiment)")
+                        help="Override PAPER_GATE_PROFILE "
+                             "(e.g. banknifty_experiment, paper_trade_unlock)")
     parser.add_argument("--capital", type=int, default=0,
                         help="Override PAPER_STARTING_CAPITAL (e.g. 300000)")
     parser.add_argument("--execution-mode", default="paper",
@@ -362,6 +422,15 @@ def main() -> int:
 
     if args.dry_run:
         print("  [DRY-RUN] No pipeline will be started.")
+
+    # Paper-only gate profiles cannot run armed — fail closed before anything
+    _requested_profile = args.profile or os.environ.get("PAPER_GATE_PROFILE", "default")
+    profile_ok, reject_reason = validate_profile_mode(
+        _requested_profile, args.execution_mode
+    )
+    if not profile_ok:
+        print(f"\n[SUPERVISOR] {reject_reason}")
+        return 1
 
     # real_armed requires explicit interlock env vars — fail-closed before preflight
     if args.execution_mode == "real_armed":

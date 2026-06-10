@@ -35,6 +35,11 @@ ROOT     = Path(__file__).resolve().parent.parent
 LOGS_DIR = ROOT / "logs"
 _IST     = timezone(timedelta(hours=5, minutes=30))
 
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from platform_core.utils.live_log_resolver import resolve_current_live_log
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -43,11 +48,9 @@ def _find_latest_log(date_str: str | None) -> Path | None:
         stamp = date_str.replace("-", "")
         candidates = sorted(LOGS_DIR.glob(f"live_run_{stamp}*.log"))
         return candidates[-1] if candidates else None
-    candidates = sorted(
-        LOGS_DIR.glob("live_run_*.log"),
-        key=lambda p: p.stat().st_mtime,
-    )
-    return candidates[-1] if candidates else None
+    # Latest via current_live_log pointer (repairs a stale pointer and
+    # falls back to the newest existing logs/live_run_*.log)
+    return resolve_current_live_log(LOGS_DIR)
 
 
 def _parse_log(log_path: Path) -> dict:

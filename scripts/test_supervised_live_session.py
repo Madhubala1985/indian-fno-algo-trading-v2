@@ -199,10 +199,12 @@ with tempfile.TemporaryDirectory() as tmp:
     d = Path(tmp)
     logs = d / "logs"
     logs.mkdir()
-    # Simulate a log from yesterday
+    # Simulate a log from yesterday vs one from the actual current day
+    # (stamp must be dynamic — archive_previous_session keeps only today)
+    _today_stamp = _mod._now_ist().strftime("%Y%m%d")
     old_log = logs / "live_run_20260607_093000.log"
     old_log.write_text("old log")
-    today_log = logs / "live_run_20260608_093000.log"
+    today_log = logs / f"live_run_{_today_stamp}_093000.log"
     today_log.write_text("today log")
 
     _mod.LOGS_DIR = logs
@@ -213,7 +215,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     archive_dir = logs / "archive"
     archived_file = archive_dir / "live_run_20260607_093000.log"
-    today_still   = logs / "live_run_20260608_093000.log"
+    today_still   = logs / f"live_run_{_today_stamp}_093000.log"
 
     check("old log moved to archive", archived_file.exists(),
           f"found={archived_file.exists()}")
