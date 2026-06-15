@@ -187,10 +187,20 @@ for prof in ("default", "banknifty_experiment", "small_capital_experiment"):
     )
     check(f"module table matches inline replica for {prof}", match)
 
+# paper_trade_unlock: margin 0.015 all; oi_support recalibrated per-underlying
+# (2026-06-15) because oi_support is a relative-popularity ratio that is
+# structurally tiny for delta-targeted SENSEX/NIFTY strikes. DEFAULT stays 0.10.
+_PTU_EXPECTED_OI = {"BANKNIFTY": 0.05, "NIFTY": 0.03, "SENSEX": 0.005}
 for s in ("BANKNIFTY", "NIFTY", "SENSEX"):
     t = _REAL_TABLES["paper_trade_unlock"][s]
-    check(f"paper_trade_unlock {s} sm=0.015 oi=0.10",
-          abs(t["score_margin"] - 0.015) < 1e-9 and abs(t["oi_support"] - 0.10) < 1e-9)
+    check(f"paper_trade_unlock {s} sm=0.015 oi={_PTU_EXPECTED_OI[s]}",
+          abs(t["score_margin"] - 0.015) < 1e-9
+          and abs(t["oi_support"] - _PTU_EXPECTED_OI[s]) < 1e-9,
+          f"got sm={t['score_margin']} oi={t['oi_support']}")
+# DEFAULT profile oi_support must remain strict 0.10 (real-funds safety)
+for s in ("BANKNIFTY", "NIFTY", "SENSEX"):
+    check(f"default {s} oi_support stays 0.10 (real-funds strict)",
+          abs(_REAL_TABLES["default"][s]["oi_support"] - 0.10) < 1e-9)
 
 _ok_armed, _reason = _real_validate("paper_trade_unlock", "real_armed")
 check("paper_trade_unlock rejected under real_armed", not _ok_armed, _reason[:60])

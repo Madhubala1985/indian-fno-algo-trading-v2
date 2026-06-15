@@ -15,8 +15,12 @@ They can NEVER disable hard safety gates:
   - stop cooldowns
   - daily halt / soft halt
   - raw index rejection / wrong exchange rejection
-  - OI support below 0.10 (all profiles keep oi_support_min >= 0.10
-    unless an explicit per-underlying env var overrides it)
+  - OI support floor: the DEFAULT profile keeps oi_support_min = 0.10 for all
+    underlyings (real-funds default — never weakened). The paper-only
+    paper_trade_unlock profile recalibrates this per-underlying (see below),
+    because oi_support is a relative-popularity ratio that is structurally tiny
+    for delta-targeted SENSEX/NIFTY strikes; a flat 0.10 floor blocked them
+    entirely. A per-underlying env var (PAPER_<SYM>_OI_SUPPORT_MIN) still overrides.
 
 paper_trade_unlock:
   Paper / real_dry_run ONLY.  Exists to break trade starvation and prove
@@ -42,11 +46,21 @@ PROFILE_GATE_TABLES: dict[str, dict[str, dict[str, float]]] = {
         "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},  # strict — unchanged
     },
     # Trade-unlock experiment: lowest allowed soft-gate floor.
-    # oi_support stays at the 0.10 hard floor — never lowered by a profile.
+    # oi_support is recalibrated per-underlying here (paper/real_dry_run ONLY).
+    # Rationale (2026-06-15): oi_support = selected_strike_OI / chain_max_OI is a
+    # RELATIVE-popularity metric. A delta-targeted (~-0.51) near-ATM strike is
+    # rarely the single peak-OI strike, so the ratio is naturally small and is
+    # structurally smaller on SENSEX (BSE chain). Measured live: SENSEX maxes at
+    # 0.025 (never clears 0.10 → zero SENSEX trades ever); NIFTY median 0.087.
+    # The flat 0.10 floor (added 2026-06-10) silently killed the SENSEX streak
+    # that traded 11x / 9 wins / +Rs45,741 on 2026-06-08 (no such gate then).
+    # These floors restore SENSEX+NIFTY entries while still rejecting truly
+    # illiquid (bottom-of-chain) strikes. The DEFAULT profile stays strict at
+    # 0.10 — real-funds default is unchanged; only this paper-only profile relaxes.
     "paper_trade_unlock": {
-        "BANKNIFTY": {"score_margin": 0.015, "oi_support": 0.10},
-        "NIFTY":     {"score_margin": 0.015, "oi_support": 0.10},
-        "SENSEX":    {"score_margin": 0.015, "oi_support": 0.10},
+        "BANKNIFTY": {"score_margin": 0.015, "oi_support": 0.05},  # confirmation-only (not traded)
+        "NIFTY":     {"score_margin": 0.015, "oi_support": 0.03},
+        "SENSEX":    {"score_margin": 0.015, "oi_support": 0.005},
     },
 }
 

@@ -183,13 +183,20 @@ multi_timeframe_builder = (
 
 # ── Options pipeline ──────────────────────────────────────────────────────────
 # _PRIMARY_OPTION_TARGET    — canonical reference underlying (BANKNIFTY).
-# _OPTION_TARGETS_ENABLED   — all underlyings currently executing paper trades.
-#                             BANKNIFTY and NIFTY trade on NFO; SENSEX on BFO.
+# _OPTION_TARGETS_ENABLED   — underlyings that EXECUTE trades. BANKNIFTY is now
+#                             confirmation-only (2026-06-15): its MCB bias is
+#                             still computed (it remains in _AVAILABLE, so its
+#                             runtime state + market-context builder run and its
+#                             bias is available as a market-view double-check),
+#                             but no BANKNIFTY entries are taken. NIFTY trades on
+#                             NFO; SENSEX on BFO.
 # _OPTION_TARGETS_SHADOW    — empty; shadow infrastructure retained for future use.
-# _OPTION_TARGETS_AVAILABLE — all underlyings with complete option-chain config.
+# _OPTION_TARGETS_AVAILABLE — all underlyings with complete option-chain config
+#                             (drives _runtime_by_underlying / MCB for all three).
 
 _PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"
-_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
+# BANKNIFTY intentionally excluded from ENABLED — confirmation signal only.
+_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"NIFTY", "SENSEX"})
 _OPTION_TARGETS_SHADOW:    frozenset = frozenset()  # no active shadow targets
 _OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
 # Raw index/feed names that must never appear as a contract symbol
@@ -243,6 +250,44 @@ def is_option_target_enabled(option_underlying: str) -> bool:
 def is_option_target_shadow(option_underlying: str) -> bool:
     """Return True when underlying is in shadow-only mode (chain+score audit, no trades)."""
     return option_underlying in _OPTION_TARGETS_SHADOW
+
+
+def _bias_direction(bias: object) -> str:
+    """
+    Normalise any bias label to UP / DOWN / NEUTRAL so signals using different
+    vocabularies (LONG/SHORT vs BULLISH/BEARISH) can be compared.  Used for the
+    BANKNIFTY confirmation double-check.
+    """
+    u = str(bias).upper()
+    if "LONG" in u or "BULL" in u:
+        return "UP"
+    if "SHORT" in u or "BEAR" in u:
+        return "DOWN"
+    return "NEUTRAL"
+
+
+def _banknifty_confirmation(option_underlying: str, entry_bias: object) -> tuple[str, str]:
+    """
+    Return (banknifty_bias_str, verdict) comparing the NIFTY/SENSEX entry
+    direction against BANKNIFTY's current MCB bias.  BANKNIFTY is confirmation-
+    only (not traded), so this is a non-blocking market-view double-check.
+    verdict ∈ {AGREES, DIVERGES, BANKNIFTY_NEUTRAL, UNAVAILABLE}.
+    """
+    try:
+        _bnk_rt = _runtime_by_underlying.get("BANKNIFTY")
+        if _bnk_rt is None:
+            return "UNAVAILABLE", "UNAVAILABLE"
+        _bnk_bias = _bnk_rt.market_ctx_builder.build().bias
+    except Exception:
+        return "UNAVAILABLE", "UNAVAILABLE"
+    es, bs = _bias_direction(entry_bias), _bias_direction(_bnk_bias)
+    if bs == "NEUTRAL":
+        verdict = "BANKNIFTY_NEUTRAL"
+    elif es == bs:
+        verdict = "AGREES"
+    else:
+        verdict = "DIVERGES"
+    return str(_bnk_bias), verdict
 
 
 def can_run_option_intelligence(option_underlying: str) -> bool:
@@ -436,8 +481,17 @@ _PAPER_MAX_SINGLE_TRADE_RISK_FRAC: float = (
     else _TIER2_RISK_FRAC
 )
 _TIER1_MAX_LOTS:  int   = 1
-_TIER2_MAX_LOTS:  int   = 3
-_TIER3_MAX_LOTS:  int   = 5
+# Conviction-scaled lot ceilings (2026-06-15). Raised so high-conviction setups
+# can use their FULL existing risk budget instead of being clipped by a low
+# ceiling. This does NOT change per-trade risk: the sizer still caps lots at
+# min(risk_budget_units, ceiling*lot_size), where risk_budget = equity *
+# tier_risk_frac * confidence_scale(0.25..1.25) * haircuts. Raising the ceiling
+# only lets the risk budget (not an arbitrary cap) be the binding constraint, so
+# strong setups (high confidence + composite_score) book more; marginal setups
+# still size down via confidence_scale. Portfolio heat (10%) + drawdown haircuts
+# + daily-loss halt remain hard. Env-overridable for tuning.
+_TIER2_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER2_MAX_LOTS", "4") or 4)
+_TIER3_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER3_MAX_LOTS", "6") or 6)
 _TIER1_MIN_CONF:  float = 0.55    # higher conviction bar in defensive mode
 _TIER2_MIN_CONF:  float = 0.40
 _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selection
@@ -569,6 +623,45 @@ _gate_oi: dict[str, tuple[float, str]] = {
 _GATE_SCORE_MARGIN_BY_SYM: dict[str, float] = {s: v for s, (v, _) in _gate_sm.items()}
 _GATE_OI_SUPPORT_BY_SYM:   dict[str, float] = {s: v for s, (v, _) in _gate_oi.items()}
 
+# ── Absolute liquidity hard gate (Tier2/3) ────────────────────────────────────
+# oi_support is a RELATIVE ratio (selected_strike_OI / chain_peak_OI); it can
+# falsely reject a perfectly liquid strike just because it is not THE single
+# most-popular strike (proven 2026-06-15: SENSEX liquid strikes volume ~35k,
+# spread ~0.65%, liquidity-factor 0.94, yet oi_support ~0.01).  This gate adds
+# ABSOLUTE tradeability checks the relative ratio cannot express:
+#   • minimum absolute open interest on the selected strike (per-underlying), and
+#   • minimum liquidity factor (tight bid/ask spread + real volume, [0,1]).
+# It is a STRENGTHENING hard gate: it applies to every profile and every
+# execution mode (paper / real_dry_run / real_armed) and can only make entries
+# safer — it never relaxes any existing gate.  Thresholds are env-overridable
+# (PAPER_<SYM>_MIN_ABS_OI, PAPER_MIN_LIQUIDITY) and calibrated so they admit the
+# 2026-06-08 SENSEX winners (OI 560k+, liq 0.97) and today's liquid SENSEX/NIFTY
+# strikes while rejecting genuinely thin strikes (e.g. OI<1k).
+_DEFAULT_MIN_ABS_OI_BY_SYM: dict[str, float] = {
+    "BANKNIFTY": 25000.0,   # confirmation-only, kept for completeness
+    "NIFTY":     25000.0,
+    "SENSEX":     3000.0,    # BSE chain OI is structurally lower than NSE
+}
+
+
+def _get_min_abs_oi(sym: str) -> float:
+    raw = _os.environ.get(f"PAPER_{sym}_MIN_ABS_OI")
+    if raw is not None:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return _DEFAULT_MIN_ABS_OI_BY_SYM.get(sym, 3000.0)
+
+
+_MIN_ABS_OI_BY_SYM: dict[str, float] = {
+    s: _get_min_abs_oi(s) for s in ("BANKNIFTY", "NIFTY", "SENSEX")
+}
+try:
+    _MIN_LIQUIDITY_TIER23: float = float(_os.environ.get("PAPER_MIN_LIQUIDITY", "0.50") or 0.50)
+except ValueError:
+    _MIN_LIQUIDITY_TIER23 = 0.50
+
 _gate_experiment_active: bool = (
     _profile_is_non_default
     or any(src == "env" for _, src in list(_gate_sm.values()) + list(_gate_oi.values()))
@@ -589,7 +682,15 @@ def _print_gate_startup() -> None:
             f"[GATE CONFIG] {sym:12s}"
             f"  score_margin_min={sm_val:.3f} ({sm_src})"
             f"  oi_support_min={oi_val:.3f} ({oi_src})"
+            f"  min_abs_oi={_MIN_ABS_OI_BY_SYM[sym]:,.0f}"
         )
+    print(
+        f"[LIQUIDITY GATE] min_liquidity={_MIN_LIQUIDITY_TIER23:.2f}  "
+        f"min_abs_oi=BANKNIFTY:{_MIN_ABS_OI_BY_SYM['BANKNIFTY']:,.0f} "
+        f"NIFTY:{_MIN_ABS_OI_BY_SYM['NIFTY']:,.0f} "
+        f"SENSEX:{_MIN_ABS_OI_BY_SYM['SENSEX']:,.0f}  "
+        f"(absolute tradeability — applies to all profiles/modes)"
+    )
     if _PAPER_GATE_PROFILE == "paper_trade_unlock":
         print("[WARNING] Paper trade-unlock experiment — not approved for real funds.")
     elif _gate_experiment_active:
@@ -3161,6 +3262,27 @@ def on_ticks(raw_ticks):
                             f"< min={_pre_oi_min} for tier={_effective_tier}"
                         )
 
+                    # [B3b] Absolute liquidity hard gate (Tier2/3): real OI +
+                    # tradeable spread/volume.  Unlike the relative oi_support
+                    # ratio above, this never rejects a liquid non-peak strike;
+                    # it rejects strikes that are absolutely too thin to exit at
+                    # a fair price.  Strengthening gate — every profile/mode.
+                    if (_pre_entry_block is None
+                            and _effective_tier >= 2):
+                        _pre_abs_oi = getattr(_srec, "open_interest", 0) or 0
+                        _pre_liq = getattr(
+                            getattr(_srec, "breakdown", None), "liquidity", 1.0
+                        )
+                        _pre_min_abs_oi = _MIN_ABS_OI_BY_SYM.get(
+                            _current_state.option_underlying, 3000.0
+                        )
+                        if _pre_abs_oi < _pre_min_abs_oi or _pre_liq < _MIN_LIQUIDITY_TIER23:
+                            _pre_entry_block = (
+                                f"INSUFFICIENT_LIQUIDITY abs_oi={_pre_abs_oi:,} "
+                                f"(min={_pre_min_abs_oi:,.0f})  liquidity={_pre_liq:.3f} "
+                                f"(min={_MIN_LIQUIDITY_TIER23:.2f}) for tier={_effective_tier}"
+                            )
+
                     if _pre_entry_block is not None:
                         print_warning_block(
                             "ENTRY CHECK BLOCKED",
@@ -3352,6 +3474,15 @@ def on_ticks(raw_ticks):
                                                 f" confluence={_pre_oi_supp:.3f}"
                                                 f"(min={_pre_oi_min})"
                                                 f" tier={_effective_tier}"
+                                            )
+                                            # ── BANKNIFTY confirmation (double-check, non-blocking) ──
+                                            _bnk_bias_str, _bnk_verdict = _banknifty_confirmation(
+                                                _current_state.option_underlying, _mctx.bias
+                                            )
+                                            print(
+                                                f"[CONFIRMATION] BANKNIFTY bias={_bnk_bias_str}"
+                                                f" vs {_current_state.option_underlying} entry={str(_mctx.bias)}"
+                                                f" -> {_bnk_verdict}  (double-check only, non-blocking)"
                                             )
                                             # ── Open position ─────────────────
                                             _open_premium_cost += _cost
