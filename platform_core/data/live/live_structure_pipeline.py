@@ -3558,11 +3558,63 @@ print(
 
 import time
 
+# ── Tick-staleness watchdog config ────────────────────────────────────────────
+# A silent WebSocket stall (socket open, no data) does not fire on_close, so the
+# adapter's reconnect machinery never triggers.  Proven defect 2026-06-15: the
+# feed went quiet at 13:53 IST and the pipeline sat idle for the rest of the
+# session.  This watchdog runs on the main thread (independent of ticks), and
+# during market hours forces a reconnect when no tick has arrived for
+# LIVE_TICK_STALE_SECONDS.  Transparent: every action is logged loudly.
+_SESSION_OPEN_TOD:    int   = 9 * 60 + 15   # 09:15 IST
+_TICK_STALE_SECONDS:  float = float(_os.environ.get("LIVE_TICK_STALE_SECONDS", "120") or 120)
+_STALL_ACTION_COOLDOWN: float = 60.0        # min seconds between forced reconnects
+_last_stall_action_ts: float = 0.0
+
 while True:
     time.sleep(1)
     if _shutdown_triggered:
         sys.exit(0)
     _now_ist = datetime.now(_IST)
-    if _now_ist.hour * 60 + _now_ist.minute >= _SESSION_CLOSE_TOD:
+    _tod_min = _now_ist.hour * 60 + _now_ist.minute
+    if _tod_min >= _SESSION_CLOSE_TOD:
         _handle_market_close_shutdown("main-loop 15:30 IST clock")
+        continue
+
+    # Tick-staleness watchdog — market hours only (avoids pre-open/post-close
+    # false positives when the feed is legitimately quiet).
+    if _SESSION_OPEN_TOD <= _tod_min < _SESSION_CLOSE_TOD:
+        _tick_gap = adapter.seconds_since_last_tick()
+        if (_tick_gap > _TICK_STALE_SECONDS
+                and (time.time() - _last_stall_action_ts) > _STALL_ACTION_COOLDOWN):
+            _open_now = sum(
+                1 for _s in _runtime_by_underlying.values()
+                if _s.option_trader.has_open_position()
+            )
+            _risk_note = (
+                "  *** OPEN POSITION UNMANAGED WHILE FEED STALLED ***"
+                if _open_now else ""
+            )
+            print(
+                f"\n{'='*60}\n"
+                f"[FEED STALL] No ticks for {_tick_gap:.0f}s "
+                f"(threshold {_TICK_STALE_SECONDS:.0f}s) during market hours — "
+                f"forcing WebSocket reconnect.\n"
+                f"  open_positions={_open_now}{_risk_note}\n"
+                f"{'='*60}"
+            )
+            try:
+                adapter.force_reconnect(f"no ticks for {_tick_gap:.0f}s")
+            except Exception as _stall_exc:
+                print(f"[FEED STALL] force_reconnect failed: {_stall_exc}")
+            try:
+                _db.write_runtime_event(
+                    "FEED_STALL",
+                    severity="WARNING",
+                    message=f"no ticks for {_tick_gap:.0f}s; forced reconnect; open_positions={_open_now}",
+                    equity=_equity,
+                    bar_index=_bar_count,
+                )
+            except Exception:
+                pass
+            _last_stall_action_ts = time.time()
 

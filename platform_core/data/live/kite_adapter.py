@@ -82,6 +82,13 @@ class KiteAdapter:
         self._reconnect_lock               = threading.Lock()
         self._stopping:          bool      = False
 
+        # Tick-staleness watchdog: monotonic timestamp of the last tick batch
+        # received.  A silent WebSocket stall (socket stays open but no data
+        # flows) does NOT fire on_close, so the reconnect machinery above never
+        # triggers.  An external watchdog polls seconds_since_last_tick() and
+        # calls force_reconnect() when the feed goes quiet during market hours.
+        self._last_tick_ts: float = 0.0
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     @property
@@ -117,6 +124,34 @@ class KiteAdapter:
             self.ticker.close()
         self._connected = False
 
+    def seconds_since_last_tick(self) -> float:
+        """
+        Seconds since the last tick batch arrived.  Returns a large sentinel
+        (inf) before the first tick so callers can distinguish "never ticked"
+        from "ticked recently".  Used by the staleness watchdog to detect a
+        silent stall that does not fire on_close.
+        """
+        if self._last_tick_ts <= 0.0:
+            return float("inf")
+        return time.time() - self._last_tick_ts
+
+    def force_reconnect(self, reason: str = "") -> None:
+        """
+        Force a WebSocket reconnect when the feed has gone silent without an
+        on_close event (half-open socket).  Marks the connection down and
+        schedules the normal bounded-backoff reconnect, which closes the stale
+        ticker and opens a fresh one.  No-op if shutting down or a reconnect is
+        already in flight.
+        """
+        if self._stopping or self._reconnecting:
+            return
+        print(f"\n[KITE] Forcing reconnect — {reason or 'stale feed'}")
+        self._connected = False
+        # Reset the tick clock so the watchdog does not re-fire while the new
+        # connection is being established.
+        self._last_tick_ts = time.time()
+        self._schedule_reconnect()
+
     # ── Internal connection machinery ─────────────────────────────────────────
 
     def _do_connect(self) -> None:
@@ -136,6 +171,7 @@ class KiteAdapter:
         def on_connect(ws, response) -> None:
             self._connected = True
             self._reconnect_count = 0           # reset on every successful connect
+            self._last_tick_ts = time.time()    # baseline so watchdog waits for a real gap
             ws.subscribe(self._instrument_tokens)
             ws.set_mode(ws.MODE_FULL, self._instrument_tokens)
             print(
@@ -145,6 +181,9 @@ class KiteAdapter:
             )
 
         def on_ticks(ws, ticks) -> None:
+            # Stamp arrival time first so the staleness watchdog sees liveness
+            # even if a downstream callback raises.
+            self._last_tick_ts = time.time()
             for callback in self._tick_callbacks:
                 callback(ticks)
 
