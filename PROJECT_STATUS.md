@@ -1,6 +1,8 @@
 # PROJECT_STATUS.md
 > Authoritative handoff document for future Claude sessions and future development.
-> Reflects repository state as of 2026-06-01 on branch `paper-trading`.
+> Reflects repository state as of 2026-06-15 on branch `paper-trading`.
+> **Most recent work: §39 (2026-06-15) — feed-stall watchdog, BANKNIFTY confirmation-only,
+> conviction lot ceilings, absolute liquidity gate, oi_support recalibration. Start there.**
 
 ---
 
@@ -3605,4 +3607,77 @@ PYTHONPATH=. python3 scripts/analyze_live_trade_quality.py || true
 > The execution router is wired and fail-closed.  Tomorrow's session runs in `real_dry_run`
 > mode — paper P&L as usual, plus dry-run order-intent logging to `pt_order_intents`.
 > Real funds remain blocked until `real_funds_readiness_check.py` passes all 11 checks.
+
+---
+
+## 39. Gate Stack Recalibration + Feed-Stall Watchdog — 2026-06-15 (UNCOMMITTED)
+
+> **Status: working-tree changes, NOT yet committed.** Five fixes from a debugging
+> session that diagnosed (a) a silent live-feed stall that idled the pipeline for half a
+> session and (b) a miscalibrated `oi_support` floor that was starving SENSEX/NIFTY of
+> trades. All changes are paper / real_dry_run scoped — no real-funds default was weakened.
+> Run `git diff` to see the exact hunks before committing.
+
+### A. What changed and why
+
+**Context recap.** The `oi_support` gate compares the selected strike's open interest to
+the *single peak-OI strike in the chain* (`selected_OI / chain_peak_OI`) — it is a
+**relative-popularity ratio**, not an absolute liquidity measure. A delta-targeted
+(~−0.51) near-ATM strike is rarely THE most popular strike, so this ratio is structurally
+tiny, and *structurally smaller still on SENSEX* (BSE chain). The flat `0.10` floor added
+on 2026-06-10 (§ memory `oi-support-gate-regression`) silently killed the SENSEX streak
+that traded 11×/9 wins/+₹45,741 on 2026-06-08 — a session that ran with **no** oi_support
+gate at all. These fixes restore those entries while adding a *real* liquidity check.
+
+| # | Fix | Files | Summary |
+|---|---|---|---|
+| 1 | **Tick-staleness watchdog** | `kite_adapter.py`, `live_structure_pipeline.py` (main loop) | A silent WebSocket stall (socket open, no data) does **not** fire `on_close`, so the existing bounded-backoff reconnect never triggers. Proven defect 2026-06-15: feed went quiet ~13:53 IST and the pipeline sat idle the rest of the session (with risk to any open position). New: `KiteAdapter._last_tick_ts` stamped on every tick + `on_connect`; `seconds_since_last_tick()` and `force_reconnect(reason)`; main-loop watchdog (market hours only, 09:15–15:30 IST) forces a reconnect when no tick for `LIVE_TICK_STALE_SECONDS` (default 120s), with a 60s action cooldown. Loud logs + `FEED_STALL` runtime DB event; flags `*** OPEN POSITION UNMANAGED ***` if a position is open during the stall. |
+| 2 | **BANKNIFTY → confirmation-only** | `live_structure_pipeline.py` | BANKNIFTY removed from `_OPTION_TARGETS_ENABLED` (now `{NIFTY, SENSEX}`); stays in `_OPTION_TARGETS_AVAILABLE` so its MCB bias is still computed. New `_banknifty_confirmation()` + `_bias_direction()` print a non-blocking `[CONFIRMATION]` line at each NIFTY/SENSEX entry (verdict ∈ AGREES / DIVERGES / BANKNIFTY_NEUTRAL / UNAVAILABLE). **No BANKNIFTY entries are taken** — it is now a market-view double-check only. |
+| 3 | **Conviction-scaled lot ceilings** | `live_structure_pipeline.py` | `_TIER2_MAX_LOTS` 3→4, `_TIER3_MAX_LOTS` 5→6 (env-overridable: `PAPER_TIER2_MAX_LOTS`, `PAPER_TIER3_MAX_LOTS`). **Per-trade risk is unchanged** — the sizer still caps lots at `min(risk_budget_units, ceiling×lot_size)`; raising the ceiling only lets the risk budget (not an arbitrary cap) bind, so high-conviction setups use their full existing budget while marginal setups still size down via `confidence_scale`. (This applies the §memory `conviction-sizing` decision.) |
+| 4 | **Absolute liquidity hard gate (Tier2/3)** | `live_structure_pipeline.py` ([B3b]) | NEW strengthening hard gate that the relative `oi_support` ratio cannot express. Blocks Tier2/3 entries when `selected_strike_OI < min_abs_oi` (per-underlying) **or** `liquidity_factor < min_liquidity`. Defaults: abs OI — BANKNIFTY 25k, NIFTY 25k, SENSEX 3k (BSE chain is structurally lower); liquidity 0.50. Env: `PAPER_<SYM>_MIN_ABS_OI`, `PAPER_MIN_LIQUIDITY`. **Applies to every profile and every execution mode (paper/real_dry_run/real_armed)** — it can only make entries safer. Calibrated to admit the 2026-06-08 SENSEX winners (OI 560k+, liq 0.97) while rejecting genuinely thin strikes (OI<1k). |
+| 5 | **`oi_support` floor recalibration (paper_trade_unlock only)** | `gate_profiles.py`, `test_gate_profiles.py` | `paper_trade_unlock` profile floors recalibrated per-underlying: BANKNIFTY 0.10→0.05, NIFTY 0.10→0.03, SENSEX 0.10→0.005. Measured live: SENSEX maxes ~0.025 (never cleared 0.10 → zero SENSEX trades ever); NIFTY median ~0.087. **The `default` profile stays strict at 0.10 for all underlyings — real-funds default is unchanged.** Per-underlying env override (`PAPER_<SYM>_OI_SUPPORT_MIN`) still applies. Tests now assert both the recalibrated paper floors AND that `default` stays 0.10. |
+
+### B. New scripts (untracked)
+
+| Script | Purpose |
+|---|---|
+| `scripts/test_feed_stall_watchdog.py` | Offline tests for the staleness watchdog API (`seconds_since_last_tick`, `force_reconnect`) — no network/KiteConnect needed. **7/7 PASS.** |
+| `scripts/replay_new_gate_stack.py` | Replays the NEW gate stack (recalibrated oi_support + abs-OI + liquidity) against the bar-by-bar strike-selection audit to verify it KEEPS the proven 2026-06-08 SENSEX winners (exact match on the 11 executed trades) and UNBLOCKS starved days. Honest limitation: the audit logs the selected strike per bar, not every entry gate, so "bars passing" is an upper bound on trades; the WINNERS check is exact. |
+| `scripts/force_close_paper_positions.py` | Offline cleanup tool to cleanly close an INTERNAL paper/real_dry_run position left OPEN by an interrupted session (sqlite + state json + csv). NEVER imports KiteConnect / places orders; REFUSES under `EXECUTION_MODE=real_armed`; requires `--confirm` (default = dry-run preview). |
+
+### C. Validation (2026-06-15)
+
+| Check | Result |
+|---|---|
+| `scripts/test_gate_profiles.py` | **47/47 PASS** (includes new recalibration + default-strict assertions) |
+| `scripts/test_feed_stall_watchdog.py` | **7/7 PASS** |
+| `py_compile` all changed/new files | **OK** |
+
+### D. How the new entry-gate stack composes (Tier2/3)
+
+Relative + absolute gates are complementary and both must pass:
+```
+oi_support  >= profile floor          (relative-popularity ratio; recalibrated per-underlying in paper_trade_unlock)
+AND abs_OI  >= min_abs_oi[underlying] (absolute tradeability — NEW [B3b], all profiles/modes)
+AND liquidity_factor >= min_liquidity (tight spread + real volume — NEW [B3b])
+AND score_margin >= profile floor     (0.015 under paper_trade_unlock)
+```
+BANKNIFTY is excluded from entries entirely (confirmation-only), but still produces a
+`[CONFIRMATION]` verdict logged at each NIFTY/SENSEX entry.
+
+### E. Remaining / next steps
+
+1. **Commit these changes** — working tree only. Suggested grouping: one commit for the
+   feed-stall watchdog (+ its test), one for the gate-stack recalibration (BANKNIFTY
+   confirmation-only + abs-liquidity gate + oi_support floors + lot ceilings + replay
+   script), and treat `force_close_paper_positions.py` as part of operational tooling.
+   Do **not** commit `configs/kite_config.json` (token refresh only).
+2. **Run `replay_new_gate_stack.py`** against the archived 2026-06-08 audit to confirm the
+   winners are retained before the next live session, and capture its output here.
+3. **Validate live** — next real_dry_run session should show: `[FEED STALL]` only if the
+   feed actually stalls; `[CONFIRMATION]` lines at NIFTY/SENSEX entries; `[LIQUIDITY GATE]`
+   startup banner; and SENSEX/NIFTY entries actually firing (no longer starved).
+4. The §38.I issues #3 (live OI diagnostics), #4 (SENSEX strict — now addressed for the
+   paper_trade_unlock profile, still strict on `default`), and the feed-stall risk are the
+   ones this section moves forward. Lot-size constants (§38.I #6) remain a real-funds blocker.
 
