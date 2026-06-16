@@ -135,13 +135,48 @@ def _trading_days_since(last_date, today) -> int:
     return count
 
 
+# ── Access token validity ────────────────────────────────────────────────────
+
+def _validate_access_token(api_key: str, token: str) -> tuple[str, str]:
+    """Verify the access token against Kite with a cheap authenticated call.
+
+    Kite access tokens expire daily, so a token that is merely *present* in
+    kite_config.json may already be dead.  An expired/invalid token makes the
+    live WebSocket connect silently produce no ticks — a confusing failure that
+    looks like "the market is quiet".  Fail closed here instead.
+
+    Returns (status, detail) where status is:
+      "valid"   — profile() succeeded; the token authenticates
+      "expired" — broker rejected the token (TokenException) — must regenerate
+      "unknown" — network/other error; cannot confirm — do not block on this
+    """
+    try:
+        from kiteconnect import KiteConnect
+        from kiteconnect.exceptions import TokenException
+    except Exception as exc:  # pykiteconnect absent
+        return "unknown", f"kiteconnect not importable ({exc}) — skipping live check"
+    try:
+        kite = KiteConnect(api_key=api_key)
+        kite.set_access_token(token)
+        profile = kite.profile()
+        who = profile.get("user_name") or profile.get("user_id") or "?"
+        return "valid", f"token authenticates (user={who})"
+    except TokenException as exc:
+        return "expired", (
+            f"broker rejected token ({exc}) — regenerate with "
+            f"scripts/generate_kite_session.py"
+        )
+    except Exception as exc:
+        return "unknown", f"could not verify token ({exc}) — proceeding without confirmation"
+
+
 # ── Preflight ───────────────────────────────────────────────────────────────
 
 def run_preflight(run_oi_diagnostics: bool) -> bool:
     _heading("PREFLIGHT CHECKS")
     ok = True
 
-    # 1. Access token
+    # 1. Access token — present AND valid (tokens expire daily)
     cfg_path = ROOT / "configs" / "kite_config.json"
     if not cfg_path.exists():
         _fail("configs/kite_config.json not found")
@@ -150,8 +185,17 @@ def run_preflight(run_oi_diagnostics: bool) -> bool:
         try:
             cfg = json.loads(cfg_path.read_text())
             token = cfg.get("access_token", "")
+            api_key = cfg.get("api_key", "")
             if token:
                 _ok(f"Access token present (length={len(token)})")
+                status, detail = _validate_access_token(api_key, token)
+                if status == "valid":
+                    _ok(f"Access token valid — {detail}")
+                elif status == "expired":
+                    _fail(f"Access token EXPIRED — {detail}")
+                    ok = False
+                else:
+                    _warn(f"Access token unverified — {detail}")
             else:
                 _fail("No access_token in kite_config.json — run scripts/generate_kite_session.py")
                 ok = False

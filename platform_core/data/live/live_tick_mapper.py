@@ -35,6 +35,28 @@ class LiveTick:
     exchange_timestamp: datetime | None
 
 
+def _normalize_exchange_timestamp(raw_ts: datetime | None) -> datetime:
+    """Return a tz-aware exchange timestamp.
+
+    pykiteconnect parses tick timestamps with ``datetime.fromtimestamp()``,
+    which yields a *naive* datetime in the system's local timezone — but only
+    for ticks where the exchange actually sends one.  Index/quote-mode ticks
+    frequently omit it, in which case we fall back to ``datetime.now(utc)``
+    (tz-aware).  Mixing naive and aware timestamps for the same symbol makes
+    BarBuilder's ``timestamp >= existing_bar.end_timestamp`` comparison raise
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``,
+    which crashes the WebSocket message handler and triggers an endless
+    reconnect loop with no bars built.  Normalising every timestamp to
+    tz-aware here makes the comparison total.  A naive value is interpreted as
+    system-local (matching ``fromtimestamp``), preserving the true instant.
+    """
+    if raw_ts is None:
+        return datetime.now(timezone.utc)
+    if raw_ts.tzinfo is None:
+        return raw_ts.astimezone()
+    return raw_ts
+
+
 class LiveTickMapper:
 
     def __init__(
@@ -111,12 +133,7 @@ class LiveTickMapper:
                 .get("close")
             ),
 
-            exchange_timestamp=(
-                raw_tick.get(
-                    "exchange_timestamp",
-                    datetime.now(
-                        timezone.utc
-                    ),
-                )
+            exchange_timestamp=_normalize_exchange_timestamp(
+                raw_tick.get("exchange_timestamp")
             ),
         )
