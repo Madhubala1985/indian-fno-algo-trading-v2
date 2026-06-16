@@ -190,7 +190,7 @@ for prof in ("default", "banknifty_experiment", "small_capital_experiment"):
 # paper_trade_unlock: margin 0.015 all; oi_support recalibrated per-underlying
 # (2026-06-15) because oi_support is a relative-popularity ratio that is
 # structurally tiny for delta-targeted SENSEX/NIFTY strikes. DEFAULT stays 0.10.
-_PTU_EXPECTED_OI = {"BANKNIFTY": 0.05, "NIFTY": 0.03, "SENSEX": 0.005}
+_PTU_EXPECTED_OI = {"BANKNIFTY": 0.05, "NIFTY": 0.005, "SENSEX": 0.005}
 for s in ("BANKNIFTY", "NIFTY", "SENSEX"):
     t = _REAL_TABLES["paper_trade_unlock"][s]
     check(f"paper_trade_unlock {s} sm=0.015 oi={_PTU_EXPECTED_OI[s]}",

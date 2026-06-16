@@ -57,9 +57,19 @@ PROFILE_GATE_TABLES: dict[str, dict[str, dict[str, float]]] = {
     # These floors restore SENSEX+NIFTY entries while still rejecting truly
     # illiquid (bottom-of-chain) strikes. The DEFAULT profile stays strict at
     # 0.10 — real-funds default is unchanged; only this paper-only profile relaxes.
+    #
+    # NIFTY 0.03 -> 0.005 (2026-06-16): the 0.03 floor set on 2026-06-15 was still
+    # the same class of false-reject we fixed for SENSEX. Proven from the live
+    # 2026-06-16 session strike-selection audit (188 NIFTY strikes): abs OI ranged
+    # 58k..4.4M (median 793k) — ALL pass the absolute-liquidity gate — yet only
+    # 13/188 cleared oi_support 0.03 (median ratio 0.02). Concrete false-reject:
+    # NIFTY2662323950CE with OI 1.33M, spread 0.15%, liquidity 0.985 scored
+    # oi_support 0.025 and was blocked. The absolute-liquidity gate ([B3b]:
+    # abs_oi>=25k + liquidity>=0.50) is the correct arbiter; oi_support is a
+    # relative-popularity ratio, so NIFTY now matches SENSEX at 0.005.
     "paper_trade_unlock": {
         "BANKNIFTY": {"score_margin": 0.015, "oi_support": 0.05},  # confirmation-only (not traded)
-        "NIFTY":     {"score_margin": 0.015, "oi_support": 0.03},
+        "NIFTY":     {"score_margin": 0.015, "oi_support": 0.005},
         "SENSEX":    {"score_margin": 0.015, "oi_support": 0.005},
     },
 }
