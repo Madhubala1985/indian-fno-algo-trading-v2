@@ -496,6 +496,20 @@ _TIER1_MIN_CONF:  float = 0.55    # higher conviction bar in defensive mode
 _TIER2_MIN_CONF:  float = 0.40
 _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selection
 
+# ── SENSEX-primary routing (user directive 2026-06-17) ───────────────────────
+# SENSEX is the primary, historically-profitable option target.  NIFTY has
+# repeatedly churned the same strike for net losses in range-bound tape
+# (2026-06-17: NIFTY -Rs11,235 across 6 trades vs SENSEX +Rs14,982 in 1).
+# NIFTY now enters ONLY when (a) SENSEX holds no open position (SENSEX gets first
+# call on the opportunity) AND (b) NIFTY's effective confidence clears a
+# very-strong bar.  This is a pure ADDITIONAL restriction on NIFTY entries —
+# it never loosens any gate, and leaves SENSEX/BANKNIFTY paths unchanged.
+# Env-tunable / reversible: SENSEX_PRIMARY_ROUTING=0 disables; NIFTY_VERY_STRONG_CONF
+# adjusts the NIFTY bar (default 0.95; 2026-06-17 NIFTY chop ran ~0.91, so filtered).
+_SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "1") == "1")
+_NIFTY_VERY_STRONG_CONF:     float = float(os.environ.get("NIFTY_VERY_STRONG_CONF", "0.95") or 0.95)
+_SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
+
 # Tier transition thresholds (deterministic, evaluated per bar)
 _TIER1_DD_ENTRY:  float = 0.05    # enter Tier 1 when drawdown exceeds 5%
 _TIER3_MIN_GAIN:  float = 0.03    # Tier 3 requires equity > initial × 1.03
@@ -3281,6 +3295,26 @@ def on_ticks(raw_ticks):
                                 f"INSUFFICIENT_LIQUIDITY abs_oi={_pre_abs_oi:,} "
                                 f"(min={_pre_min_abs_oi:,.0f})  liquidity={_pre_liq:.3f} "
                                 f"(min={_MIN_LIQUIDITY_TIER23:.2f}) for tier={_effective_tier}"
+                            )
+
+                    # [A6] SENSEX-primary routing — NIFTY defers to SENSEX and only
+                    # enters on a very-strong setup (user directive 2026-06-17).  SENSEX
+                    # is the primary, historically-profitable target; NIFTY has churned
+                    # the same strike for net losses in range-bound tape.  Pure extra
+                    # restriction on NIFTY only — never loosens any gate.
+                    if (_pre_entry_block is None
+                            and _SENSEX_PRIMARY_ROUTING
+                            and _current_state.option_underlying == "NIFTY"):
+                        _sensex_rt = _runtime_by_underlying.get(_SENSEX_PRIORITY_UNDERLYING)
+                        if _sensex_rt is not None and _sensex_rt.option_trader.has_open_position():
+                            _pre_entry_block = (
+                                "SENSEX_PRIMARY_DEFER "
+                                "(SENSEX position open — NIFTY stands down)"
+                            )
+                        elif _effective_conf < _NIFTY_VERY_STRONG_CONF:
+                            _pre_entry_block = (
+                                f"NIFTY_NOT_VERY_STRONG conf={_effective_conf:.2f}"
+                                f"<{_NIFTY_VERY_STRONG_CONF:.2f} (SENSEX-primary routing)"
                             )
 
                     if _pre_entry_block is not None:
