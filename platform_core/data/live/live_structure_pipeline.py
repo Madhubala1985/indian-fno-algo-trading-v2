@@ -508,12 +508,16 @@ _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selectio
 # it never loosens any gate, and leaves SENSEX/BANKNIFTY paths unchanged.
 # Env-tunable / reversible: SENSEX_PRIMARY_ROUTING=0 disables; NIFTY_VERY_STRONG_CONF
 # adjusts the NIFTY bar (default 0.95; 2026-06-17 NIFTY chop ran ~0.91, so filtered).
-# NEUTRALIZED 2026-06-18 (default off): day-2 paper results contradicted the
-# SENSEX-primary thesis (NIFTY 3/3 wins, SENSEX 2 blowups — opposite of day 1),
-# so neither index is hardcoded as primary until more data justifies it.  Both
-# indices now trade symmetrically on the normal gate stack (chop filter still on).
-# Set SENSEX_PRIMARY_ROUTING=1 to re-enable if a larger sample supports it.
-_SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "0") == "1")
+# RE-ENABLED 2026-06-18 (default on): over the user's larger 3-4 day sample NIFTY
+# is the net loser, and in symmetric mode whichever index fires first takes the
+# single budget slot — so NIFTY firing first BLOCKS SENSEX (observed today as
+# SENSEX SIZING_REJECTED).  SENSEX-primary stops NIFTY from blocking SENSEX:
+# NIFTY defers when SENSEX holds a position and otherwise only enters on a
+# very-strong (>=NIFTY_VERY_STRONG_CONF) setup.  NOTE: this restricts NIFTY, not
+# SENSEX — it does not prevent SENSEX's own losing days (the gap-stop fix caps
+# those).  A complete same-bar-race fix = evaluate SENSEX before NIFTY each bar.
+# Set SENSEX_PRIMARY_ROUTING=0 to neutralize.
+_SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "1") == "1")
 _NIFTY_VERY_STRONG_CONF:     float = float(os.environ.get("NIFTY_VERY_STRONG_CONF", "0.95") or 0.95)
 _SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
 
