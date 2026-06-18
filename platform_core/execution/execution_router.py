@@ -32,6 +32,7 @@ from platform_core.execution.broker_adapter import (
     get_broker_adapter,
     _required_exchange,
 )
+from platform_core.execution.fill_confirmation import confirm_fill, FillResult
 
 if TYPE_CHECKING:
     from platform_core.persistence.trade_database import TradeDatabase
@@ -228,6 +229,41 @@ class ExecutionRouter:
                 )
         except Exception:
             pass   # fire-and-forget; never interrupt trading loop
+
+    # ── Fill confirmation ─────────────────────────────────────────────────────
+
+    def confirm_fill(
+        self,
+        result: OrderResult,
+        *,
+        expected_qty:     int,
+        fallback_premium: float,
+        timeout_s:        float = 12.0,
+    ) -> FillResult:
+        """Resolve an OrderResult into a terminal FillResult.
+
+        - real_armed: poll the broker until the order reaches a terminal state
+          and report the ACTUAL average fill price (fail-closed: only a fully
+          confirmed order returns FILLED).
+        - paper / real_dry_run: there is no real order to confirm, so synthesize
+          an immediate FILLED at ``fallback_premium`` (the strike's last-traded
+          price) — preserving existing paper/backtest behaviour exactly.
+
+        The caller opens its local position at ``FillResult.average_price`` and
+        must NOT open anything unless ``FillResult.is_filled``.
+        """
+        if self.mode == "real_armed":
+            if not result.success or not result.order_id:
+                return FillResult(
+                    "REJECTED", 0.0, 0,
+                    {"reason": result.rejection_reason or result.status},
+                )
+            return confirm_fill(
+                self._adapter, result.order_id,
+                expected_qty=expected_qty, timeout_s=timeout_s,
+            )
+        # paper / real_dry_run — synthetic immediate fill at the intended premium
+        return FillResult("FILLED", fallback_premium, expected_qty, {"synthetic": True})
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
