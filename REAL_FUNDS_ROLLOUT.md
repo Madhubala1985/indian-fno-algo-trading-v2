@@ -57,23 +57,32 @@ position/PnL/stops run on paper-assumed fills → divergence from broker truth. 
 6. [x] Wire `ReconciliationEngine`: startup + every RECONCILE_EVERY_BARS bars;
        HIGH/CRITICAL break ⇒ trading_halted + CRITICAL RECONCILE_BREAK. — 1507cc7
 7. [x] Pre-trade margin check via `get_available_margin()` (REAL_MARGIN_BLOCK). — 1507cc7
-8. [~] Order type: entries/exits are MARKET orders (router sets order_type=MARKET);
-       slippage cap policy TBD if needed.
+8. [x] Order type — DECISION: keep MARKET orders for both entry and exit. For a
+       stop-driven strategy, guaranteed fills matter more than price control: a
+       LIMIT that doesn't fill on a stop leaves you in a losing position. Strikes
+       are already liquidity/OI-gated, so MARKET fills are reasonable; the ACTUAL
+       fill price is recorded via confirm_fill. A LIMIT collar remains a future
+       option if real_dry_run data shows entry slippage is a problem.
 
 Also wired in 1507cc7: the ExecutionRouter now receives the Kite client
 (adapter.kite) — previously constructed without it, so real_armed could not have
 placed orders or queried positions/margin.
 
-**Stage 1 status: COMPLETE.** All new logic is real_armed-only; paper/dry-run are
-unchanged by construction (confirm_fill synthesizes a FILLED at LTP; broker
-accessors return []/+inf). 19 unit + 4 integration tests pass.
+**Stage 1 status: COMPLETE + integration-tested.** All new logic is real_armed-only;
+paper/dry-run unchanged by construction. The full real_armed chain (interlocks →
+place_order → confirm actual fill → reject fail-closed → reconcile mismatch →
+margin) is now exercised end-to-end with a MOCK Kite client in
+tests/test_real_armed_integration.py (7 tests, no real money). Total: ~30 tests pass.
 
-Remaining before real money:
-  - Stage 0: 2-3 net-positive paper sessions (SENSEX-primary + chop filter).
-  - Stage 2: several real_dry_run live sessions (validate intents; no money).
-  - A real_armed integration test exercising the live entry/exit blocks with a
-    mock Kite client (FILLED / REJECTED / unconfirmed-exit-halt / reconcile-break)
-    would harden Stage 1 further before arming.
+CODE READINESS: the real-money pipeline is built and tested. Arming is gated by
+scripts/real_funds_readiness_check.py (git clean, EXECUTION_MODE=real_armed, all 9
+interlocks, capital limits, token, no orphans, dry-run + EOD tested, order tables).
+
+NOT-YET-MET before actually arming (these are DATA / PROCESS, not code):
+  - Stage 0: net-positive PAPER sessions over a real sample (currently ~break-even
+    over 2 conflicting days — far too small).
+  - Stage 2: several real_dry_run live sessions (validate intents vs live market).
+  - Explicit user "arm real orders" + the 9 interlocks set. NEVER armed autonomously.
 
 ## Real-money interlocks (the arming wall — Stage 3+)
 
