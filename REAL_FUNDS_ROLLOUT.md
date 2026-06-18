@@ -54,14 +54,26 @@ position/PnL/stops run on paper-assumed fills → divergence from broker truth. 
 4. [x] Order state machine handled at entry (no-fill ⇒ no position, fail-closed). — 81ff60d
 5. [x] Exit symmetry: confirm exit fills; unconfirmed real exit ⇒ trading_halted +
        CRITICAL (broker may still hold). EOD close symmetric. — 49c7d2b
-6. [ ] Wire `ReconciliationEngine`: startup + periodic; halt on mismatch.
-7. [ ] Pre-trade margin check via `get_available_margin()`.
+6. [x] Wire `ReconciliationEngine`: startup + every RECONCILE_EVERY_BARS bars;
+       HIGH/CRITICAL break ⇒ trading_halted + CRITICAL RECONCILE_BREAK. — 1507cc7
+7. [x] Pre-trade margin check via `get_available_margin()` (REAL_MARGIN_BLOCK). — 1507cc7
 8. [~] Order type: entries/exits are MARKET orders (router sets order_type=MARKET);
        slippage cap policy TBD if needed.
 
-Validation note: paper/dry-run behaviour is unchanged by construction (confirm_fill
-synthesizes a FILLED at LTP). Live exercise of the modified entry/exit blocks occurs
-in the next paper session; real orders remain disarmed.
+Also wired in 1507cc7: the ExecutionRouter now receives the Kite client
+(adapter.kite) — previously constructed without it, so real_armed could not have
+placed orders or queried positions/margin.
+
+**Stage 1 status: COMPLETE.** All new logic is real_armed-only; paper/dry-run are
+unchanged by construction (confirm_fill synthesizes a FILLED at LTP; broker
+accessors return []/+inf). 19 unit + 4 integration tests pass.
+
+Remaining before real money:
+  - Stage 0: 2-3 net-positive paper sessions (SENSEX-primary + chop filter).
+  - Stage 2: several real_dry_run live sessions (validate intents; no money).
+  - A real_armed integration test exercising the live entry/exit blocks with a
+    mock Kite client (FILLED / REJECTED / unconfirmed-exit-halt / reconcile-break)
+    would harden Stage 1 further before arming.
 
 ## Real-money interlocks (the arming wall — Stage 3+)
 
