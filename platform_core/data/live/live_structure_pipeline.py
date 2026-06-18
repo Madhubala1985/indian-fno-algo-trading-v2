@@ -341,6 +341,8 @@ class UnderlyingRuntimeState:
     last_bar_close:   float = 0.0               # most recent 1m close price — used for EOD BSM
     last_stop_bar:    int   = -9999             # _bar_count at last stop-loss fire
     last_stop_contract: str = ""               # contract symbol of last stop-loss
+    last_struct_exit_bar:      int = -9999      # _bar_count at last STRUCTURE_EXIT (chop filter)
+    last_struct_exit_contract: str = ""        # contract symbol of last structure exit
     live_bars_seen:   int   = 0                 # live 1m bars received this session
     bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
     bars_since_save:  int  = 0                  # bars since last state-file write
@@ -529,6 +531,16 @@ _MIN_DTE_TO_HOLD:   int   = 2
 # Proven defect: SENSEX re-entered the same contract at the exact bar of stop-loss exit.
 _SAME_UNDERLYING_STOP_COOLDOWN_BARS: int = 5    # any contract on this underlying
 _SAME_CONTRACT_STOP_COOLDOWN_BARS:   int = 15   # exact same contract symbol
+
+# Structure-exit re-entry cooldown (chop filter, 2026-06-17).  STRUCTURE_EXIT
+# (BOS/CHOCH) exits did NOT set the stop cooldown above, so NIFTY re-bought the
+# SAME strike 1-2 bars after each BOS exit and churned the account in range-bound
+# tape (NIFTY -Rs11,235 across 6 same-strike 24100CE round-trips).  Apply a
+# re-entry cooldown after structure exits too.  Same-contract is the primary
+# churn-killer (blocks re-buying the identical strike); same-underlying is short.
+# Env-tunable; pure additional restriction — never loosens any gate.
+_SAME_UNDERLYING_STRUCT_COOLDOWN_BARS: int = int(os.environ.get("STRUCT_EXIT_UNDERLYING_COOLDOWN_BARS", "3")  or 3)
+_SAME_CONTRACT_STRUCT_COOLDOWN_BARS:   int = int(os.environ.get("STRUCT_EXIT_CONTRACT_COOLDOWN_BARS",   "12") or 12)
 
 # Confluence gate for Tier2/Tier3: require minimum OI support on the selected strike.
 # Proven defect: SENSEX entry had oi_support=0.034 (near-zero OI = liquidity risk).
@@ -2906,6 +2918,11 @@ def on_ticks(raw_ticks):
                     if "STOP_LOSS" in str(_closed.exit_reason):
                         _current_state.last_stop_bar      = _bar_count
                         _current_state.last_stop_contract = _closed.contract_symbol
+                    # Record structure-exit cooldown state (chop filter): BOS/CHOCH
+                    # exits previously bypassed the cooldown, causing same-strike churn.
+                    if "STRUCTURE_EXIT" in str(_closed.exit_reason):
+                        _current_state.last_struct_exit_bar      = _bar_count
+                        _current_state.last_struct_exit_contract = _closed.contract_symbol
                     print_exit_block(
                         underlying=_closed.underlying_symbol,
                         strike=_closed.strike,
@@ -3257,6 +3274,24 @@ def on_ticks(raw_ticks):
                         _pre_entry_block = (
                             f"STOP_COOLDOWN_ACTIVE same_contract_cooldown "
                             f"bars_since_stop={_bars_since_stop}/{_SAME_CONTRACT_STOP_COOLDOWN_BARS}"
+                        )
+
+                    # [B1s]/[B2s] Structure-exit re-entry cooldown (chop filter):
+                    # prevents re-buying the same strike (or churning the same
+                    # underlying) immediately after a BOS/CHOCH structure exit.
+                    _bars_since_struct = _bar_count - _current_state.last_struct_exit_bar
+                    if (_pre_entry_block is None
+                            and _bars_since_struct < _SAME_UNDERLYING_STRUCT_COOLDOWN_BARS):
+                        _pre_entry_block = (
+                            f"STRUCT_EXIT_COOLDOWN underlying_cooldown "
+                            f"bars_since={_bars_since_struct}/{_SAME_UNDERLYING_STRUCT_COOLDOWN_BARS}"
+                        )
+                    elif (_pre_entry_block is None
+                            and _srec.option_symbol == _current_state.last_struct_exit_contract
+                            and _bars_since_struct < _SAME_CONTRACT_STRUCT_COOLDOWN_BARS):
+                        _pre_entry_block = (
+                            f"STRUCT_EXIT_COOLDOWN same_contract_cooldown "
+                            f"bars_since={_bars_since_struct}/{_SAME_CONTRACT_STRUCT_COOLDOWN_BARS}"
                         )
 
                     # [B3] Confluence hard floor (Tier2/3): OI support is a HARD
