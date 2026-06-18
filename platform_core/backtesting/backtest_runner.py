@@ -321,10 +321,19 @@ class OptionPaperTrader:
         direction: str,
         bar_index: int,
         lots: int = 1,
+        entry_premium_override: float | None = None,
     ) -> None:
         if self._position is not None:
             return
         lots = max(lots, 1)
+        # entry_premium_override carries the ACTUAL broker fill price in real
+        # execution modes.  Default None preserves paper/backtest behaviour
+        # exactly (entry at the recommendation's last-traded price).
+        _entry_premium = (
+            entry_premium_override
+            if entry_premium_override is not None and entry_premium_override > 0.0
+            else recommendation.last_traded_price
+        )
         self._position = OptionPosition(
             underlying_symbol=recommendation.underlying_symbol,
             contract_symbol=recommendation.option_symbol,
@@ -333,7 +342,7 @@ class OptionPaperTrader:
             expiry_date=recommendation.expiry_date,
             lot_size=recommendation.lot_size,
             lots=lots,
-            entry_premium=recommendation.last_traded_price,
+            entry_premium=_entry_premium,
             entry_spot=recommendation.spot_price,
             entry_iv=recommendation.implied_volatility,
             direction=direction,
