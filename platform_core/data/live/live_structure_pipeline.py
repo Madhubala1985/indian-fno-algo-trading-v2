@@ -354,6 +354,7 @@ class UnderlyingRuntimeState:
     captured_market_ctx:   object | None = None
     captured_strike_rec:   object | None = None
     captured_score_margin: float  | None = None  # rank1 - rank2 composite score
+    captured_gex_snapshot: object | None = None  # dealer gamma (GEX) snapshot at capture
 
     # ── MCB adaptation watch ───────────────────────────────────────────────
     contra_bos_count:  int = 0   # BOS events opposing current MCB bias (session total)
@@ -520,6 +521,21 @@ _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selectio
 _SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "1") == "1")
 _NIFTY_VERY_STRONG_CONF:     float = float(os.environ.get("NIFTY_VERY_STRONG_CONF", "0.95") or 0.95)
 _SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
+
+# ── GEX wall-proximity entry gate (PROTOTYPE 2026-06-18, opt-in / default OFF) ──
+# Dealer-gamma "walls" act as intraday resistance/support: price tends to stall or
+# reverse INTO a call wall (resistance) or put wall (support).  Chasing a momentum
+# entry into a wall is the classic "entered right before the reversal" failure
+# (e.g. 2026-06-18 SENSEX longs that reversed -40%).  When enabled, veto LONG
+# entries within GEX_WALL_PROXIMITY_PCT below a call wall, and SHORT within that
+# distance above a put wall.  Fail-OPEN (missing GEX never blocks); gex_snapshot is
+# already computed in the options context.  Default OFF — enable with
+# GEX_REGIME_GATE=1 for a deliberate A/B paper session before trusting it.
+_GEX_REGIME_GATE:        bool  = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
+_GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.0025") or 0.0025)
+
+
+from platform_core.options.gex_gate import gex_wall_block as _gex_wall_block
 
 # Tier transition thresholds (deterministic, evaluated per bar)
 _TIER1_DD_ENTRY:  float = 0.05    # enter Tier 1 when drawdown exceeds 5%
@@ -2658,6 +2674,7 @@ def on_ticks(raw_ticks):
                 _st.captured_strike_rec    = None
                 _st.captured_market_ctx    = None
                 _st.captured_score_margin  = None
+                _st.captured_gex_snapshot  = None
 
         # Resolve state for this bar's feed symbol (None = unknown feed)
         _current_state = _state_by_feed.get(completed_bar.symbol)
@@ -2834,6 +2851,7 @@ def on_ticks(raw_ticks):
                             best = _selection_result.best()
                             if best is not None:
                                 _current_state.captured_strike_rec = best
+                                _current_state.captured_gex_snapshot = options_ctx.gex_snapshot
                                 _recs = _selection_result.recommendations
                                 _current_state.captured_score_margin = (
                                     _recs[0].composite_score - _recs[1].composite_score
@@ -3511,6 +3529,29 @@ def on_ticks(raw_ticks):
                                 f"NIFTY_NOT_VERY_STRONG conf={_effective_conf:.2f}"
                                 f"<{_NIFTY_VERY_STRONG_CONF:.2f} (SENSEX-primary routing)"
                             )
+
+                    # [A7] GEX wall-proximity gate (PROTOTYPE, opt-in via GEX_REGIME_GATE):
+                    # veto a directional entry chasing INTO a dealer-gamma wall, and log
+                    # the gamma regime + wall distances for offline analysis either way.
+                    if _GEX_REGIME_GATE and _pre_entry_block is None:
+                        _gx = _current_state.captured_gex_snapshot
+                        if _gx is not None:
+                            _gex_blk = _gex_wall_block(
+                                bias=_mctx.bias,
+                                spot=completed_bar.close_price,
+                                gex=_gx,
+                                proximity_pct=_GEX_WALL_PROXIMITY_PCT,
+                            )
+                            print(
+                                f"[GEX] {_current_state.option_underlying} "
+                                f"regime={getattr(_gx, 'net_gamma_regime', '?')} "
+                                f"call_wall={getattr(_gx, 'call_wall_strike', None)} "
+                                f"put_wall={getattr(_gx, 'put_wall_strike', None)} "
+                                f"spot={completed_bar.close_price:.0f} "
+                                f"verdict={'BLOCK' if _gex_blk else 'ok'}"
+                            )
+                            if _gex_blk:
+                                _pre_entry_block = _gex_blk
 
                     if _pre_entry_block is not None:
                         print_warning_block(
