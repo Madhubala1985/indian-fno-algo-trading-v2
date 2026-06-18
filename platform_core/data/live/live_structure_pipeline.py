@@ -508,7 +508,12 @@ _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selectio
 # it never loosens any gate, and leaves SENSEX/BANKNIFTY paths unchanged.
 # Env-tunable / reversible: SENSEX_PRIMARY_ROUTING=0 disables; NIFTY_VERY_STRONG_CONF
 # adjusts the NIFTY bar (default 0.95; 2026-06-17 NIFTY chop ran ~0.91, so filtered).
-_SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "1") == "1")
+# NEUTRALIZED 2026-06-18 (default off): day-2 paper results contradicted the
+# SENSEX-primary thesis (NIFTY 3/3 wins, SENSEX 2 blowups — opposite of day 1),
+# so neither index is hardcoded as primary until more data justifies it.  Both
+# indices now trade symmetrically on the normal gate stack (chop filter still on).
+# Set SENSEX_PRIMARY_ROUTING=1 to re-enable if a larger sample supports it.
+_SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "0") == "1")
 _NIFTY_VERY_STRONG_CONF:     float = float(os.environ.get("NIFTY_VERY_STRONG_CONF", "0.95") or 0.95)
 _SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
 
