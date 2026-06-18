@@ -2369,6 +2369,55 @@ def _eod_force_close_all() -> None:
             print(f"[EOD CLOSE WARN] {key}: evaluate_and_close returned None unexpectedly")
             continue
 
+        # ── Route the EOD exit + confirm the fill before finalizing ──
+        # paper/real_dry_run: synthetic FILLED at the BSM exit premium (unchanged).
+        # real_armed: place the real SELL and use the ACTUAL fill price; an
+        # unconfirmed real EOD exit may leave a position carried overnight →
+        # CRITICAL alert (manual close / reconcile).
+        _eod_price_source = "BSM_FALLBACK"
+        try:
+            _eod_exit_result = _exec_router.route_exit(
+                underlying    = key,
+                tradingsymbol = _closed.contract_symbol,
+                lots          = _closed.lots,
+                lot_size      = _closed.lot_size,
+                exit_premium  = _closed.exit_premium,
+                reason        = "EOD_FORCE_CLOSE",
+                session_tag   = _session_tag,
+                risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
+                db            = _db,
+            )
+            _eod_exit_fill = _exec_router.confirm_fill(
+                _eod_exit_result,
+                expected_qty=_closed.lots * _closed.lot_size,
+                fallback_premium=_closed.exit_premium,
+            )
+        except Exception:
+            _eod_exit_fill = None
+
+        if (_EXECUTION_MODE == "real_armed"
+                and _eod_exit_fill is not None and _eod_exit_fill.is_filled):
+            _closed.exit_premium = _eod_exit_fill.average_price
+            _closed.pnl = (
+                (_closed.exit_premium - _closed.entry_premium)
+                * _closed.lot_size * _closed.lots
+            )
+            _eod_price_source = "REAL_FILL"
+        elif _EXECUTION_MODE == "real_armed":
+            _eod_miss = _eod_exit_fill.status if _eod_exit_fill is not None else "ROUTER_ERROR"
+            _eod_price_source = f"UNCONFIRMED({_eod_miss})"
+            print(
+                f"[REAL EOD EXIT NOT CONFIRMED] {key} {_closed.contract_symbol} "
+                f"status={_eod_miss} — broker may still hold position; close/reconcile manually"
+            )
+            try:
+                _db.write_runtime_event(
+                    "REAL_EOD_EXIT_UNCONFIRMED", severity="CRITICAL",
+                    message=f"{_closed.contract_symbol} status={_eod_miss}", equity=_equity,
+                )
+            except Exception:
+                pass
+
         _equity               += _closed.pnl
         _peak_equity           = max(_peak_equity, _equity)
         _open_premium_cost     = _compute_open_premium_cost()
@@ -2383,7 +2432,7 @@ def _eod_force_close_all() -> None:
             f"exit=₹{_closed.exit_premium:.2f}  "
             f"pnl=₹{_closed.pnl:+,.2f}  lots={_closed.lots}  "
             f"entry=₹{_closed.entry_premium:.2f}  "
-            f"EOD_CLOSE_PRICE_SOURCE=BSM_FALLBACK"
+            f"EOD_CLOSE_PRICE_SOURCE={_eod_price_source}"
         )
 
         try:
@@ -2395,21 +2444,6 @@ def _eod_force_close_all() -> None:
                 exit_reason="EOD_FORCE_CLOSE",
                 exit_ts=datetime.now(timezone.utc).isoformat(),
                 equity_after=_equity,
-            )
-        except Exception:
-            pass
-        # Execution router exit for EOD force-close
-        try:
-            _exec_router.route_exit(
-                underlying    = key,
-                tradingsymbol = _closed.contract_symbol,
-                lots          = _closed.lots,
-                lot_size      = _closed.lot_size,
-                exit_premium  = _closed.exit_premium,
-                reason        = "EOD_FORCE_CLOSE",
-                session_tag   = _session_tag,
-                risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
-                db            = _db,
             )
         except Exception:
             pass
@@ -2906,20 +2940,92 @@ def on_ticks(raw_ticks):
                     force_reason=_exit_sig,
                 )
                 if _closed is not None:
-                    _equity += _closed.pnl
+                    # ── Route the exit + confirm the fill BEFORE finalizing ──
+                    # paper/real_dry_run: confirm_fill synthesizes a FILLED at the BSM
+                    # exit premium, so accounting is unchanged.  real_armed: place the
+                    # real SELL order and confirm the ACTUAL exit price.  An unconfirmed
+                    # real exit means the broker may STILL hold the position → HALT
+                    # (fail-closed; reconciliation + manual intervention resolve).
+                    try:
+                        _exit_result = _exec_router.route_exit(
+                            underlying    = _current_state.option_underlying,
+                            tradingsymbol = _closed.contract_symbol,
+                            lots          = _closed.lots,
+                            lot_size      = _closed.lot_size,
+                            exit_premium  = _closed.exit_premium,
+                            reason        = str(_closed.exit_reason),
+                            session_tag   = _session_tag,
+                            risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
+                            db            = _db,
+                        )
+                        _exit_fill = _exec_router.confirm_fill(
+                            _exit_result,
+                            expected_qty=_closed.lots * _closed.lot_size,
+                            fallback_premium=_closed.exit_premium,
+                        )
+                    except Exception:
+                        _exit_fill = None
+
+                    # Final exit price/pnl: actual fill in real_armed, else BSM estimate.
+                    if (_EXECUTION_MODE == "real_armed"
+                            and _exit_fill is not None and _exit_fill.is_filled):
+                        _final_exit_premium = _exit_fill.average_price
+                        _final_pnl = (
+                            (_final_exit_premium - _closed.entry_premium)
+                            * _closed.lot_size * _closed.lots
+                        )
+                        print(
+                            f"[REAL FILL] EXIT {_closed.contract_symbol} filled "
+                            f"@₹{_final_exit_premium:.2f} qty={_exit_fill.filled_quantity} "
+                            f"actual_pnl=₹{_final_pnl:,.0f} (est ₹{_closed.pnl:,.0f})"
+                        )
+                    else:
+                        _final_exit_premium = _closed.exit_premium
+                        _final_pnl = _closed.pnl
+
+                    # Keep _closed consistent with the executed fill so the JSON trade
+                    # log (as_paper_trade) matches pt_trades and the accounting below.
+                    _closed.exit_premium = _final_exit_premium
+                    _closed.pnl          = _final_pnl
+
+                    # real_armed exit that did not confirm — HALT (broker may still hold).
+                    if (_EXECUTION_MODE == "real_armed"
+                            and (_exit_fill is None or not _exit_fill.is_filled)):
+                        _miss = _exit_fill.status if _exit_fill is not None else "ROUTER_ERROR"
+                        _trading_halted = True
+                        _halt_reason = (
+                            f"REAL_EXIT_UNCONFIRMED {_closed.contract_symbol} status={_miss}"
+                        )
+                        print_warning_block(
+                            "REAL EXIT NOT CONFIRMED — TRADING HALTED",
+                            bar_index=_bar_count,
+                            underlying=_current_state.option_underlying,
+                            contract=_closed.contract_symbol,
+                            reason=_halt_reason + " (reconcile broker position manually)",
+                        )
+                        try:
+                            _db.write_runtime_event(
+                                "REAL_EXIT_UNCONFIRMED", severity="CRITICAL",
+                                message=_halt_reason, equity=_equity,
+                            )
+                        except Exception:
+                            pass
+
+                    # ── Finalize accounting at the final exit price ──
+                    _equity += _final_pnl
                     _peak_equity = max(_peak_equity, _equity)
                     _open_premium_cost = _compute_open_premium_cost()
-                    _daily_pnl += _closed.pnl
-                    if _closed.pnl < 0:
+                    _daily_pnl += _final_pnl
+                    if _final_pnl < 0:
                         _consecutive_losses += 1
                     else:
                         _consecutive_losses = 0
-                    # Record stop-loss cooldown state (prevents immediate re-entry)
+                    # Re-entry cooldown state (keyed on exit_reason, not pnl)
                     if "STOP_LOSS" in str(_closed.exit_reason):
                         _current_state.last_stop_bar      = _bar_count
                         _current_state.last_stop_contract = _closed.contract_symbol
-                    # Record structure-exit cooldown state (chop filter): BOS/CHOCH
-                    # exits previously bypassed the cooldown, causing same-strike churn.
+                    # Structure-exit cooldown state (chop filter): BOS/CHOCH exits
+                    # previously bypassed the cooldown, causing same-strike churn.
                     if "STRUCTURE_EXIT" in str(_closed.exit_reason):
                         _current_state.last_struct_exit_bar      = _bar_count
                         _current_state.last_struct_exit_contract = _closed.contract_symbol
@@ -2931,8 +3037,8 @@ def on_ticks(raw_ticks):
                         lots=_closed.lots,
                         lot_size=_closed.lot_size,
                         entry_premium=_closed.entry_premium,
-                        exit_premium=_closed.exit_premium,
-                        pnl=_closed.pnl,
+                        exit_premium=_final_exit_premium,
+                        pnl=_final_pnl,
                         bars_held=_closed.bars_held,
                         exit_reason=str(_closed.exit_reason),
                         equity=_equity,
@@ -2940,27 +3046,12 @@ def on_ticks(raw_ticks):
                     try:
                         _db.write_trade_exit(
                             underlying=_current_state.option_underlying,
-                            exit_premium=_closed.exit_premium,
-                            pnl=_closed.pnl,
+                            exit_premium=_final_exit_premium,
+                            pnl=_final_pnl,
                             bars_held=_closed.bars_held,
                             exit_reason=str(_closed.exit_reason),
                             exit_ts=datetime.now(timezone.utc).isoformat(),
                             equity_after=_equity,
-                        )
-                    except Exception:
-                        pass
-                    # Execution router exit — paper=no-op, dry-run/real=log exit intent
-                    try:
-                        _exec_router.route_exit(
-                            underlying    = _current_state.option_underlying,
-                            tradingsymbol = _closed.contract_symbol,
-                            lots          = _closed.lots,
-                            lot_size      = _closed.lot_size,
-                            exit_premium  = _closed.exit_premium,
-                            reason        = str(_closed.exit_reason),
-                            session_tag   = _session_tag,
-                            risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
-                            db            = _db,
                         )
                     except Exception:
                         pass
