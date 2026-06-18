@@ -47,15 +47,21 @@ position/PnL/stops run on paper-assumed fills → divergence from broker truth. 
 
 ## Stage 1 checklist
 
-1. [ ] Capture `route_entry`/`route_exit` results (stop discarding them).
-2. [ ] Fill-confirmation loop: poll `get_order_trades(order_id)` → FILLED / PARTIAL /
-       REJECTED / TIMEOUT, with bounded retries.
-3. [ ] Open the position at the ACTUAL average fill price (real modes), not intended.
-4. [ ] Order state machine: PLACED→FILLED/PARTIAL/REJECTED/CANCELLED + each handled.
-5. [ ] Exit symmetry: confirm exit fills (an unfilled exit = still in the market).
+1. [x] Capture `route_entry`/`route_exit` results (stop discarding them). — 81ff60d / 49c7d2b
+2. [x] Fill-confirmation loop (`confirm_fill`): FILLED / PARTIAL / REJECTED / TIMEOUT,
+       bounded retries, cancel-on-timeout. — 359b643 (8 unit tests)
+3. [x] Open the position at the ACTUAL average fill price (real modes). — 81ff60d
+4. [x] Order state machine handled at entry (no-fill ⇒ no position, fail-closed). — 81ff60d
+5. [x] Exit symmetry: confirm exit fills; unconfirmed real exit ⇒ trading_halted +
+       CRITICAL (broker may still hold). EOD close symmetric. — 49c7d2b
 6. [ ] Wire `ReconciliationEngine`: startup + periodic; halt on mismatch.
 7. [ ] Pre-trade margin check via `get_available_margin()`.
-8. [ ] Order type / slippage policy for option entries (market vs limit + cap).
+8. [~] Order type: entries/exits are MARKET orders (router sets order_type=MARKET);
+       slippage cap policy TBD if needed.
+
+Validation note: paper/dry-run behaviour is unchanged by construction (confirm_fill
+synthesizes a FILLED at LTP). Live exercise of the modified entry/exit blocks occurs
+in the next paper session; real orders remain disarmed.
 
 ## Real-money interlocks (the arming wall — Stage 3+)
 
