@@ -265,6 +265,28 @@ class ExecutionRouter:
         # paper / real_dry_run — synthetic immediate fill at the intended premium
         return FillResult("FILLED", fallback_premium, expected_qty, {"synthetic": True})
 
+    # ── Broker state accessors (real_armed only) ──────────────────────────────
+
+    def get_broker_positions(self) -> list[dict]:
+        """Broker net positions (real_armed only).  Paper/dry-run hold no real
+        positions → return [] so position reconciliation is a no-op."""
+        if self.mode != "real_armed":
+            return []
+        try:
+            return self._adapter.get_positions()
+        except Exception:
+            return []
+
+    def get_available_margin(self) -> float:
+        """Available broker margin (real_armed only).  Returns +inf for
+        paper/dry-run so the pre-trade margin gate never blocks simulated fills."""
+        if self.mode != "real_armed":
+            return float("inf")
+        try:
+            return float(self._adapter.get_available_margin())
+        except Exception:
+            return 0.0   # fail-closed: unknown margin blocks the real entry
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
     def startup_print(self) -> None:

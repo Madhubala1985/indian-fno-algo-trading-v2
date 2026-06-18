@@ -550,6 +550,10 @@ _MIN_OI_SUPPORT_TIER23: float = 0.10
 # Prevents entries driven purely by warm-start historical MCB state (no live confirmation).
 _LIVE_BARS_BEFORE_ENTRY: int = 20
 
+# Position reconciliation cadence (real_armed only): reconcile broker vs local
+# positions every N completed bars; a HIGH/CRITICAL break halts trading.
+_RECONCILE_EVERY_BARS: int = int(os.environ.get("RECONCILE_EVERY_BARS", "15") or 15)
+
 # Context-contradiction cooldown: after a context-contradiction rejection fires
 # for an underlying, block new entries on that underlying for N bars.  HARD gate —
 # applies to every profile and every execution mode (paper/real_dry_run/real_armed).
@@ -587,6 +591,7 @@ _MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
 
 import os as _os
 from platform_core.execution.execution_router import ExecutionRouter as _ExecutionRouter
+from platform_core.execution.position_reconciler import reconcile_positions
 from platform_core.execution.gate_profiles import (
     PROFILE_GATE_TABLES as _PROFILE_GATE_TABLES,
     validate_profile_mode as _validate_profile_mode,
@@ -1640,9 +1645,58 @@ except Exception:
 
 # Execution router — mode is paper by default; real_dry_run and real_armed are
 # opt-in via EXECUTION_MODE env var.  Router is always created; paper mode is a no-op.
-_exec_router = _ExecutionRouter(mode=_EXECUTION_MODE)
+# Pass the Kite client so real_armed can place orders + query positions/margin.
+# Paper/dry-run ignore it.  (adapter is the KiteAdapter created at module load.)
+_exec_router = _ExecutionRouter(mode=_EXECUTION_MODE, kite=getattr(adapter, "kite", None))
 _exec_router.startup_print()
 _session_tag: str = _session_ts if "_session_ts" in dir() else "live"
+
+
+def _gather_local_positions() -> list[tuple[str, int, float]]:
+    """(tradingsymbol, net_quantity, entry_premium) for every open local position."""
+    out: list[tuple[str, int, float]] = []
+    for _st in _runtime_by_underlying.values():
+        _pos = _st.option_trader._position
+        if _pos is not None:
+            out.append((_pos.contract_symbol, _pos.lots * _pos.lot_size, _pos.entry_premium))
+    return out
+
+
+def _do_position_reconcile(phase: str) -> bool:
+    """real_armed only: reconcile broker net positions vs local open positions and
+    HALT on a HIGH/CRITICAL break (the pipeline's view has diverged from the
+    broker).  Returns True if ok or skipped (paper/dry-run), False if it halted."""
+    global _trading_halted, _halt_reason
+    if _EXECUTION_MODE != "real_armed":
+        return True
+    try:
+        _broker_pos = _exec_router.get_broker_positions()
+        _local_pos  = _gather_local_positions()
+        _outcome    = reconcile_positions(
+            local_positions=_local_pos, broker_positions=_broker_pos,
+        )
+    except Exception as _exc:
+        print(f"[RECONCILE] {phase} query error: {_exc} (will retry next cycle)")
+        return True
+    if _outcome.ok:
+        print(f"[RECONCILE] {phase} OK  breaks={_outcome.break_count}")
+        return True
+    _trading_halted = True
+    _halt_reason = (
+        f"RECONCILE_BREAK {phase} sev={_outcome.highest_severity} {_outcome.summary}"
+    )
+    print_warning_block(
+        "RECONCILIATION BREAK — TRADING HALTED",
+        bar_index=_bar_count,
+        reason=_halt_reason + " (reconcile broker vs local manually)",
+    )
+    try:
+        _db.write_runtime_event(
+            "RECONCILE_BREAK", severity="CRITICAL", message=_halt_reason, equity=_equity,
+        )
+    except Exception:
+        pass
+    return False
 
 
 ENGINES = {}
@@ -2584,6 +2638,10 @@ def on_ticks(raw_ticks):
             return   # main loop will see _shutdown_triggered and call sys.exit(0)
 
         _bar_count += 1
+
+        # Periodic position reconciliation (real_armed only): broker vs local.
+        if _RECONCILE_EVERY_BARS > 0 and _bar_count % _RECONCILE_EVERY_BARS == 0:
+            _do_position_reconcile("periodic")
 
         # Reset per-bar captures for all enabled targets
         for _st in _runtime_by_underlying.values():
@@ -3649,7 +3707,37 @@ def on_ticks(raw_ticks):
                                             # fill confirmed (real modes open at the
                                             # actual fill price; paper/dry-run at LTP).
                                         _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
-                                        if _entry_ok:
+                                        # ── Pre-trade margin gate (real_armed only) ──
+                                        # Block a real entry if broker margin can't cover the premium cost.
+                                        # paper/dry-run: get_available_margin() returns +inf → never blocks.
+                                        _margin_ok = True
+                                        if _entry_ok and _EXECUTION_MODE == "real_armed":
+                                            _avail_margin = _exec_router.get_available_margin()
+                                            _need_margin  = _srec.last_traded_price * _srec.lot_size * _lots
+                                            if _avail_margin < _need_margin:
+                                                _margin_ok = False
+                                                print_warning_block(
+                                                    "REAL ENTRY BLOCKED — INSUFFICIENT MARGIN",
+                                                    bar_index=_bar_count,
+                                                    underlying=_srec.underlying_symbol,
+                                                    reason=f"available=₹{_avail_margin:,.0f} < need=₹{_need_margin:,.0f}",
+                                                )
+                                                try:
+                                                    _db.write_decision(
+                                                        bar_index=_bar_count,
+                                                        bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                        underlying=_srec.underlying_symbol,
+                                                        bias=str(_mctx.bias),
+                                                        conf_raw=_mctx.confidence,
+                                                        conf_eff=_effective_conf,
+                                                        outcome="REAL_MARGIN_BLOCK",
+                                                        filter_reason=f"avail={_avail_margin:.0f}<need={_need_margin:.0f}",
+                                                        equity=_equity,
+                                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                    )
+                                                except Exception:
+                                                    pass
+                                        if _entry_ok and _margin_ok:
                                             # ── Execute: route order → confirm fill → open at ACTUAL fill ──
                                             # paper/real_dry_run: route is a no-op/log and confirm_fill
                                             # synthesizes a FILLED at the strike LTP (behaviour unchanged).
@@ -3890,6 +3978,10 @@ if not _kite_session_valid:
     )
 else:
     print("[KITE SESSION] Token valid — options pipeline enabled.")
+
+# Startup position reconciliation (real_armed only) — confirm the broker's state
+# matches local/restored state before the first live bar is processed.
+_do_position_reconcile("startup")
 
 adapter.add_tick_callback(on_ticks)
 
