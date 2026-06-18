@@ -3553,74 +3553,20 @@ def on_ticks(raw_ticks):
                                                 f" vs {_current_state.option_underlying} entry={str(_mctx.bias)}"
                                                 f" -> {_bnk_verdict}  (double-check only, non-blocking)"
                                             )
-                                            # ── Open position ─────────────────
-                                            _open_premium_cost += _cost
-                                            _current_state.option_trader.open(
-                                                recommendation=_srec,
-                                                direction=str(_mctx.bias),
-                                                bar_index=_bar_count,
-                                                lots=_lots,
-                                            )
+                                            # Position is opened in the _entry_ok block
+                                            # below — AFTER the order is routed and the
+                                            # fill confirmed (real modes open at the
+                                            # actual fill price; paper/dry-run at LTP).
                                         _tier_label = "SOFT" if _soft_halted else str(_effective_tier)
                                         if _entry_ok:
-                                            # ── Entry print + DB write ─────────
-                                            print_entry_block(
-                                                direction=str(_mctx.bias),
-                                                underlying=_srec.underlying_symbol,
-                                                strike=_srec.strike_price,
-                                                option_type=_srec.option_type,
-                                                expiry=_srec.expiry_date,
-                                                lots=_lots,
-                                                lot_size=_srec.lot_size,
-                                                premium=_srec.last_traded_price,
-                                                notional=_cost,
-                                                bar_index=_bar_count,
-                                                session=str(_session_ctx.phase),
-                                                conf_raw=_mctx.confidence,
-                                                conf_eff=_effective_conf,
-                                                fvg_quality=_current_state.fvg_quality,
-                                                drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                                extra_label=f"TIER{_tier_label}",
-                                            )
+                                            # ── Execute: route order → confirm fill → open at ACTUAL fill ──
+                                            # paper/real_dry_run: route is a no-op/log and confirm_fill
+                                            # synthesizes a FILLED at the strike LTP (behaviour unchanged).
+                                            # real_armed: the real order is placed and confirmed at the real
+                                            # average fill price; if it does not fully fill, NO local position
+                                            # is opened and nothing is written to pt_trades (fail-closed).
                                             try:
-                                                _db.write_trade_entry(
-                                                    underlying=_srec.underlying_symbol,
-                                                    contract_symbol=_srec.option_symbol,
-                                                    strike=_srec.strike_price,
-                                                    option_type=_srec.option_type,
-                                                    expiry_date=_srec.expiry_date.isoformat(),
-                                                    direction=str(_mctx.bias),
-                                                    lots=_lots,
-                                                    lot_size=_srec.lot_size,
-                                                    entry_premium=_srec.last_traded_price,
-                                                    entry_spot=completed_bar.close_price,
-                                                    entry_iv=_current_state.last_atm_iv,
-                                                    entry_bar_index=_bar_count,
-                                                    entry_ts=datetime.now(timezone.utc).isoformat(),
-                                                    conf_raw=_mctx.confidence,
-                                                    conf_eff=_effective_conf,
-                                                    fvg_quality=_current_state.fvg_quality,
-                                                    drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                                    equity_before=_equity,
-                                                )
-                                                _db.write_decision(
-                                                    bar_index=_bar_count,
-                                                    bar_ts=datetime.now(timezone.utc).isoformat(),
-                                                    underlying=_srec.underlying_symbol,
-                                                    bias=str(_mctx.bias),
-                                                    conf_raw=_mctx.confidence,
-                                                    conf_eff=_effective_conf,
-                                                    outcome=f"ENTRY_TIER{_tier_label}",
-                                                    session_phase=str(_session_ctx.phase),
-                                                    fvg_quality=_current_state.fvg_quality,
-                                                    equity=_equity,
-                                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
-                                                )
-                                            except Exception:
-                                                pass
-                                            # Execution router — paper=no-op, dry-run/real=log order intent
-                                            try:
-                                                _exec_router.route_entry(
+                                                _entry_result = _exec_router.route_entry(
                                                     underlying    = _srec.underlying_symbol,
                                                     tradingsymbol = _srec.option_symbol,
                                                     lots          = _lots,
@@ -3648,8 +3594,118 @@ def on_ticks(raw_ticks):
                                                     },
                                                     db = _db,
                                                 )
+                                                _entry_fill = _exec_router.confirm_fill(
+                                                    _entry_result,
+                                                    expected_qty=_lots * _srec.lot_size,
+                                                    fallback_premium=_srec.last_traded_price,
+                                                )
                                             except Exception:
-                                                pass
+                                                _entry_fill = None   # unexpected router error → fail-closed
+
+                                            if _entry_fill is not None and _entry_fill.is_filled:
+                                                _exec_premium = _entry_fill.average_price
+                                                _exec_cost    = _exec_premium * _srec.lot_size * _lots
+                                                _open_premium_cost += _exec_cost
+                                                _current_state.option_trader.open(
+                                                    recommendation=_srec,
+                                                    direction=str(_mctx.bias),
+                                                    bar_index=_bar_count,
+                                                    lots=_lots,
+                                                    entry_premium_override=_exec_premium,
+                                                )
+                                                if _EXECUTION_MODE == "real_armed":
+                                                    print(
+                                                        f"[REAL FILL] ENTRY {_srec.option_symbol} "
+                                                        f"filled @₹{_exec_premium:.2f} qty={_entry_fill.filled_quantity}"
+                                                    )
+                                                # ── Entry print + DB write (at the executed fill price) ──
+                                                print_entry_block(
+                                                    direction=str(_mctx.bias),
+                                                    underlying=_srec.underlying_symbol,
+                                                    strike=_srec.strike_price,
+                                                    option_type=_srec.option_type,
+                                                    expiry=_srec.expiry_date,
+                                                    lots=_lots,
+                                                    lot_size=_srec.lot_size,
+                                                    premium=_exec_premium,
+                                                    notional=_exec_cost,
+                                                    bar_index=_bar_count,
+                                                    session=str(_session_ctx.phase),
+                                                    conf_raw=_mctx.confidence,
+                                                    conf_eff=_effective_conf,
+                                                    fvg_quality=_current_state.fvg_quality,
+                                                    drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                    extra_label=f"TIER{_tier_label}",
+                                                )
+                                                try:
+                                                    _db.write_trade_entry(
+                                                        underlying=_srec.underlying_symbol,
+                                                        contract_symbol=_srec.option_symbol,
+                                                        strike=_srec.strike_price,
+                                                        option_type=_srec.option_type,
+                                                        expiry_date=_srec.expiry_date.isoformat(),
+                                                        direction=str(_mctx.bias),
+                                                        lots=_lots,
+                                                        lot_size=_srec.lot_size,
+                                                        entry_premium=_exec_premium,
+                                                        entry_spot=completed_bar.close_price,
+                                                        entry_iv=_current_state.last_atm_iv,
+                                                        entry_bar_index=_bar_count,
+                                                        entry_ts=datetime.now(timezone.utc).isoformat(),
+                                                        conf_raw=_mctx.confidence,
+                                                        conf_eff=_effective_conf,
+                                                        fvg_quality=_current_state.fvg_quality,
+                                                        drawdown_at_entry=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                        equity_before=_equity,
+                                                    )
+                                                    _db.write_decision(
+                                                        bar_index=_bar_count,
+                                                        bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                        underlying=_srec.underlying_symbol,
+                                                        bias=str(_mctx.bias),
+                                                        conf_raw=_mctx.confidence,
+                                                        conf_eff=_effective_conf,
+                                                        outcome=f"ENTRY_TIER{_tier_label}",
+                                                        session_phase=str(_session_ctx.phase),
+                                                        fvg_quality=_current_state.fvg_quality,
+                                                        equity=_equity,
+                                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                    )
+                                                except Exception:
+                                                    pass
+                                            else:
+                                                # real_armed order did not fully fill — stay flat, open
+                                                # nothing, record the miss (fail-closed).  Unreachable in
+                                                # paper/real_dry_run (confirm_fill always synthesizes FILLED).
+                                                _miss = _entry_fill.status if _entry_fill is not None else "ROUTER_ERROR"
+                                                print_warning_block(
+                                                    "REAL ENTRY NOT FILLED",
+                                                    bar_index=_bar_count,
+                                                    underlying=_srec.underlying_symbol,
+                                                    contract=_srec.option_symbol,
+                                                    reason=f"{_miss} — no local position opened",
+                                                )
+                                                try:
+                                                    _db.write_decision(
+                                                        bar_index=_bar_count,
+                                                        bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                        underlying=_srec.underlying_symbol,
+                                                        bias=str(_mctx.bias),
+                                                        conf_raw=_mctx.confidence,
+                                                        conf_eff=_effective_conf,
+                                                        outcome="REAL_ENTRY_NOT_FILLED",
+                                                        filter_reason=_miss,
+                                                        equity=_equity,
+                                                        drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                    )
+                                                    _db.write_runtime_event(
+                                                        "REAL_ENTRY_NOT_FILLED",
+                                                        severity="WARN",
+                                                        message=f"{_srec.option_symbol} status={_miss}",
+                                                        equity=_equity,
+                                                    )
+                                                except Exception:
+                                                    pass
                             else:
                                 print_warning_block(
                                     "CASH BLOCK",
