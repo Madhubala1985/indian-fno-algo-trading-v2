@@ -360,6 +360,8 @@ class OptionPaperTrader:
         take_profit_pct: float,
         min_dte: int,
         force_reason: str | None = None,
+        bar_low_spot: float | None = None,
+        bar_high_spot: float | None = None,
     ) -> OptionTrade | None:
         pos = self._position
         if pos is None:
@@ -393,6 +395,45 @@ class OptionPaperTrader:
         exit_reason = force_reason
         if exit_reason is None and dte < min_dte:
             exit_reason = f"DTE_MINIMUM (dte={dte})"
+        # Intra-bar gap-protection stop: reprice at the bar's ADVERSE extreme so a
+        # fast move triggers the stop NEAR its level instead of being discovered at
+        # the (worse) close.  A long CALL is hurt by spot falling (use the bar low);
+        # a long PUT by spot rising (use the bar high).  When the adverse extreme
+        # would have breached the stop, model the fill at the stop level so the loss
+        # caps near the intended stop_loss_pct rather than gapping past it.
+        # NOTE: this models a stop order filling at/near its trigger; a true premium
+        # gap could fill worse — a real-money modeling assumption, env-reversible by
+        # simply not passing bar_low_spot/bar_high_spot (defaults preserve old behaviour).
+        if exit_reason is None:
+            _is_call = str(pos.option_type).upper().startswith("C")
+            _adverse_spot = bar_low_spot if _is_call else bar_high_spot
+            if _adverse_spot is not None:
+                try:
+                    _adv = self._greeks_engine.compute(
+                        option_input=OptionGreeksInput(
+                            instrument_id="mtm_adv",
+                            underlying_symbol=pos.underlying_symbol,
+                            option_symbol=pos.contract_symbol,
+                            option_type=pos.option_type,
+                            spot_price=_adverse_spot,
+                            strike_price=pos.strike,
+                            time_to_expiry_years=tte,
+                            implied_volatility=effective_iv,
+                            risk_free_rate=self._risk_free_rate,
+                            dividend_yield=self._dividend_yield,
+                            lot_size=pos.lot_size,
+                        )
+                    )
+                    _adv_premium = max(_adv.option_price, 0.01)
+                except Exception:
+                    _adv_premium = current_premium
+                if _adv_premium <= pos.entry_premium * stop_loss_pct:
+                    current_premium = pos.entry_premium * stop_loss_pct
+                    pct_of_entry = current_premium / max(pos.entry_premium, 0.001)
+                    _ml = 1.0 - stop_loss_pct
+                    exit_reason = (
+                        f"STOP_LOSS max_loss={_ml:.0%} actual_loss={_ml:.0%} (intrabar)"
+                    )
         if exit_reason is None and pct_of_entry <= stop_loss_pct:
             _max_loss = 1.0 - stop_loss_pct
             _actual_loss = 1.0 - pct_of_entry

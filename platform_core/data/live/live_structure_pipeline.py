@@ -2996,6 +2996,8 @@ def on_ticks(raw_ticks):
                     take_profit_pct=_TAKE_PROFIT_PCT,
                     min_dte=_MIN_DTE_TO_HOLD,
                     force_reason=_exit_sig,
+                    bar_low_spot=completed_bar.low_price,
+                    bar_high_spot=completed_bar.high_price,
                 )
                 if _closed is not None:
                     # ── Route the exit + confirm the fill BEFORE finalizing ──
