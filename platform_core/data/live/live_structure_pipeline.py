@@ -532,7 +532,13 @@ _SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
 # already computed in the options context.  Default OFF — enable with
 # GEX_REGIME_GATE=1 for a deliberate A/B paper session before trusting it.
 _GEX_REGIME_GATE:        bool  = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
-_GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.0025") or 0.0025)
+# Widened 2026-06-23: at 0.25% the wall veto never triggered (0 blocks over two
+# 06-19 sessions). 0.5% makes "near a wall" actually meaningful.
+_GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
+# LONG_GAMMA regime veto — the bigger lever: when the GEX gate is enabled, also
+# skip momentum chase-entries in a mean-reverting/pinning (long-gamma) regime.
+# On by default whenever GEX_REGIME_GATE=1; set GEX_REGIME_VETO=0 to test wall-only.
+_GEX_REGIME_VETO:        bool  = (os.environ.get("GEX_REGIME_VETO", "1") == "1")
 
 
 from platform_core.options.gex_gate import gex_wall_block as _gex_wall_block
@@ -3541,6 +3547,7 @@ def on_ticks(raw_ticks):
                                 spot=completed_bar.close_price,
                                 gex=_gx,
                                 proximity_pct=_GEX_WALL_PROXIMITY_PCT,
+                                block_long_gamma=_GEX_REGIME_VETO,
                             )
                             print(
                                 f"[GEX] {_current_state.option_underlying} "

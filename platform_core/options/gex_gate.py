@@ -14,21 +14,36 @@ from __future__ import annotations
 from typing import Any
 
 
-def gex_wall_block(*, bias: Any, spot: float, gex: Any, proximity_pct: float) -> str | None:
-    """Return a block-reason string if the entry is chasing into a gamma wall, else None.
+def gex_wall_block(
+    *,
+    bias: Any,
+    spot: float,
+    gex: Any,
+    proximity_pct: float,
+    block_long_gamma: bool = False,
+) -> str | None:
+    """Return a block-reason string if the entry should be vetoed on GEX, else None.
 
-    - LONG within ``proximity_pct`` *below* a call wall (resistance) → block.
-    - SHORT within ``proximity_pct`` *above* a put wall (support)   → block.
+    Two complementary vetoes (both target chasing a momentum entry into a reversal):
+    - REGIME (when ``block_long_gamma``): in a LONG_GAMMA regime dealers are long
+      gamma → they sell rallies / buy dips → the tape mean-reverts / pins, so a
+      directional momentum chase is low-edge.  Veto any LONG/SHORT entry.
+    - WALL proximity: LONG within ``proximity_pct`` *below* a call wall
+      (resistance) → block; SHORT within ``proximity_pct`` *above* a put wall
+      (support) → block.
 
     Fail-open: missing ``gex``, non-positive ``spot``, or a non-LONG/SHORT bias
     returns None (never blocks) — this is an edge filter, not a safety control.
-    ``gex`` is any object exposing ``call_wall_strike`` / ``put_wall_strike`` /
-    ``net_gamma_regime`` (e.g. GammaExposureSnapshot).
+    ``gex`` exposes ``call_wall_strike`` / ``put_wall_strike`` / ``net_gamma_regime``.
     """
     if gex is None or spot <= 0 or proximity_pct < 0:
         return None
     b = str(bias).upper()
+    if b not in ("LONG", "SHORT"):
+        return None
     regime = getattr(gex, "net_gamma_regime", "?")
+    if block_long_gamma and str(regime).upper() == "LONG_GAMMA":
+        return f"GEX_LONG_GAMMA_REGIME (mean-reverting / pinning — no momentum chase) regime={regime}"
     if b == "LONG":
         cw = getattr(gex, "call_wall_strike", None)
         if cw and cw >= spot and (cw - spot) / spot <= proximity_pct:

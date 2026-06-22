@@ -66,6 +66,43 @@ def test_bad_spot_failopen():
     assert gex_wall_block(bias="LONG", spot=0.0, gex=g, proximity_pct=PCT) is None
 
 
+# ── LONG_GAMMA regime veto (block_long_gamma=True) ──────────────────────────
+
+def test_long_gamma_regime_vetoes_long_far_from_wall():
+    # No wall nearby, but LONG_GAMMA regime + veto on → block the momentum chase.
+    g = FakeGex(call_wall=77600.0, regime="LONG_GAMMA")
+    r = gex_wall_block(bias="LONG", spot=77000.0, gex=g, proximity_pct=PCT,
+                       block_long_gamma=True)
+    assert r is not None and "GEX_LONG_GAMMA_REGIME" in r
+
+
+def test_long_gamma_regime_vetoes_short_too():
+    g = FakeGex(put_wall=76400.0, regime="LONG_GAMMA")
+    r = gex_wall_block(bias="SHORT", spot=77000.0, gex=g, proximity_pct=PCT,
+                       block_long_gamma=True)
+    assert r is not None and "GEX_LONG_GAMMA_REGIME" in r
+
+
+def test_short_gamma_regime_not_vetoed():
+    # SHORT_GAMMA regime + far from wall → no block even with veto on.
+    g = FakeGex(call_wall=77600.0, regime="SHORT_GAMMA")
+    assert gex_wall_block(bias="LONG", spot=77000.0, gex=g, proximity_pct=PCT,
+                          block_long_gamma=True) is None
+
+
+def test_regime_veto_off_by_default():
+    # Same LONG_GAMMA setup but veto flag default (False) → no regime block.
+    g = FakeGex(call_wall=77600.0, regime="LONG_GAMMA")
+    assert gex_wall_block(bias="LONG", spot=77000.0, gex=g, proximity_pct=PCT) is None
+
+
+def test_regime_veto_neutral_bias_failopen():
+    # Veto on, but NEUTRAL bias is not a momentum entry → fail open.
+    g = FakeGex(regime="LONG_GAMMA")
+    assert gex_wall_block(bias="NEUTRAL", spot=77000.0, gex=g, proximity_pct=PCT,
+                          block_long_gamma=True) is None
+
+
 if __name__ == "__main__":
     import sys
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
