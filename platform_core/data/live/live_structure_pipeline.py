@@ -1770,6 +1770,17 @@ ENGINES = {}
 SWING_DETECTORS = {}
 LATEST_HTF_BARS = {}
 
+# Feed-gap structure continuity: per-symbol start_timestamp of the last bar fed
+# to the structure engine. When the gap to the next bar exceeds the threshold
+# (host suspend, feed stall, reconnect hole), that symbol's structure + swing
+# state is reset so no swing/BOS/CHOCH/FVG signal is computed across the
+# discontinuity. NSE/BSE run a continuous 09:15–15:30 session (no lunch break),
+# so any intraday gap this large is a feed problem, never normal.
+_last_struct_bar_ts: dict = {}
+_STRUCTURE_GAP_RESET_MIN: float = float(
+    os.environ.get("LIVE_STRUCTURE_GAP_RESET_MIN", "10") or 10
+)
+
 
 def build_structure_engine(
     symbol: str,
@@ -3010,6 +3021,42 @@ def on_ticks(raw_ticks):
             print(market_context)
 
         
+
+        # ── Feed-gap structure continuity guard ──────────────────────────────
+        # A discontinuity in the 1-minute bar stream (host suspend, feed stall,
+        # reconnect) must NOT be analysed across: swings / BOS / CHOCH / FVG
+        # computed over a multi-hour hole are spurious. If the gap since this
+        # symbol's last bar exceeds the threshold, reset its structure + swing
+        # state so the post-gap bar starts a fresh, clean structure context.
+        _sym         = completed_bar.symbol
+        _prev_bar_ts = _last_struct_bar_ts.get(_sym)
+        _cur_bar_ts  = completed_bar.start_timestamp
+        if _prev_bar_ts is not None:
+            _gap_min = (_cur_bar_ts - _prev_bar_ts).total_seconds() / 60.0
+            if _gap_min > _STRUCTURE_GAP_RESET_MIN:
+                ENGINES[_sym].reset()
+                SWING_DETECTORS[_sym].reset()
+                print(
+                    f"\n{'='*60}\n"
+                    f"[STRUCTURE GAP RESET] {_sym}: {_gap_min:.0f}-min gap in bar "
+                    f"stream (> {_STRUCTURE_GAP_RESET_MIN:.0f}m) — reset structure + "
+                    f"swing state so no signal spans the discontinuity.\n"
+                    f"  last_bar={_prev_bar_ts:%Y-%m-%d %H:%M} "
+                    f"new_bar={_cur_bar_ts:%Y-%m-%d %H:%M} (UTC)\n"
+                    f"{'='*60}"
+                )
+                try:
+                    _db.write_runtime_event(
+                        "STRUCTURE_GAP_RESET",
+                        severity="WARNING",
+                        message=(f"{_sym}: {_gap_min:.0f}-min bar-stream gap; "
+                                 f"structure+swing state reset"),
+                        equity=_equity,
+                        bar_index=_bar_count,
+                    )
+                except Exception:
+                    pass
+        _last_struct_bar_ts[_sym] = _cur_bar_ts
 
         engine = ENGINES[
             completed_bar.symbol
