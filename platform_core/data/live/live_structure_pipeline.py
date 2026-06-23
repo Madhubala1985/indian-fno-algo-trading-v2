@@ -2,6 +2,7 @@ import atexit
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -879,6 +880,11 @@ _soft_halted:            bool        = False
 _soft_halt_reason:       str         = ""
 _consecutive_losses:     int         = 0
 _shutdown_triggered:     bool        = False  # set True by _handle_market_close_shutdown
+# Serializes the market-close shutdown trigger. _handle_market_close_shutdown is
+# reachable from BOTH the WS thread (on_ticks bar-level 15:30 check) and the main
+# thread (watchdog clock), so the check-then-set on _shutdown_triggered must be
+# atomic or both could run _eod_force_close_all() → double-booked EOD close.
+_shutdown_lock:          "threading.Lock" = threading.Lock()
 _shadow_last_bar:        dict        = {}     # {underlying: _bar_count} — shadow rate-limit
 _shadow_counters:        dict        = {}     # {underlying: {attempts,success,no_candidate,failures,last_symbol,last_score}}
 _SHADOW_SUMMARY_EVERY:   int         = 10     # print [SHADOW SUMMARY] every N attempts per underlying
@@ -1157,8 +1163,14 @@ def _save_state() -> bool:
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = _STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2))
-        tmp.replace(_STATE_FILE)   # atomic on POSIX
+        # Flush + fsync before the atomic rename so a power loss between write and
+        # rename cannot leave a torn/empty state file (the account's source of
+        # truth for equity and open positions). replace() is atomic on POSIX.
+        with open(tmp, "w") as _f:
+            _f.write(json.dumps(state, indent=2))
+            _f.flush()
+            os.fsync(_f.fileno())
+        tmp.replace(_STATE_FILE)
         return True
     except Exception as exc:
         print(f"[STATE] Write failed: {exc}")
@@ -2645,9 +2657,12 @@ def _handle_market_close_shutdown(reason: str) -> None:
       7. Return — caller (main loop) calls sys.exit(0).
     """
     global _shutdown_triggered
-    if _shutdown_triggered:
-        return
-    _shutdown_triggered = True
+    # Atomic check-then-set: only the first caller (whichever thread) proceeds to
+    # the EOD force-close; any concurrent second caller returns here.
+    with _shutdown_lock:
+        if _shutdown_triggered:
+            return
+        _shutdown_triggered = True
 
     print(f"\n[MARKET CLOSE] {reason} — forcing EOD close and shutting down cleanly.")
 
@@ -2714,6 +2729,14 @@ def on_ticks(raw_ticks):
 
         if completed_bar is None:
             continue
+
+        # Stop processing the moment a shutdown is triggered — by this thread's
+        # own bar-level 15:30 check below OR the main-thread watchdog clock. This
+        # WS-thread callback mutates account state (equity / positions / state
+        # file); the main thread's EOD force-close mutates the same state, so we
+        # must not keep processing bars concurrently with (or after) shutdown.
+        if _shutdown_triggered:
+            return
 
         # Market-close guard — stop processing bars after 15:30 IST
         _bar_ist = completed_bar.start_timestamp.astimezone(_IST)
