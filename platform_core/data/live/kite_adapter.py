@@ -188,10 +188,25 @@ class KiteAdapter:
                 callback(ticks)
 
         def on_close(ws, code, reason) -> None:
-            self._connected = False
+            # Ignore callbacks from a stale ticker we already replaced during a
+            # reconnect: only the current self.ticker's lifecycle is live. The
+            # socket we just closed fires on_close *late* (async teardown), after
+            # its replacement is already connected — acting on it would flip the
+            # healthy connection's state and schedule a redundant reconnect,
+            # producing a self-perpetuating connect->close->reconnect storm.
+            if ws is not self.ticker:
+                return
             if self._stopping:
+                self._connected = False
                 print(f"\n[KITE] Disconnected (operator request): {code} {reason}")
                 return
+            # A null-code close is pykiteconnect's spurious clean teardown, not a
+            # real network drop (those carry a non-None code, e.g. 1006). Genuine
+            # silent stalls are caught separately by the staleness watchdog via
+            # force_reconnect(), so a code=None here is never a real disconnect.
+            if code is None:
+                return
+            self._connected = False
             print(f"\n[KITE] Connection lost: code={code}  reason={reason!r}")
             self._schedule_reconnect()
 
