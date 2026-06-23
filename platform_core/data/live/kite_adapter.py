@@ -51,7 +51,7 @@ class KiteAdapter:
       suppresses reconnect scheduling.
     """
 
-    _MAX_RECONNECTS:       int   = 5
+    _MAX_RECONNECTS:       int   = 10
     _RECONNECT_BASE_DELAY: float = 2.0    # doubles each attempt, capped at 60 s
 
     def __init__(self) -> None:
@@ -108,14 +108,25 @@ class KiteAdapter:
         self._instrument_tokens = list(instrument_tokens)
         self._stopping = False
         self._reconnect_count = 0
-        self._do_connect()
 
-        timeout = 10.0
-        start = time.time()
-        while not self._connected:
-            if time.time() - start > timeout:
-                raise TimeoutError("Kite WebSocket initial connection timeout (10 s).")
-            time.sleep(0.1)
+        # Retry the initial connect: a transient handshake timeout (code 1006,
+        # "peer did not finish the opening handshake in time") at startup must
+        # not hard-fail the entire pipeline before the market run even begins.
+        _attempts = 3
+        for _attempt in range(1, _attempts + 1):
+            self._do_connect()
+            start = time.time()
+            while not self._connected and time.time() - start < 10.0:
+                time.sleep(0.1)
+            if self._connected:
+                return
+            print(
+                f"[KITE] Initial connect attempt {_attempt}/{_attempts} "
+                f"timed out (10 s)" + (" — retrying…" if _attempt < _attempts else ".")
+            )
+        raise TimeoutError(
+            f"Kite WebSocket initial connection failed after {_attempts} attempts (10 s each)."
+        )
 
     def disconnect(self) -> None:
         """Explicitly close the WebSocket. Suppresses automatic reconnect."""
@@ -150,6 +161,13 @@ class KiteAdapter:
         # Reset the tick clock so the watchdog does not re-fire while the new
         # connection is being established.
         self._last_tick_ts = time.time()
+        # Give the recovery a FRESH reconnect budget. Without this, once the
+        # adapter exhausted _MAX_RECONNECTS (e.g. a long network outage) it would
+        # stay permanently dead: every subsequent _schedule_reconnect() would
+        # no-op on the maxed counter, and the stall watchdog could never revive
+        # the feed. Resetting here guarantees the feed is always recoverable
+        # during market hours (the watchdog's own cooldown prevents spamming).
+        self._reconnect_count = 0
         self._schedule_reconnect()
 
     # ── Internal connection machinery ─────────────────────────────────────────

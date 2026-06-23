@@ -384,12 +384,40 @@ _IST               = timezone(timedelta(hours=5, minutes=30))  # Indian Standard
 _SESSION_CLOSE_TOD = 15 * 60 + 30  # 15:30 IST — market-close shutdown trigger (minutes since midnight)
 
 # ── Virtual account — capital model ──────────────────────────────────────────
-# Configurable via PAPER_STARTING_CAPITAL env var (default ₹10,00,000).
+# Compounding by default: each session starts from the balance carried forward
+# in the state file, so realised profits compound into the capital base and
+# position sizing scales with the growing account. An explicit
+# PAPER_STARTING_CAPITAL always overrides (fresh account / fixed-capital A-B
+# runs); set PAPER_COMPOUND_CAPITAL=0 to disable roll-forward.
 # For real account paper runs: PAPER_STARTING_CAPITAL=300000
 # At < ₹3,00,000 the system sizes to 1 lot per trade and caps simultaneous
 # open positions to 2 to keep portfolio heat under 10%.
 # At < ₹5,00,000 open positions are capped at 2; otherwise the default is 3.
-_INITIAL_EQUITY: float = float(os.environ.get("PAPER_STARTING_CAPITAL", "1000000"))
+_STATE_FILE_PATH:   str  = "logs/paper_trading_state.json"
+_COMPOUND_CAPITAL:  bool = (os.environ.get("PAPER_COMPOUND_CAPITAL", "1") == "1")
+_EXPLICIT_CAPITAL:  bool = (os.environ.get("PAPER_STARTING_CAPITAL") is not None)
+
+
+def _resolve_initial_equity() -> float:
+    """Capital basis for this session.
+
+    Explicit PAPER_STARTING_CAPITAL wins. Otherwise, in compounding mode, roll
+    forward from the state file's current equity (the balance we ended the last
+    session on). Falls back to the fixed default only when there is no state.
+    """
+    if _EXPLICIT_CAPITAL:
+        return float(os.environ["PAPER_STARTING_CAPITAL"])
+    if _COMPOUND_CAPITAL:
+        try:
+            _eq = float(json.loads(Path(_STATE_FILE_PATH).read_text())["equity"])
+            if _eq > 0:
+                return _eq
+        except Exception:
+            pass
+    return 1_000_000.0
+
+
+_INITIAL_EQUITY: float = _resolve_initial_equity()
 
 # Capital-tier simultaneous position limit.  Prevents portfolio heat breaching
 # 10% at small capital (e.g. 2 × 1-lot SENSEX ≈ 7.6% heat at ₹300k).
@@ -1180,7 +1208,15 @@ def _load_state() -> None:
         float(_state_capital_raw) if _state_capital_raw is not None else peak
     )
     _state_capital_src = "state" if _state_capital_raw is not None else "inferred_from_peak"
-    if abs(_state_capital - _INITIAL_EQUITY) > 0.5:
+    if _COMPOUND_CAPITAL and not _EXPLICIT_CAPITAL:
+        # Compounding: the session basis was already rolled forward to the
+        # state's current equity at startup, so continuing is intended — no
+        # fixed-capital match is required. Realised P&L compounds into the base.
+        print(
+            f"[STATE CAPITAL] compounding — session starts from carried balance "
+            f"₹{eq:,.0f} (peak ₹{peak:,.0f}, basis ₹{_INITIAL_EQUITY:,.0f})"
+        )
+    elif abs(_state_capital - _INITIAL_EQUITY) > 0.5:
         _has_open_positions = bool(pos_raw) or any(
             v for v in (new_positions_raw or {}).values()
         )
@@ -4067,9 +4103,43 @@ _SESSION_OPEN_TOD:    int   = 9 * 60 + 15   # 09:15 IST
 _TICK_STALE_SECONDS:  float = float(_os.environ.get("LIVE_TICK_STALE_SECONDS", "120") or 120)
 _STALL_ACTION_COOLDOWN: float = 60.0        # min seconds between forced reconnects
 _last_stall_action_ts: float = 0.0
+# Host-suspend detection: this loop sleeps 1 s per tick, so a wall-clock jump
+# far larger than that means the process did not run — the host was suspended
+# (laptop sleep / WSL pause). Proven 2026-06-23: a ~2.8 h suspend froze the feed
+# mid-session with no warning. We flag the gap loudly, record it, and force a
+# clean reconnect on resume so a silent data gap can never pass unnoticed.
+_SUSPEND_GAP_SECONDS: float = 90.0
+_last_loop_wall:      float = time.time()
 
 while True:
     time.sleep(1)
+    _loop_gap = time.time() - _last_loop_wall
+    _last_loop_wall = time.time()
+    if _loop_gap > _SUSPEND_GAP_SECONDS:
+        _resumed_ist = datetime.now(_IST)
+        print(
+            f"\n{'='*60}\n"
+            f"[HOST SUSPEND DETECTED] Main loop stalled {_loop_gap:.0f}s "
+            f"(probable machine sleep) — feed + bar stream have a DATA GAP.\n"
+            f"  resumed_at={_resumed_ist:%Y-%m-%d %H:%M:%S} IST — forcing reconnect.\n"
+            f"{'='*60}"
+        )
+        try:
+            _db.write_runtime_event(
+                "HOST_SUSPEND_GAP",
+                severity="CRITICAL",
+                message=(f"main loop stalled {_loop_gap:.0f}s (probable host sleep); "
+                         f"data gap; forcing reconnect"),
+                equity=_equity,
+                bar_index=_bar_count,
+            )
+        except Exception:
+            pass
+        try:
+            adapter.force_reconnect(f"host suspend gap {_loop_gap:.0f}s")
+        except Exception as _susp_exc:
+            print(f"[HOST SUSPEND] force_reconnect failed: {_susp_exc}")
+        _last_stall_action_ts = time.time()
     if _shutdown_triggered:
         sys.exit(0)
     _now_ist = datetime.now(_IST)

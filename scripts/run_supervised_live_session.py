@@ -377,11 +377,12 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         if not args.capital and "PAPER_STARTING_CAPITAL" not in env:
             env["PAPER_STARTING_CAPITAL"] = "400000"
 
-    # Capital
+    # Capital — compounding by default: when no explicit --capital is given,
+    # leave PAPER_STARTING_CAPITAL unset so the pipeline rolls the basis forward
+    # from the state file's current equity (realised profits compound into the
+    # capital base). An explicit --capital still pins a fixed basis.
     if args.capital:
         env["PAPER_STARTING_CAPITAL"] = str(args.capital)
-    elif "PAPER_STARTING_CAPITAL" not in env:
-        env["PAPER_STARTING_CAPITAL"] = "300000"
 
     # Risk profile
     if "PAPER_RISK_PROFILE" not in env:
@@ -563,17 +564,26 @@ def main() -> int:
 
     env  = build_env(args)
 
-    # Capital/state consistency: never silently continue an old-capital state.
+    # Capital/state consistency.
     _heading("STATE CAPITAL RESOLUTION")
-    _requested_capital = float(env.get("PAPER_STARTING_CAPITAL", "0") or 0)
-    _action, _detail = resolve_state_capital(_requested_capital)
-    if _action == "refuse":
-        _fail(f"[STATE CAPITAL] {_detail}")
-        print("\n[SUPERVISOR] State capital conflict — fix state before starting.")
-        return 1
-    _ok(f"[STATE CAPITAL] action={_action}: {_detail}")
-    # Defense-in-depth: the pipeline's own _load_state() guard stays fail-closed.
-    env["PAPER_STATE_CAPITAL_MISMATCH"] = "refuse"
+    if "PAPER_STARTING_CAPITAL" in env:
+        # Explicit fixed-capital basis requested — never silently continue an
+        # old-capital state; resolve or refuse.
+        _requested_capital = float(env.get("PAPER_STARTING_CAPITAL", "0") or 0)
+        _action, _detail = resolve_state_capital(_requested_capital)
+        if _action == "refuse":
+            _fail(f"[STATE CAPITAL] {_detail}")
+            print("\n[SUPERVISOR] State capital conflict — fix state before starting.")
+            return 1
+        _ok(f"[STATE CAPITAL] action={_action}: {_detail}")
+        # Defense-in-depth: the pipeline's own _load_state() guard stays fail-closed.
+        env["PAPER_STATE_CAPITAL_MISMATCH"] = "refuse"
+    else:
+        # Compounding (default): the pipeline rolls the capital basis forward
+        # from the carried balance in logs/paper_trading_state.json. Nothing to
+        # reconcile — realised P&L compounds into the base.
+        _ok("[STATE CAPITAL] compounding — session starts from the carried "
+            "balance in logs/paper_trading_state.json (no fixed capital basis).")
 
     proc = start_pipeline(env)
 

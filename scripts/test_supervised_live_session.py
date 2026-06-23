@@ -162,7 +162,8 @@ for k in ("PAPER_GATE_PROFILE", "PAPER_STARTING_CAPITAL", "PAPER_RISK_PROFILE", 
 env = _build_env(_args)
 check("PAPER_GATE_PROFILE defaulted to 'default'", env.get("PAPER_GATE_PROFILE") == "default",
       f"got {env.get('PAPER_GATE_PROFILE')}")
-check("PAPER_STARTING_CAPITAL defaulted to '300000'", env.get("PAPER_STARTING_CAPITAL") == "300000",
+check("PAPER_STARTING_CAPITAL left unset (compounding default — pipeline rolls "
+      "the basis forward from state equity)", env.get("PAPER_STARTING_CAPITAL") is None,
       f"got {env.get('PAPER_STARTING_CAPITAL')}")
 check("PAPER_RISK_PROFILE defaulted to 'balanced'", env.get("PAPER_RISK_PROFILE") == "balanced",
       f"got {env.get('PAPER_RISK_PROFILE')}")
