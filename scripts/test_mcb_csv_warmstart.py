@@ -60,7 +60,18 @@ def _find_csv(key: str) -> Path | None:
         p for p in DATA_DIR.glob(f"{prefix}_1m_*.csv")
         if p.stat().st_size >= 50_000
     ]
-    return max(candidates, key=lambda p: p.name) if candidates else None
+    if not candidates:
+        return None
+    # Match production _find_warmstart_csv: select by latest END date (most
+    # history through the most recent day), tie-broken by larger file. Sorting
+    # by full filename instead keys on the START date and picks a SHORTER
+    # window, which under-seeds the 4h/1d timeframes and caused false failures
+    # while production was actually selecting the longer (ready) CSV.
+    import re
+    def _end_key(p: Path):
+        m = re.search(r"_1m_[0-9-]+_([0-9-]+)\.csv$", p.name)
+        return (m.group(1) if m else "", p.stat().st_size)
+    return max(candidates, key=_end_key)
 
 
 def _load_bars(csv_path: Path, feed_symbol: str) -> list[LiveBar]:
