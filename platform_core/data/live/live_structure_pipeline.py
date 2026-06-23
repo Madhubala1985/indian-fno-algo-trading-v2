@@ -572,7 +572,13 @@ _GEX_REGIME_VETO:        bool  = (os.environ.get("GEX_REGIME_VETO", "1") == "1")
 from platform_core.options.gex_gate import gex_wall_block as _gex_wall_block
 
 # Tier transition thresholds (deterministic, evaluated per bar)
-_TIER1_DD_ENTRY:  float = 0.05    # enter Tier 1 when drawdown exceeds 5%
+# Defensive Tier 1 (hard-capped at _TIER1_MAX_LOTS=1) only engages on a genuine
+# deeper drawdown. Raised 0.05 -> 0.10 on 2026-06-23 (user): a lingering ~5%
+# drawdown from a week-old peak was holding the account in 1-lot defensive mode
+# even on high-conviction setups, suppressing full multi-lot (Tier 2) sizing.
+# The per-trade 30% stop, daily-loss circuit breaker, portfolio-heat and
+# max-open-position caps remain the active risk controls below this threshold.
+_TIER1_DD_ENTRY:  float = float(os.environ.get("TIER1_DD_ENTRY", "0.10") or 0.10)
 _TIER3_MIN_GAIN:  float = 0.03    # Tier 3 requires equity > initial × 1.03
 _TIER3_MAX_DD:    float = 0.025   # Tier 3 ineligible when drawdown ≥ 2.5%
 _TIER3_CONF_GATE: float = 0.65    # Tier 3 requires confidence ≥ 65%
