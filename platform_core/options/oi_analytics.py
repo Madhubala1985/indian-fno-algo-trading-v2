@@ -436,6 +436,12 @@ class OIAnalyticsEngine:
     ) -> list[OIClusterLevel]:
         if option_type not in {"CALL", "PUT"}:
             raise OIAnalyticsInputError("option_type must be CALL or PUT")
+        if spot_price <= 0.0:
+            # Degenerate/missing spot (e.g. a stale pre-open snapshot): the
+            # distance-from-spot ratio below is undefined. Return no OI cluster
+            # levels rather than raise ZeroDivisionError and break the whole
+            # options-context build mid-session.
+            return []
         ranked_profiles = sorted(
             profiles,
             key=lambda profile: (
