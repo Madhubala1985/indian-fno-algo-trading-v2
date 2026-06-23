@@ -26,7 +26,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import sqlite3
@@ -191,27 +190,31 @@ def check_lifecycle_validator() -> bool:
 
 
 def check_paper_trades() -> bool:
-    trades_path = LOGS_DIR / "paper_trades.csv"
-    if not trades_path.exists():
-        _fail("paper_trades.csv not found — no completed paper trades yet")
+    # Count from the DB, not paper_trades.csv: the CSV has no session_id/entry_ts
+    # columns (just symbol,direction,entry_price,exit_price,quantity,pnl), so the
+    # old CSV-based session count always collapsed to 0 and could never pass.
+    # pt_trades.session_id is the authoritative per-session key.
+    db_path = LOGS_DIR / "trades.db"
+    if not db_path.exists():
+        _fail("trades.db not found — no completed paper trades yet")
         return False
-    rows = []
-    with trades_path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            rows.append(row)
-    if len(rows) < 5:
-        _fail(f"Only {len(rows)} completed paper trades — need at least 5 across ≥2 sessions")
+    con = sqlite3.connect(str(db_path))
+    try:
+        n = con.execute(
+            "SELECT COUNT(*) FROM pt_trades WHERE state = 'CLOSED'"
+        ).fetchone()[0]
+        sessions = con.execute(
+            "SELECT COUNT(DISTINCT session_id) FROM pt_trades WHERE state = 'CLOSED'"
+        ).fetchone()[0]
+    finally:
+        con.close()
+    if n < 5:
+        _fail(f"Only {n} completed paper trades — need at least 5 across ≥2 sessions")
         return False
-    # Count unique sessions (by session_id if present, else approximate by date)
-    sessions = set()
-    for r in rows:
-        sid = r.get("session_id") or r.get("entry_ts", "")[:10]
-        if sid:
-            sessions.add(sid[:10])
-    if len(sessions) < 2:
-        _fail(f"{len(rows)} trades but only {len(sessions)} session(s) — need ≥2 sessions")
+    if sessions < 2:
+        _fail(f"{n} completed trades but only {sessions} session(s) — need ≥2 sessions")
         return False
-    _ok(f"{len(rows)} paper trades across {len(sessions)} session(s)")
+    _ok(f"{n} completed paper trades across {sessions} session(s)")
     return True
 
 

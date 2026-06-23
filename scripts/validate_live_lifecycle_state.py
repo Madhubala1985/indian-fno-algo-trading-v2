@@ -107,6 +107,7 @@ def _check_db(db_path: str) -> tuple[dict[str, list[dict]], dict[str, list[dict]
     """
     open_by:   dict[str, list[dict]] = {}
     closed_by: dict[str, list[dict]] = {}
+    voided_by: dict[str, list[dict]] = {}
 
     if not Path(db_path).exists():
         rpt.warn("DB", f"File not found: {db_path}  (no trades yet, or wrong path)")
@@ -142,8 +143,22 @@ def _check_db(db_path: str) -> tuple[dict[str, list[dict]], dict[str, list[dict]
             und = row.get("underlying", "UNKNOWN")
             if row["state"] == "OPEN":
                 open_by.setdefault(und, []).append(row)
-            else:
+            elif row["state"] == "CLOSED":
                 closed_by.setdefault(und, []).append(row)
+            else:
+                # VOID / cancelled trades were never exited — they legitimately
+                # carry no exit_premium/pnl/exit_ts and are absent from the
+                # completed-trades CSV. Exclude them from closed-completeness and
+                # CSV-reconciliation checks (a void is not an incomplete close).
+                voided_by.setdefault(und, []).append(row)
+
+        for und, rows_list in voided_by.items():
+            rpt.info(
+                "DB",
+                f"{und}: {len(rows_list)} VOID row(s) "
+                f"(ids={[r['id'] for r in rows_list]}) — excluded from exit-field "
+                f"and CSV checks",
+            )
 
         # Check 1a: no more than 1 OPEN per underlying
         for und, rows_list in open_by.items():
