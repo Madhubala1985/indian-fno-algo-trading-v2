@@ -177,18 +177,33 @@ check("profile table carries only soft thresholds (no contradiction switch)",
 
 
 # ── Test 4: unlock does not lower OI hard floor ───────────────────────────────
-print("\n[Test 4] paper_trade_unlock keeps OI floor at 0.10")
+print("\n[Test 4] DEFAULT (real-money) profile keeps strict OI floor 0.10; "
+      "paper_trade_unlock relaxes per-underlying (paper-only)")
 
+# Real-money safety invariant: the default profile (the one real_armed uses)
+# keeps the strict 0.10 OI-support floor for every underlying.
 for und in ("BANKNIFTY", "NIFTY", "SENSEX"):
-    check(f"{und} oi_support_min stays 0.10",
-          abs(PROFILE_GATE_TABLES["paper_trade_unlock"][und]["oi_support"] - 0.10) < 1e-9)
+    check(f"DEFAULT {und} oi_support_min stays strict 0.10",
+          abs(PROFILE_GATE_TABLES["default"][und]["oi_support"] - 0.10) < 1e-9)
 
+# paper_trade_unlock intentionally recalibrates oi_support per-underlying
+# (paper/real_dry_run ONLY — oi_support is a relative-popularity ratio that is
+# structurally tiny for delta-targeted SENSEX/NIFTY strikes; the absolute-
+# liquidity gate [B3b] is the real arbiter). Values documented in gate_profiles.py.
+_unlock_oi = {"BANKNIFTY": 0.05, "NIFTY": 0.005, "SENSEX": 0.005}
+for und, floor in _unlock_oi.items():
+    check(f"unlock {und} oi_support recalibrated to {floor}",
+          abs(PROFILE_GATE_TABLES["paper_trade_unlock"][und]["oi_support"] - floor) < 1e-9)
+
+# The near-miss CLASSIFIER still flags low OI diagnostically even though the
+# unlock soft-gate now passes it (classification != gating).
 res_oi = _nm.classify_near_miss(_row(factor_scores={"oi_support": 0.05}))
 check("oi=0.05 → UNSAFE_NEAR_MISS", res_oi["classification"] == "UNSAFE_NEAR_MISS")
 check("LOW_OI flagged", any("LOW_OI" in r for r in res_oi["unsafe_reasons"]))
-check("oi=0.05 fails soft gates even under unlock",
+# Real-money gate still works: oi=0.05 < 0.10 fails under the DEFAULT profile.
+check("oi=0.05 fails soft gates under DEFAULT (real-money) profile",
       not _nm.soft_gates_pass(_row(factor_scores={"oi_support": 0.05}),
-                              "paper_trade_unlock"))
+                              "default"))
 
 
 # ── Test 5: unlock does not disable risk / heat gates ────────────────────────
@@ -262,9 +277,12 @@ try:
     env_def = _runner.build_env(SimpleNamespace(
         profile="", capital=0, execution_mode="paper",
     ))
-    check("default profile unaffected (capital stays 300000)",
+    # Compounding default (commit 8204ec6): with no --capital the supervisor
+    # leaves PAPER_STARTING_CAPITAL unset so the pipeline rolls the capital basis
+    # forward from the state file's current equity (profits compound into base).
+    check("default profile compounds (no fixed PAPER_STARTING_CAPITAL)",
           env_def.get("PAPER_GATE_PROFILE") == "default"
-          and env_def.get("PAPER_STARTING_CAPITAL") == "300000"
+          and env_def.get("PAPER_STARTING_CAPITAL") is None
           and "PAPER_TIER2_RISK_FRAC" not in env_def)
 finally:
     for k, v in _saved.items():
