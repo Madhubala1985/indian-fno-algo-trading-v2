@@ -3597,9 +3597,14 @@ def on_ticks(raw_ticks):
                             f"bars_since={_bars_since_struct}/{_SAME_CONTRACT_STRUCT_COOLDOWN_BARS}"
                         )
 
-                    # [B3] Confluence hard floor (Tier2/3): OI support is a HARD
-                    # gate and must reject BEFORE sizing / order-intent creation.
-                    # No gate profile may relax it below the 0.10 floor.
+                    # [B3] Confluence floor (Tier2/3): the per-underlying
+                    # oi_support floor (profile-resolved) rejects BEFORE sizing /
+                    # order-intent creation. NOTE: this RELATIVE-OI floor is a
+                    # weak proxy — the real liquidity protection is the [B3b]
+                    # ABSOLUTE-liquidity gate below (min_abs_oi + min_liquidity),
+                    # which applies to every profile/mode and is never relaxed.
+                    # (SENSEX floor is 0.005 by default — its relative ratio is
+                    # structurally tiny; the abs gate is what guards liquidity.)
                     _pre_oi_supp = getattr(
                         getattr(_srec, "breakdown", None), "oi_support", 1.0
                     )
