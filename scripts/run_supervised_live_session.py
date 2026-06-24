@@ -415,8 +415,21 @@ def start_pipeline(env: dict[str, str]) -> subprocess.Popen:
     _info(f"Risk           : PAPER_RISK_PROFILE={env.get('PAPER_RISK_PROFILE')}")
     print()
     # Explicit config banner (the pipeline prints its own authoritative copy)
-    _capital = float(env.get("PAPER_STARTING_CAPITAL", "0") or 0)
-    print(f"[CAPITAL CONFIG] starting_capital=₹{_capital:,.0f}")
+    if env.get("PAPER_STARTING_CAPITAL"):
+        _capital = float(env["PAPER_STARTING_CAPITAL"])
+        print(f"[CAPITAL CONFIG] starting_capital=₹{_capital:,.0f}")
+    else:
+        # Compounding: no fixed PAPER_STARTING_CAPITAL — the pipeline rolls the
+        # basis forward from the state file's current equity. Show that carried
+        # balance rather than a misleading ₹0.
+        try:
+            _carried = float(json.loads(
+                (LOGS_DIR / "paper_trading_state.json").read_text())["equity"])
+            print(f"[CAPITAL CONFIG] starting_capital=₹{_carried:,.0f} "
+                  f"(compounding — carried balance)")
+        except Exception:
+            print("[CAPITAL CONFIG] starting_capital=compounding (carried "
+                  "balance from state file)")
     _tier2 = float(env.get("PAPER_TIER2_RISK_FRAC", "0") or 0)
     if _tier2 > 0:
         print(f"[RISK CONFIG] tier2={_tier2 * 100:.1f}%")
