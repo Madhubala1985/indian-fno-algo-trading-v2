@@ -33,7 +33,15 @@ PROFILE_GATE_TABLES: dict[str, dict[str, dict[str, float]]] = {
     "default": {
         "BANKNIFTY": {"score_margin": 0.05, "oi_support": 0.10},
         "NIFTY":     {"score_margin": 0.05, "oi_support": 0.10},
-        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},
+        # SENSEX oi_support recalibrated 0.10 -> 0.005 (2026-06-24). oi_support is
+        # a RELATIVE-popularity ratio (selected_strike_OI / chain_max_OI) that is
+        # structurally tiny for delta-targeted SENSEX strikes on the BSE chain
+        # (measured live: 0.006-0.061, max ~0.025 median) — so the flat 0.10 floor
+        # false-rejected EVERY SENSEX entry (104/132 decisions on 2026-06-24 →
+        # zero SENSEX trades). The ABSOLUTE-liquidity gate ([B3b]: min_abs_oi=3000
+        # + liquidity>=0.50) is the real arbiter of tradeable SENSEX liquidity and
+        # is unchanged. NIFTY/BANKNIFTY keep 0.10 (their ratios clear it).
+        "SENSEX":    {"score_margin": 0.05, "oi_support": 0.005},
     },
     "banknifty_experiment": {
         "BANKNIFTY": {"score_margin": 0.03, "oi_support": 0.10},

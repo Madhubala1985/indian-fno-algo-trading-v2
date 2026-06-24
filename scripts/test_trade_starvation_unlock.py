@@ -177,14 +177,17 @@ check("profile table carries only soft thresholds (no contradiction switch)",
 
 
 # ── Test 4: unlock does not lower OI hard floor ───────────────────────────────
-print("\n[Test 4] DEFAULT (real-money) profile keeps strict OI floor 0.10; "
-      "paper_trade_unlock relaxes per-underlying (paper-only)")
+print("\n[Test 4] DEFAULT profile OI floors: NIFTY/BANKNIFTY strict 0.10, "
+      "SENSEX recalibrated 0.005 (relative-OI false-reject; abs-liquidity gate backstops)")
 
-# Real-money safety invariant: the default profile (the one real_armed uses)
-# keeps the strict 0.10 OI-support floor for every underlying.
-for und in ("BANKNIFTY", "NIFTY", "SENSEX"):
-    check(f"DEFAULT {und} oi_support_min stays strict 0.10",
-          abs(PROFILE_GATE_TABLES["default"][und]["oi_support"] - 0.10) < 1e-9)
+# NIFTY/BANKNIFTY keep the strict 0.10 relative-OI floor (their ratios clear it).
+# SENSEX is recalibrated to 0.005 because its relative-OI ratio is structurally
+# tiny on the BSE chain (the flat 0.10 false-rejected EVERY SENSEX entry); the
+# absolute-liquidity gate (min_abs_oi=3000 + liquidity>=0.50) is the real arbiter.
+_default_oi = {"BANKNIFTY": 0.10, "NIFTY": 0.10, "SENSEX": 0.005}
+for und, floor in _default_oi.items():
+    check(f"DEFAULT {und} oi_support_min == {floor}",
+          abs(PROFILE_GATE_TABLES["default"][und]["oi_support"] - floor) < 1e-9)
 
 # paper_trade_unlock intentionally recalibrates oi_support per-underlying
 # (paper/real_dry_run ONLY — oi_support is a relative-popularity ratio that is

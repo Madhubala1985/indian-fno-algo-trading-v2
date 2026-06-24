@@ -45,7 +45,9 @@ def _import_pipeline_gate_tables(profile: str, env_overrides: dict[str, str] | N
         "default": {
             "BANKNIFTY": {"score_margin": 0.05, "oi_support": 0.10},
             "NIFTY":     {"score_margin": 0.05, "oi_support": 0.10},
-            "SENSEX":    {"score_margin": 0.05, "oi_support": 0.10},
+            # SENSEX recalibrated 0.10 -> 0.005 (relative-OI false-reject; the
+            # absolute-liquidity gate is the real arbiter). See gate_profiles.py.
+            "SENSEX":    {"score_margin": 0.05, "oi_support": 0.005},
         },
         "banknifty_experiment": {
             "BANKNIFTY": {"score_margin": 0.03, "oi_support": 0.10},
@@ -87,7 +89,7 @@ check("default NIFTY score_margin=0.05", abs(sm["NIFTY"]    - 0.05) < 1e-9, f"go
 check("default SENSEX score_margin=0.05",abs(sm["SENSEX"]   - 0.05) < 1e-9, f"got {sm['SENSEX']}")
 check("default BNK oi_support=0.10",    abs(oi["BANKNIFTY"] - 0.10) < 1e-9, f"got {oi['BANKNIFTY']}")
 check("default NIFTY oi_support=0.10",  abs(oi["NIFTY"]    - 0.10) < 1e-9, f"got {oi['NIFTY']}")
-check("default SENSEX oi_support=0.10", abs(oi["SENSEX"]   - 0.10) < 1e-9, f"got {oi['SENSEX']}")
+check("default SENSEX oi_support=0.005", abs(oi["SENSEX"]   - 0.005) < 1e-9, f"got {oi['SENSEX']}")
 
 # ── Test 2: banknifty_experiment ───────────────────────────────────────────────
 print("\n[Test 2] banknifty_experiment — only BANKNIFTY margin changed")
@@ -107,11 +109,14 @@ check("sml_cap NIFTY oi=0.08",          abs(oi["NIFTY"]    - 0.08) < 1e-9, f"got
 check("sml_cap SENSEX score_margin=0.05 (STRICT)", abs(sm["SENSEX"] - 0.05) < 1e-9, f"got {sm['SENSEX']}")
 check("sml_cap SENSEX oi=0.10 (STRICT)",           abs(oi["SENSEX"] - 0.10) < 1e-9, f"got {oi['SENSEX']}")
 
-# ── Test 4: SENSEX always strict unless explicit env override ─────────────────
-print("\n[Test 4] SENSEX remains strict in all profiles; changes only via explicit env")
+# ── Test 4: SENSEX score_margin strict; oi recalibrated only in default ───────
+print("\n[Test 4] SENSEX score_margin strict in all profiles; default oi recalibrated to 0.005")
 for prof in ("default", "banknifty_experiment", "small_capital_experiment"):
     sm, oi = _import_pipeline_gate_tables(prof)
-    check(f"SENSEX strict in {prof}", abs(sm["SENSEX"] - 0.05) < 1e-9 and abs(oi["SENSEX"] - 0.10) < 1e-9)
+    # default SENSEX oi recalibrated 0.10 -> 0.005 (2026-06-24); experiments still 0.10.
+    _exp_oi = 0.005 if prof == "default" else 0.10
+    check(f"SENSEX in {prof} (sm=0.05, oi={_exp_oi})",
+          abs(sm["SENSEX"] - 0.05) < 1e-9 and abs(oi["SENSEX"] - _exp_oi) < 1e-9)
 
 # SENSEX CAN be overridden by explicit env var
 sm_env, oi_env = _import_pipeline_gate_tables(
@@ -197,10 +202,13 @@ for s in ("BANKNIFTY", "NIFTY", "SENSEX"):
           abs(t["score_margin"] - 0.015) < 1e-9
           and abs(t["oi_support"] - _PTU_EXPECTED_OI[s]) < 1e-9,
           f"got sm={t['score_margin']} oi={t['oi_support']}")
-# DEFAULT profile oi_support must remain strict 0.10 (real-funds safety)
+# DEFAULT oi_support: NIFTY/BANKNIFTY strict 0.10; SENSEX recalibrated to 0.005
+# (its relative-OI ratio is structurally tiny → 0.10 false-rejected every SENSEX
+# entry; the absolute-liquidity gate min_abs_oi=3000 is the real arbiter).
+_DEFAULT_EXPECTED_OI = {"BANKNIFTY": 0.10, "NIFTY": 0.10, "SENSEX": 0.005}
 for s in ("BANKNIFTY", "NIFTY", "SENSEX"):
-    check(f"default {s} oi_support stays 0.10 (real-funds strict)",
-          abs(_REAL_TABLES["default"][s]["oi_support"] - 0.10) < 1e-9)
+    check(f"default {s} oi_support == {_DEFAULT_EXPECTED_OI[s]}",
+          abs(_REAL_TABLES["default"][s]["oi_support"] - _DEFAULT_EXPECTED_OI[s]) < 1e-9)
 
 _ok_armed, _reason = _real_validate("paper_trade_unlock", "real_armed")
 check("paper_trade_unlock rejected under real_armed", not _ok_armed, _reason[:60])
