@@ -885,14 +885,13 @@ _shutdown_triggered:     bool        = False  # set True by _handle_market_close
 # thread (watchdog clock), so the check-then-set on _shutdown_triggered must be
 # atomic or both could run _eod_force_close_all() → double-booked EOD close.
 _shutdown_lock:          "threading.Lock" = threading.Lock()
-# Serializes ALL account-state mutation between the WS thread (on_ticks per-bar
-# processing: open/close positions, equity/peak/daily_pnl/state writes) and the
-# main thread (market-close / EOD force-close, which mutates the same state).
-# RLock (reentrant): the WS thread holds it for a tick batch and re-enters it via
-# the bar-level 15:30 check -> _handle_market_close_shutdown -> _eod_force_close_all.
-# Lock order is deadlock-free: the shutdown flag (_shutdown_lock) is always
-# released before _account_lock is acquired.
-_account_lock:           "threading.RLock" = threading.RLock()
+# NOTE: a previous attempt to serialize WS-thread bar processing against the
+# main-thread EOD close via an _account_lock held across the whole on_ticks batch
+# DEADLOCKED after a WS reconnect (two ticker threads contend on the lock; the
+# adapter's pre-callback liveness stamp hid it from the stall watchdog). Reverted
+# 2026-06-24. The market-close double-invocation is still guarded atomically by
+# _shutdown_lock above; full bar/EOD serialization needs a non-blocking design
+# (e.g. a single-consumer tick queue), not a lock around the callback.
 _shadow_last_bar:        dict        = {}     # {underlying: _bar_count} — shadow rate-limit
 _shadow_counters:        dict        = {}     # {underlying: {attempts,success,no_candidate,failures,last_symbol,last_score}}
 _SHADOW_SUMMARY_EVERY:   int         = 10     # print [SHADOW SUMMARY] every N attempts per underlying
@@ -2674,12 +2673,8 @@ def _handle_market_close_shutdown(reason: str) -> None:
 
     print(f"\n[MARKET CLOSE] {reason} — forcing EOD close and shutting down cleanly.")
 
-    # Force-close all open positions before saving final state. Acquire the
-    # account lock so this cannot interleave with a WS-thread bar still being
-    # processed (RLock — reentrant if this was reached via the WS-thread bar-level
-    # 15:30 check, which already holds it).
-    with _account_lock:
-        _eod_force_close_all()
+    # Force-close all open positions before saving final state
+    _eod_force_close_all()
 
     # Any positions that could not be closed (price unavailable) are still open
     _still_open = [
@@ -2722,16 +2717,6 @@ def _handle_market_close_shutdown(reason: str) -> None:
 
 
 def on_ticks(raw_ticks):
-    # WS-thread entry point. Hold the account lock for the entire tick batch so
-    # all per-bar processing (position open/close, equity/state mutation) is fully
-    # serialized against the main-thread market-close / EOD force-close. The
-    # market-close path re-enters this RLock, and the main thread blocks here until
-    # the in-flight bar finishes — so EOD close can never interleave with a bar.
-    with _account_lock:
-        _on_ticks_locked(raw_ticks)
-
-
-def _on_ticks_locked(raw_ticks):
     global _equity, _peak_equity, _open_premium_cost, _bar_count
     global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
     global _soft_halted, _soft_halt_reason, _consecutive_losses
