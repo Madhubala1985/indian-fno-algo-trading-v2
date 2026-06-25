@@ -392,6 +392,52 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     if "LIVE_TERMINAL_MODE" not in env:
         env["LIVE_TERMINAL_MODE"] = "compact"
 
+    # SENSEX strike-margin floor — loosen 0.05 -> 0.015 for paper / real_dry_run
+    # ONLY. SENSEX near-ATM strikes are structural near-ties in low vol (margins
+    # 0.00-0.03), so the strict 0.05 default blocks ~100% of SENSEX bars (137 of
+    # 154 strike-quality blocks on 2026-06-25 were score_margin-only). 0.015 still
+    # floors out genuine coin-flip ties. real_armed is deliberately excluded so
+    # the real-funds gate stays strict at 0.05. An explicit
+    # PAPER_SENSEX_SCORE_MARGIN_MIN (or PAPER_GATE_PROFILE override) always wins.
+    if exec_mode in ("paper", "real_dry_run") and "PAPER_SENSEX_SCORE_MARGIN_MIN" not in env:
+        env["PAPER_SENSEX_SCORE_MARGIN_MIN"] = "0.015"
+
+    # Aggressive conviction-scaled sizing — paper / real_dry_run ONLY (the
+    # experiment under validation). real_armed stays on the conservative code
+    # defaults (4% risk, 6-lot ceiling, 10% heat). setdefault() so an explicit
+    # env value or a profile block (e.g. paper_trade_unlock) always wins.
+    #   - risk/trade 4% -> 8%            (more lots)
+    #   - tier ceilings 4/6 -> 10/15     (best setups can press)
+    #   - conviction top 1.25x -> 1.5x   (best setups bigger, normal unchanged)
+    #   - portfolio heat 10% -> 30%      (the real binding cap for option-buying)
+    # NIFTY stays capped at PAPER_NIFTY_MAX_LOTS (default 5) so the loser can't
+    # out-size the winner.
+    if exec_mode in ("paper", "real_dry_run"):
+        env.setdefault("PAPER_TIER2_RISK_FRAC", "0.08")
+        env.setdefault("PAPER_TIER3_RISK_FRAC", "0.08")
+        env.setdefault("PAPER_MAX_SINGLE_TRADE_RISK_FRAC", "0.08")
+        env.setdefault("PAPER_TIER2_MAX_LOTS", "10")
+        env.setdefault("PAPER_TIER3_MAX_LOTS", "15")
+        env.setdefault("PAPER_MAX_CONF_SCALE", "1.5")
+        env.setdefault("PAPER_MAX_HEAT_FRACTION", "0.30")
+        # Halt thresholds kept COHERENT with the aggressive sizing: at 8-10 lots
+        # one stopped trade is ~6-8%, so the old 2%/4% halts would stop after a
+        # single loss. Raised so 8 lots -> halt on 3rd loss, 10 lots -> 2nd, and
+        # the auto-resuming daily halt (15%) fires before the manual-restart
+        # account-DD halt (21%). Stop is reliably ~30% (intrabar-capped) so the
+        # loss-per-trade is predictable. real_armed keeps 2%/4%/15%.
+        # Soft-halt raised to 0.14 (just below the 0.15 hard stop) ON PURPOSE:
+        # the sizer's SMOOTH drawdown-haircut (size ∝ remaining room to account
+        # DD) already de-risks continuously as the day loses (e.g. 10→6→3→2
+        # lots), which is the coherent mechanism. The soft-halt is a CLIFF that
+        # switches to the 0.7%-risk/1-lot sizer; at 6% it pre-empted the smooth
+        # taper and slammed to 1 lot after a single loss. Kept only as a thin
+        # final buffer before the hard stop so the two de-risk systems don't
+        # overlap/double-count. real_armed keeps the conservative 2%.
+        env.setdefault("PAPER_SOFT_HALT_DAILY_LOSS", "0.14")
+        env.setdefault("PAPER_HARD_HALT_DAILY_LOSS", "0.15")
+        env.setdefault("PAPER_MAX_ACCOUNT_DD", "0.21")
+
     return env
 
 

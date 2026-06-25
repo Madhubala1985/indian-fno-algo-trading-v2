@@ -585,7 +585,23 @@ _TIER3_MAX_DD:    float = 0.025   # Tier 3 ineligible when drawdown ≥ 2.5%
 _TIER3_CONF_GATE: float = 0.65    # Tier 3 requires confidence ≥ 65%
 
 # Portfolio heat and trade management
-_MAX_HEAT_FRACTION: float = 0.10   # max open-premium / equity
+# Max open-premium / equity. For option BUYING the premium is the full outlay,
+# so this is the REAL binding constraint on lot count — it gates "more lots"
+# more than risk-fraction or lot-ceiling do. Env-overridable; real_armed keeps
+# the conservative 0.10 default, paper/dry-run raises it via the supervisor.
+_MAX_HEAT_FRACTION: float = float(os.environ.get("PAPER_MAX_HEAT_FRACTION", "0.10") or 0.10)
+# Conviction-scaled sizing: best setups get a larger risk-budget multiplier (so
+# they take MORE lots); normal/weak setups size down. The sizer multiplies the
+# risk budget by confidence_scale in [min, max]. Env-overridable (paper).
+_MAX_CONF_SCALE: float = float(os.environ.get("PAPER_MAX_CONF_SCALE", "1.25") or 1.25)
+_MIN_CONF_SCALE: float = float(os.environ.get("PAPER_MIN_CONF_SCALE", "0.25") or 0.25)
+# Per-symbol lot ceiling (allocation control). NIFTY is a proven net loser
+# (37% WR / net -ve vs SENSEX 69% / net +ve), so cap it well below the winner
+# so it cannot out-size SENSEX even at the raised ceilings. Applies in ALL
+# modes (defensive — safe for real funds too). Env-overridable.
+_PER_SYMBOL_MAX_LOTS: dict[str, int] = {
+    "NIFTY": int(os.environ.get("PAPER_NIFTY_MAX_LOTS", "5") or 5),
+}
 # Stop-loss: max 30% loss from entry premium (premium must remain >= 70% of entry).
 # Tighter than the previous 50%-remaining threshold; still subject to bar-close gap risk.
 _MAX_OPTION_PREMIUM_LOSS_FRACTION: float = 0.30   # stop at 30% loss from entry
@@ -634,7 +650,15 @@ _CONTEXT_CONTRADICTION_COOLDOWN_BARS: int = _cooldown_bars_from_env()
 # Strike quality gate for Tier2/3: reject low-quality strikes that passed OI filter.
 # Proven defect (2026-06-04): SENSEX iv_attr=0.000 and all entries SCORE_MARGIN_LOW.
 _MIN_SCORE_MARGIN_TIER23: float = 0.05   # min rank-1 minus rank-2 score gap
-_MIN_IV_ATTR_TIER23:      float = 0.05   # min IV attractiveness factor score
+# DEMOTED 2026-06-26: iv_attr hard veto → soft score input. iv_attractiveness
+# remains a weighted factor in the composite strike score (it still ranks
+# strikes), but it no longer hard-blocks an entry. A broken atm_iv reference
+# (computed ~half the true near-ATM value at low vol) zeroed iv_attr for every
+# SENSEX strike from 06-09 onward, killing ALL SENSEX trades despite healthy
+# 06-05/06-08 days — a single fragile computed metric should not hold a veto.
+# Default 0.0 = gate off (iv_attr is clipped to [0,1], never < 0.0, so the
+# check below is inert). Re-enable as a hard gate via PAPER_MIN_IV_ATTR=0.05.
+_MIN_IV_ATTR_TIER23:      float = float(os.environ.get("PAPER_MIN_IV_ATTR", "0.0") or 0.0)
 
 # ── Paper-only gate profiles and per-underlying overrides ─────────────────────
 # PAPER_GATE_PROFILE selects a named threshold set (paper sessions only).
@@ -802,15 +826,20 @@ _MCB_CONTRA_BOS_WARN_THRESHOLD: int = 3  # warn after this many opposing BOS eve
 _TERMINAL_COMPACT: bool = _os.environ.get("LIVE_TERMINAL_MODE", "compact").lower() != "debug"
 
 # Capital protection limits
+# Env-overridable so the halt thresholds stay COHERENT with the sizing: per-trade
+# risk must sit below the soft-halt, and the daily hard-halt must allow the
+# intended number of full-size losses before stopping. real_armed keeps the
+# conservative defaults (2% / 4% / 15%); paper/dry-run raises them via the
+# supervisor to match aggressive sizing (e.g. 8-10 lots -> 3/2 losses to halt).
 # Soft halt — defensive mode, not a full stop
-_SOFT_HALT_DAILY_LOSS_FRAC: float = 0.020   # soft-halt trigger: daily loss >= 2%
+_SOFT_HALT_DAILY_LOSS_FRAC: float = float(os.environ.get("PAPER_SOFT_HALT_DAILY_LOSS", "0.020") or 0.020)
 _SOFT_HALT_RISK_FRAC:       float = 0.007   # 0.7% risk — below Tier 1's 1%
 _SOFT_HALT_MAX_LOTS:        int   = 1
 _SOFT_HALT_MIN_CONF:        float = 0.65    # higher bar than Tier 1's 0.55
 # Hard halt — no new trades
-_HARD_HALT_DAILY_LOSS_FRAC: float = 0.040   # hard-halt trigger: daily loss >= 4%
-_HARD_HALT_CONSEC_LOSSES:   int   = 3       # hard-halt trigger: 3 consecutive losses
-_MAX_ACCOUNT_DD:            float = 0.150   # hard-halt trigger: account drawdown >= 15%
+_HARD_HALT_DAILY_LOSS_FRAC: float = float(os.environ.get("PAPER_HARD_HALT_DAILY_LOSS", "0.040") or 0.040)
+_HARD_HALT_CONSEC_LOSSES:   int   = int(os.environ.get("PAPER_HARD_HALT_CONSEC_LOSSES", "3") or 3)
+_MAX_ACCOUNT_DD:            float = float(os.environ.get("PAPER_MAX_ACCOUNT_DD", "0.150") or 0.150)
 
 # ── Per-underlying PositionSizer sets ────────────────────────────────────────
 # Each underlying gets independent instances so sizer internal tracking
@@ -820,18 +849,26 @@ for _sizer_init_state in _runtime_by_underlying.values():
         0: PositionSizer(config=PositionSizingConfig(
             max_risk_fraction_per_trade=_SOFT_HALT_RISK_FRAC,
             max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+            max_confidence_scale=_MAX_CONF_SCALE,
+            min_confidence_scale=_MIN_CONF_SCALE,
         )),
         1: PositionSizer(config=PositionSizingConfig(
             max_risk_fraction_per_trade=_TIER1_RISK_FRAC,
             max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+            max_confidence_scale=_MAX_CONF_SCALE,
+            min_confidence_scale=_MIN_CONF_SCALE,
         )),
         2: PositionSizer(config=PositionSizingConfig(
             max_risk_fraction_per_trade=_TIER2_RISK_FRAC,
             max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+            max_confidence_scale=_MAX_CONF_SCALE,
+            min_confidence_scale=_MIN_CONF_SCALE,
         )),
         3: PositionSizer(config=PositionSizingConfig(
             max_risk_fraction_per_trade=_TIER3_RISK_FRAC,
             max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+            max_confidence_scale=_MAX_CONF_SCALE,
+            min_confidence_scale=_MIN_CONF_SCALE,
         )),
     }
 
@@ -2112,6 +2149,11 @@ def _size_live_position(
 
     sizer    = state.sizers[tier]
     max_lots = _tier_maxlots[tier]
+    # Allocation control: cap the proven net-loser (NIFTY) below the winner so
+    # it cannot out-size SENSEX even at the raised ceilings (_PER_SYMBOL_MAX_LOTS).
+    _sym_cap = _PER_SYMBOL_MAX_LOTS.get(state.option_underlying)
+    if _sym_cap is not None:
+        max_lots = min(max_lots, _sym_cap)
 
     entry_premium = rec.last_traded_price
     stop_premium  = max(entry_premium * _STOP_LOSS_PCT, 0.01)
