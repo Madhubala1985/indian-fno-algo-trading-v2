@@ -540,7 +540,25 @@ class StrikeSelectionEngine:
         chain_max_oi = max(c.open_interest for c in viable)
         chain_max_oi = max(chain_max_oi, 1)
 
-        effective_atm_iv = atm_iv if atm_iv is not None else self._estimate_atm_iv(viable)
+        # atm_iv plausibility guard (2026-06-27): the supplied surface ATM IV
+        # (IVSurfaceEngine interpolation) has been observed returning ~half the
+        # true near-ATM value on the SENSEX/BSE chain, which corrupts
+        # iv_attractiveness (it previously zeroed it). When the supplied value is
+        # wildly out of line with the actual near-ATM chain IV, fall back to the
+        # robust chain-based estimate (near-ATM strike's own IV). No-op when the
+        # surface value is sane (within 0.5x..2x of the chain ATM IV).
+        # Both the surface ATM IV and the near-ATM strike's own IV measure "ATM
+        # implied vol" and should nearly match (gentle skew near ATM). A material
+        # divergence means the surface interpolation is wrong, so trust the
+        # directly-observed chain value. Band chosen to catch the SENSEX bug
+        # (~half) while leaving normal near-ATM skew (<~30%) untouched.
+        _chain_atm_iv = self._estimate_atm_iv(viable)
+        if atm_iv is None:
+            effective_atm_iv = _chain_atm_iv
+        elif _chain_atm_iv > 0.0 and not (0.7 * _chain_atm_iv <= atm_iv <= 1.5 * _chain_atm_iv):
+            effective_atm_iv = _chain_atm_iv
+        else:
+            effective_atm_iv = atm_iv
 
         scored: list[tuple[float, StrikeCandidate, StrikeScoreBreakdown, list[str]]] = []
         for candidate in viable:
