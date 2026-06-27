@@ -938,6 +938,13 @@ _STATE_FILE:         Path = Path("logs/paper_trading_state.json")
 _PID_FILE:           Path = Path("logs/live_pipeline.pid")
 _SHADOW_AUDIT_PATH:  Path = Path("logs/strike_selection_shadow.jsonl")
 _shadow_auditor      = StrikeAuditLogger(audit_path=_SHADOW_AUDIT_PATH, mode="shadow")
+# Phase-1 intelligence wiring (docs/intelligence_wiring_plan.md): RegimeEngine in
+# SHADOW mode — logs the volatility regime per bar to logs/regime_shadow.jsonl,
+# never affects the trade path. Disable with PAPER_REGIME_SHADOW=0.
+from platform_core.data.live.regime_shadow import RegimeShadow as _RegimeShadow
+_regime_shadow = (
+    _RegimeShadow() if _os.environ.get("PAPER_REGIME_SHADOW", "1") != "0" else None
+)
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
@@ -2809,6 +2816,16 @@ def on_ticks(raw_ticks):
 
         # Resolve state for this bar's feed symbol (None = unknown feed)
         _current_state = _state_by_feed.get(completed_bar.symbol)
+
+        # Phase-1 SHADOW: log the volatility regime for this bar (no trade effect).
+        if _regime_shadow is not None:
+            _regime_shadow.observe(
+                underlying=(_current_state.option_underlying if _current_state else completed_bar.symbol),
+                timestamp=completed_bar.start_timestamp,
+                high=completed_bar.high_price,
+                low=completed_bar.low_price,
+                close=completed_bar.close_price,
+            )
 
         if _TERMINAL_COMPACT:
             print(
