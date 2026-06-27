@@ -945,6 +945,13 @@ from platform_core.data.live.regime_shadow import RegimeShadow as _RegimeShadow
 _regime_shadow = (
     _RegimeShadow() if _os.environ.get("PAPER_REGIME_SHADOW", "1") != "0" else None
 )
+# Phase-1 intelligence wiring: HTF-bias alignment in SHADOW mode — logs how the
+# execution bias aligns with the (already-computed) daily/h4/h1/m15 HTF biases to
+# logs/htf_shadow.jsonl, never affects the trade path. Disable with PAPER_HTF_SHADOW=0.
+from platform_core.data.live.htf_shadow import HTFShadow as _HTFShadow
+_htf_shadow = (
+    _HTFShadow() if _os.environ.get("PAPER_HTF_SHADOW", "1") != "0" else None
+)
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
@@ -2927,6 +2934,21 @@ def on_ticks(raw_ticks):
             market_ctx = _current_state.market_ctx_builder.build(
                 valuation_timestamp=datetime.now(timezone.utc)
             )
+
+            # Phase-1 SHADOW: record HTF-bias alignment for this bar (no trade effect).
+            if _htf_shadow is not None:
+                _htf_shadow.observe(
+                    underlying=_current_state.option_underlying,
+                    timestamp=completed_bar.start_timestamp,
+                    exec_bias=str(getattr(market_ctx, "bias", "")),
+                    exec_conf=getattr(market_ctx, "confidence", None),
+                    daily_bias=getattr(market_ctx, "daily_bias", None),
+                    h4_bias=getattr(market_ctx, "h4_bias", None),
+                    h1_bias=getattr(market_ctx, "h1_bias", None),
+                    m15_bias=getattr(market_ctx, "m15_bias", None),
+                    is_aligned=getattr(market_ctx, "is_aligned", None),
+                    htf_confidence=getattr(market_ctx, "confidence_score", None),
+                )
 
             # ── Chain fetch + strike selection — enabled targets (full execution) ──
             if is_option_target_enabled(_current_state.option_underlying):
