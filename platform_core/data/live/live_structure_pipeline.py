@@ -344,6 +344,8 @@ class UnderlyingRuntimeState:
     last_stop_contract: str = ""               # contract symbol of last stop-loss
     last_struct_exit_bar:      int = -9999      # _bar_count at last STRUCTURE_EXIT (chop filter)
     last_struct_exit_contract: str = ""        # contract symbol of last structure exit
+    reentry_loss_streak:       int = 0          # consecutive losing exits (chop re-entry brake)
+    reentry_lockout_until_bar: int = -1         # block new entries on this underlying until this bar
     live_bars_seen:   int   = 0                 # live 1m bars received this session
     bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
     bars_since_save:  int  = 0                  # bars since last state-file write
@@ -630,6 +632,23 @@ _SAME_CONTRACT_STOP_COOLDOWN_BARS:   int = 15   # exact same contract symbol
 # Env-tunable; pure additional restriction — never loosens any gate.
 _SAME_UNDERLYING_STRUCT_COOLDOWN_BARS: int = int(os.environ.get("STRUCT_EXIT_UNDERLYING_COOLDOWN_BARS", "3")  or 3)
 _SAME_CONTRACT_STRUCT_COOLDOWN_BARS:   int = int(os.environ.get("STRUCT_EXIT_CONTRACT_COOLDOWN_BARS",   "12") or 12)
+
+# Chop re-entry brake (2026-06-29). The bar-count cooldowns above were too loose:
+# NIFTY bled across many re-entries on choppy days. The discriminator is consecutive
+# LOSING exits (chop) vs wins (trend): after this many consecutive losing exits on an
+# underlying, lock new entries on it for a window; a winning exit resets the streak,
+# so trending re-entries (e.g. SENSEX 3 wins in a row) are never blocked. Symmetric,
+# pure additional restriction, env-tunable.
+# DELIBERATELY CONSERVATIVE: threshold = 3 (mirrors the existing GLOBAL 3-consec-loss
+# halt — defensible as risk discipline, not P&L-tuned). On the 9-day NIFTY sample,
+# more aggressive variants looked far better in backtest (2-consec +6,080; daily
+# -3,000 loss-cap flips NIFTY to net-positive +7,445) but are textbook OVERFITTING
+# on ~27 trades — and the 2-consec rule WOULD block the 06-11 recovery winner
+# (-1,576,-4,435,+4,778). The 3-consec rule changed only 06-17 (+2,894) and made
+# ZERO days worse; it never blocks a 2-loss-then-win recovery. Re-tune only with a
+# much larger out-of-sample trade count.
+_MAX_REENTRY_LOSSES:   int = int(os.environ.get("REENTRY_MAX_LOSSES", "3")   or 3)
+_REENTRY_LOCKOUT_BARS: int = int(os.environ.get("REENTRY_LOCKOUT_BARS", "60") or 60)
 
 # Confluence gate for Tier2/Tier3: require minimum OI support on the selected strike.
 # Proven defect: SENSEX entry had oi_support=0.034 (near-zero OI = liquidity risk).
@@ -3359,6 +3378,21 @@ def on_ticks(raw_ticks):
                     if "STRUCTURE_EXIT" in str(_closed.exit_reason):
                         _current_state.last_struct_exit_bar      = _bar_count
                         _current_state.last_struct_exit_contract = _closed.contract_symbol
+                    # Chop re-entry brake: consecutive losing exits lock the
+                    # underlying briefly; a win resets immediately (trend continues).
+                    if _closed.pnl > 0:
+                        _current_state.reentry_loss_streak = 0
+                    else:
+                        _current_state.reentry_loss_streak += 1
+                        if _current_state.reentry_loss_streak >= _MAX_REENTRY_LOSSES:
+                            _current_state.reentry_lockout_until_bar = _bar_count + _REENTRY_LOCKOUT_BARS
+                            _current_state.reentry_loss_streak = 0  # fresh start after the lockout
+                            print(
+                                f"[CHOP RE-ENTRY LOCKOUT] {_current_state.option_underlying}: "
+                                f"{_MAX_REENTRY_LOSSES} consecutive losing exits — new entries "
+                                f"blocked for {_REENTRY_LOCKOUT_BARS} bars (until bar "
+                                f"{_current_state.reentry_lockout_until_bar})"
+                            )
                     print_exit_block(
                         underlying=_closed.underlying_symbol,
                         strike=_closed.strike,
@@ -3593,13 +3627,22 @@ def on_ticks(raw_ticks):
                     _pre_entry_block: str | None = None
                     _bars_since_stop = _bar_count - _current_state.last_stop_bar
 
+                    # [A-chop] Chop re-entry lockout: after consecutive losing exits
+                    # the underlying is locked out briefly (a win resets the streak).
+                    if _bar_count < _current_state.reentry_lockout_until_bar:
+                        _pre_entry_block = (
+                            f"CHOP_REENTRY_LOCKOUT until bar "
+                            f"{_current_state.reentry_lockout_until_bar} "
+                            f"(bar={_bar_count})"
+                        )
+
                     # [A0] Capital-tier simultaneous position limit.
                     # Prevents portfolio heat from breaching 10% at small capital.
                     _cur_open = sum(
                         1 for _s in _runtime_by_underlying.values()
                         if _s.option_trader.has_open_position()
                     )
-                    if _cur_open >= _MAX_OPEN_POSITIONS:
+                    if _pre_entry_block is None and _cur_open >= _MAX_OPEN_POSITIONS:
                         _pre_entry_block = (
                             f"CAPITAL_TIER_POSITION_LIMIT "
                             f"open_positions={_cur_open}/{_MAX_OPEN_POSITIONS} "
@@ -3607,7 +3650,7 @@ def on_ticks(raw_ticks):
                         )
 
                     # [A] Live bar warmup gate
-                    if _current_state.live_bars_seen < _LIVE_BARS_BEFORE_ENTRY:
+                    if _pre_entry_block is None and _current_state.live_bars_seen < _LIVE_BARS_BEFORE_ENTRY:
                         _pre_entry_block = (
                             f"WARM_START_LOCKOUT "
                             f"live_bars={_current_state.live_bars_seen}/{_LIVE_BARS_BEFORE_ENTRY}"
