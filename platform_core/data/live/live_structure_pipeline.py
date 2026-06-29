@@ -891,6 +891,24 @@ def get_open_position_state() -> "UnderlyingRuntimeState | None":
     return None
 
 
+def _held_option_ltp(state: "UnderlyingRuntimeState") -> float | None:
+    """
+    Real last-traded price of the currently-held option for `state`, from Kite.
+
+    Used to mark the position to the LIVE market at exit instead of a Black-Scholes
+    recompute (which produced fictional exit P&L). Returns None on any error or in
+    paper-only contexts without a live quote, so the caller falls back to BSM.
+    Never raises into the exit path.
+    """
+    try:
+        pos = state.option_trader._position
+        if pos is None:
+            return None
+        return adapter.fetch_ltp(exchange=state.exchange, tradingsymbol=pos.contract_symbol)
+    except Exception:
+        return None
+
+
 def _compute_open_premium_cost() -> float:
     """Sum entry_premium × lot_size × lots across every currently-open position."""
     total = 0.0
@@ -2566,6 +2584,8 @@ def _eod_force_close_all() -> None:
             )
             continue
 
+        # Mark to the REAL option LTP at EOD close; BSM only if no live quote.
+        _eod_live_ltp = _held_option_ltp(und_state)
         _closed = und_state.option_trader.evaluate_and_close(
             current_spot=spot,
             current_iv=iv,
@@ -2575,6 +2595,7 @@ def _eod_force_close_all() -> None:
             take_profit_pct=_TAKE_PROFIT_PCT,
             min_dte=_MIN_DTE_TO_HOLD,
             force_reason="EOD_FORCE_CLOSE",
+            current_premium_override=_eod_live_ltp,
         )
 
         if _closed is None:
@@ -3220,6 +3241,9 @@ def on_ticks(raw_ticks):
             # Exit evaluation runs on every bar while a position is open
             if _current_state.option_trader.has_open_position():
                 _exit_sig = _option_exit_signal(result.emitted_events, _current_state.option_trader)
+                # Mark to the REAL option LTP (live paper/dry-run); BSM only if the
+                # quote is unavailable. Fixes fictional model-priced exits.
+                _live_ltp = _held_option_ltp(_current_state)
                 _closed = _current_state.option_trader.evaluate_and_close(
                     current_spot=completed_bar.close_price,
                     current_iv=_current_state.last_atm_iv,
@@ -3231,6 +3255,7 @@ def on_ticks(raw_ticks):
                     force_reason=_exit_sig,
                     bar_low_spot=completed_bar.low_price,
                     bar_high_spot=completed_bar.high_price,
+                    current_premium_override=_live_ltp,
                 )
                 if _closed is not None:
                     # ── Route the exit + confirm the fill BEFORE finalizing ──

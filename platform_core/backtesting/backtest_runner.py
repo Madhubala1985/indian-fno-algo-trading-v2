@@ -362,6 +362,7 @@ class OptionPaperTrader:
         force_reason: str | None = None,
         bar_low_spot: float | None = None,
         bar_high_spot: float | None = None,
+        current_premium_override: float | None = None,
     ) -> OptionTrade | None:
         pos = self._position
         if pos is None:
@@ -369,25 +370,32 @@ class OptionPaperTrader:
 
         tte = max((pos.expiry_date - current_date).days, 1) / 365.25
         effective_iv = max(current_iv, 0.05)
-        try:
-            result = self._greeks_engine.compute(
-                option_input=OptionGreeksInput(
-                    instrument_id="mtm",
-                    underlying_symbol=pos.underlying_symbol,
-                    option_symbol=pos.contract_symbol,
-                    option_type=pos.option_type,
-                    spot_price=current_spot,
-                    strike_price=pos.strike,
-                    time_to_expiry_years=tte,
-                    implied_volatility=effective_iv,
-                    risk_free_rate=self._risk_free_rate,
-                    dividend_yield=self._dividend_yield,
-                    lot_size=pos.lot_size,
+        # Mark to the REAL market price when a live LTP is supplied (live paper /
+        # dry-run). Black-Scholes is only a FALLBACK for pure CSV backtests where
+        # no option quotes exist. Marking to model previously produced fictional
+        # exit premiums (and P&L) divorced from the actual option chart.
+        if current_premium_override is not None and current_premium_override > 0.0:
+            current_premium = current_premium_override
+        else:
+            try:
+                result = self._greeks_engine.compute(
+                    option_input=OptionGreeksInput(
+                        instrument_id="mtm",
+                        underlying_symbol=pos.underlying_symbol,
+                        option_symbol=pos.contract_symbol,
+                        option_type=pos.option_type,
+                        spot_price=current_spot,
+                        strike_price=pos.strike,
+                        time_to_expiry_years=tte,
+                        implied_volatility=effective_iv,
+                        risk_free_rate=self._risk_free_rate,
+                        dividend_yield=self._dividend_yield,
+                        lot_size=pos.lot_size,
+                    )
                 )
-            )
-            current_premium = max(result.option_price, 0.01)
-        except Exception:
-            current_premium = pos.entry_premium * 0.5
+                current_premium = max(result.option_price, 0.01)
+            except Exception:
+                current_premium = pos.entry_premium * 0.5
 
         dte = (pos.expiry_date - current_date).days
         pct_of_entry = current_premium / max(pos.entry_premium, 0.001)
@@ -404,7 +412,11 @@ class OptionPaperTrader:
         # NOTE: this models a stop order filling at/near its trigger; a true premium
         # gap could fill worse — a real-money modeling assumption, env-reversible by
         # simply not passing bar_low_spot/bar_high_spot (defaults preserve old behaviour).
-        if exit_reason is None:
+        # Skipped entirely when a real LTP override is supplied: with a live mark we
+        # price off the actual option, not a BSM gap model (which must not override a
+        # real-LTP profit with a modelled stop). The normal pct_of_entry stop check
+        # below still applies, using the real premium.
+        if exit_reason is None and current_premium_override is None:
             _is_call = str(pos.option_type).upper().startswith("C")
             _adverse_spot = bar_low_spot if _is_call else bar_high_spot
             if _adverse_spot is not None:

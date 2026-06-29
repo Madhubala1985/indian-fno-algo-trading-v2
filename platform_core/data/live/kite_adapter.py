@@ -436,6 +436,26 @@ class KiteAdapter:
             source="kite_live",
         )
 
+    def fetch_ltp(self, *, exchange: str, tradingsymbol: str) -> float | None:
+        """
+        Real last-traded price for a single option contract via kite.quote().
+
+        Used to mark open paper positions to the LIVE market price at exit
+        instead of a Black-Scholes recompute. Returns None on any error or when
+        no price is available, so callers fall back to the BSM mark.
+        """
+        try:
+            key = f"{exchange}:{tradingsymbol}"
+            q = self.kite.quote([key])
+            rec = q.get(key, {})
+            ltp = rec.get("last_price")
+            if ltp is None:
+                return None
+            ltp = float(ltp)
+            return ltp if ltp > 0.0 else None
+        except Exception:
+            return None
+
     def nearest_expiry(
         self,
         underlying: str,
