@@ -469,7 +469,11 @@ class OptionPaperTrader:
             exit_premium=current_premium,
             pnl=pnl,
             exit_reason=exit_reason,
-            bars_held=bar_index - pos.bar_index,
+            # Floor at 0: a position carried ACROSS sessions (opened in a prior
+            # session that was killed before EOD, exited in a later one) has an
+            # entry bar_index from the old session while bar_index restarted at 0,
+            # which previously yielded a garbage NEGATIVE hold. Analytics-only field.
+            bars_held=max(bar_index - pos.bar_index, 0),
         )
         self.completed_trades.append(trade)
         self._position = None
@@ -1149,7 +1153,7 @@ class BacktestRunner:
                         direction=pos.direction,
                         lots=pos.lots,
                         entry_premium=pos.entry_premium,
-                        bars_held=bar_index - pos.bar_index,
+                        bars_held=max(bar_index - pos.bar_index, 0),  # floor (cross-session carry)
                         equity=self._equity,
                         drawdown=self._current_drawdown(),
                     )
