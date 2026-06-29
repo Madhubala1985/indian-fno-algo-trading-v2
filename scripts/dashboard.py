@@ -59,6 +59,35 @@ def rule(ch: str = "─") -> str:
     return f"╟{ch * (W + 2)}╢"
 
 
+_EXCHANGE = {"SENSEX": "BFO", "BANKNIFTY": "NFO", "NIFTY": "NFO"}
+_adapter_cache: list = []  # lazy single KiteAdapter (or None if unavailable)
+
+
+def _get_adapter():
+    """Lazily build a read-only KiteAdapter for live quotes; None if unavailable."""
+    if _adapter_cache:
+        return _adapter_cache[0]
+    a = None
+    try:
+        from platform_core.data.live.kite_adapter import KiteAdapter
+        a = KiteAdapter()
+    except Exception:
+        a = None
+    _adapter_cache.append(a)
+    return a
+
+
+def live_ltp(underlying: str, contract_symbol: str) -> float | None:
+    """Real current LTP of a held option (guarded). None if no session/quote."""
+    a = _get_adapter()
+    if a is None:
+        return None
+    try:
+        return a.fetch_ltp(exchange=_EXCHANGE.get(underlying, "NFO"), tradingsymbol=contract_symbol)
+    except Exception:
+        return None
+
+
 def session_live() -> bool:
     try:
         out = subprocess.run(["pgrep", "-f", "live_structure_pipeline.py"],
@@ -184,18 +213,35 @@ def render() -> str:
         hs = f"{GREEN}OK{R}"
     L.append(row(f"  Status   {hs}   consec-loss:{consec}"))
     L.append(rule())
-    # open positions
+    # open positions (with live unrealized P&L — long the option premium)
     L.append(row(f"{BOLD}OPEN POSITIONS{R}"))
     any_open = False
+    total_upnl = 0.0
+    upnl_known = False
     for sym, p in opens.items():
         if not p:
             continue
         any_open = True
-        L.append(row(f"  {CYAN}{sym}{R} {p.get('contract_symbol','?')}  "
-                     f"x{p.get('lots','?')}  entry {money(float(p.get('entry_premium',0)))}  "
-                     f"{p.get('direction','')}"))
+        entry = float(p.get("entry_premium", 0) or 0)
+        lots = int(p.get("lots", 0) or 0)
+        lsz = int(p.get("lot_size", 0) or 0)
+        contract = p.get("contract_symbol", "?")
+        ltp = live_ltp(sym, contract)
+        if ltp is not None and lsz > 0:
+            upnl = (ltp - entry) * lsz * lots  # always long the bought option
+            total_upnl += upnl; upnl_known = True
+            ltps = f"ltp {money(ltp)}"
+            upnls = f"uP&L {signed(upnl)}"
+        else:
+            ltps = f"{GREY}ltp —{R}"
+            upnls = f"{GREY}uP&L —{R}"
+        L.append(row(f"  {CYAN}{sym}{R} {contract}  x{lots}  {p.get('direction','')}"))
+        L.append(row(f"      entry {money(entry)}   {ltps}   {upnls}"))
     if not any_open:
         L.append(row(f"  {GREY}(flat — no open positions){R}"))
+    elif upnl_known:
+        live_eq = eq + total_upnl
+        L.append(row(f"  {DIM}open uP&L {signed(total_upnl)}   live equity ~{money(live_eq)}{R}"))
     L.append(rule())
     # today's trades
     L.append(row(f"{BOLD}TODAY'S TRADES{R}"))
