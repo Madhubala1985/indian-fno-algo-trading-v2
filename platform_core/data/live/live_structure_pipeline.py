@@ -4133,6 +4133,12 @@ def on_ticks(raw_ticks):
                                                     conf_raw=_mctx.confidence,
                                                     conf_eff=_effective_conf,
                                                     fvg_quality=_current_state.fvg_quality,
+                                                    # Pass the REAL sizing inputs so the operator sees true
+                                                    # setup/vol/liquidity (previously defaulted to 0/1/0 —
+                                                    # misleading display; the sizer always used the real values).
+                                                    setup_score=min(_srec.composite_score, 1.0),
+                                                    vol_ratio=max(_current_state.last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
+                                                    liquidity=min(_srec.breakdown.liquidity, 1.0),
                                                     drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
                                                     extra_label=f"TIER{_tier_label}",
                                                 )
