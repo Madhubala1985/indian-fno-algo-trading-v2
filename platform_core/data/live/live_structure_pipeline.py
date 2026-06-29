@@ -909,6 +909,37 @@ def _held_option_ltp(state: "UnderlyingRuntimeState") -> float | None:
         return None
 
 
+def _robust_atm_iv(options_ctx) -> float:
+    """
+    A trustworthy ATM IV for the underlying.
+
+    Prefers the near-ATM strike's OWN raw IV (directly implied from the real
+    option price) over the surface-INTERPOLATED ``options_ctx.atm_iv``, which has
+    been observed to mis-interpolate on the SENSEX/BSE chain (the atm_iv bug:
+    e.g. ~half the true value at low vol, or a few points off vs the near strike).
+    This value feeds the sizing volatility scale (realized_volatility_ratio), so a
+    wrong IV mis-sizes positions. Falls back to the surface value, then the
+    reference IV. Never raises.
+    """
+    try:
+        atm_strike = getattr(options_ctx, "atm_strike", None)
+        cands = getattr(options_ctx, "strike_candidates", None) or ()
+        if atm_strike is not None and cands:
+            near = min(
+                (c for c in cands if getattr(c, "implied_volatility", 0.0) > 0.0),
+                key=lambda c: abs(c.strike_price - atm_strike),
+                default=None,
+            )
+            if near is not None and near.implied_volatility > 0.0:
+                return float(near.implied_volatility)
+        surface = getattr(options_ctx, "atm_iv", None)
+        if surface is not None and surface > 0.0:
+            return float(surface)
+    except Exception:
+        pass
+    return _REFERENCE_IV
+
+
 def _compute_open_premium_cost() -> float:
     """Sum entry_premium × lot_size × lots across every currently-open position."""
     total = 0.0
@@ -2498,7 +2529,7 @@ def _run_shadow_option_intelligence(
         )
 
         if options_ctx.atm_iv:
-            state.last_atm_iv = options_ctx.atm_iv
+            state.last_atm_iv = _robust_atm_iv(options_ctx)
 
         if not options_ctx.strike_candidates:
             _outcome_bucket[0] = "no_candidate"
@@ -3027,7 +3058,7 @@ def on_ticks(raw_ticks):
                         )
     
                         if options_ctx.atm_iv:
-                            _current_state.last_atm_iv = options_ctx.atm_iv
+                            _current_state.last_atm_iv = _robust_atm_iv(options_ctx)
     
                         if options_ctx.strike_candidates:
                             _candidates_list = list(options_ctx.strike_candidates)
