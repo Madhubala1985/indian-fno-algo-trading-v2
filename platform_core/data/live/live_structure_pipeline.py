@@ -608,6 +608,13 @@ _MAX_OPTION_PREMIUM_LOSS_FRACTION: float = 0.30   # stop at 30% loss from entry
 _STOP_LOSS_PCT:     float = 1.0 - _MAX_OPTION_PREMIUM_LOSS_FRACTION   # 0.70 remaining
 _TAKE_PROFIT_PCT:   float = 2.00
 _MIN_DTE_TO_HOLD:   int   = 2
+# Expiry-selection DTE floor: trade the NEAREST expiry with at least this many
+# days of runway (best value — cheapest, highest gamma, chart-matching), rolling
+# forward only when the front contract is about to expire. Replaces the prior
+# "fetch nearest + next and rank both by score" (which paid up for the far expiry
+# and added no proven edge per the backtest). Must be >= _MIN_DTE_TO_HOLD so we
+# never enter an expiry already at the hold-exit threshold. Env-tunable.
+_MIN_EXPIRY_DTE:    int   = max(int(os.environ.get("PAPER_MIN_EXPIRY_DTE", "2") or 2), _MIN_DTE_TO_HOLD)
 
 # Stop-loss cooldown: prevent immediate re-entry after a loss exit.
 # Proven defect: SENSEX re-entered the same contract at the exact bar of stop-loss exit.
@@ -2482,8 +2489,10 @@ def _run_shadow_option_intelligence(
         bar_date = datetime.now(timezone.utc).date()
 
         try:
-            expiry = adapter.nearest_expiry(
-                state.option_underlying, bar_date, exchange=state.exchange,
+            # Nearest expiry with a DTE floor (best value + runway); no cross-expiry ranking.
+            expiry = adapter.select_expiry(
+                state.option_underlying, bar_date,
+                min_dte=_MIN_EXPIRY_DTE, exchange=state.exchange,
             )
         except Exception:
             _write_shadow_failure_record(state, market_ctx, spot, "EXPIRY_NOT_FOUND")
@@ -2503,23 +2512,6 @@ def _run_shadow_option_intelligence(
         except Exception as exc:
             _write_shadow_failure_record(state, market_ctx, spot, _classify_shadow_error(exc))
             return
-
-        # Best-effort: add next-nearest expiry for DTE ranking (mirrors BANKNIFTY path)
-        try:
-            expiry_next = adapter.nearest_expiry(
-                state.option_underlying, expiry + timedelta(days=1),
-                exchange=state.exchange,
-            )
-            _chain_snapshots.append(adapter.fetch_option_chain(
-                underlying=state.option_underlying,
-                expiry_date=expiry_next,
-                spot_price=spot,
-                lot_size=state.lot_size,
-                strike_step=state.strike_step,
-                exchange=state.exchange,
-            ))
-        except Exception:
-            pass  # next expiry unavailable — proceed with nearest only
 
         options_ctx = _opt_ctx_builder.build(
             snapshots=_chain_snapshots,
@@ -3014,11 +3006,13 @@ def on_ticks(raw_ticks):
                     try:
                         spot = completed_bar.close_price
                         bar_date = datetime.now(timezone.utc).date()
-                        expiry = adapter.nearest_expiry(
+                        # Nearest expiry with a DTE floor (best value + enough runway);
+                        # rolls forward only near expiry. No cross-expiry score ranking.
+                        expiry = adapter.select_expiry(
                             _current_state.option_underlying, bar_date,
-                            exchange=_current_state.exchange,
+                            min_dte=_MIN_EXPIRY_DTE, exchange=_current_state.exchange,
                         )
-    
+
                         live_chain = adapter.fetch_option_chain(
                             underlying=_current_state.option_underlying,
                             expiry_date=expiry,
@@ -3027,28 +3021,7 @@ def on_ticks(raw_ticks):
                             strike_step=_current_state.strike_step,
                             exchange=_current_state.exchange,
                         )
-    
-                        # Fetch next-nearest expiry (mirrors BacktestRunner weekly+biweekly).
-                        # Enables cross-expiry DTE ranking and prevents expiry-day blackout
-                        # when the nearest contract has DTE < dte_min_viable.
                         _chain_snapshots = [live_chain]
-                        try:
-                            expiry_next = adapter.nearest_expiry(
-                                _current_state.option_underlying,
-                                expiry + timedelta(days=1),
-                                exchange=_current_state.exchange,
-                            )
-                            live_chain_next = adapter.fetch_option_chain(
-                                underlying=_current_state.option_underlying,
-                                expiry_date=expiry_next,
-                                spot_price=spot,
-                                lot_size=_current_state.lot_size,
-                                strike_step=_current_state.strike_step,
-                                exchange=_current_state.exchange,
-                            )
-                            _chain_snapshots.append(live_chain_next)
-                        except Exception:
-                            pass  # next expiry unavailable — proceed with nearest only
     
                         options_ctx = _opt_ctx_builder.build(
                             snapshots=_chain_snapshots,

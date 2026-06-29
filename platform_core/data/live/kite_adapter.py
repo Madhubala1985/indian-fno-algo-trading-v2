@@ -456,6 +456,47 @@ class KiteAdapter:
         except Exception:
             return None
 
+    def select_expiry(
+        self,
+        underlying: str,
+        from_date: date,
+        *,
+        min_dte: int = 2,
+        exchange: str = "NFO",
+    ) -> date:
+        """
+        Intelligent expiry choice: the NEAREST expiry that still has at least
+        ``min_dte`` calendar days of runway.
+
+        Rationale: for a short-term directional trade the nearest expiry is the
+        best VALUE — cheapest premium and highest gamma (most responsive to the
+        move) — and it matches the chain most operators chart. The DTE floor only
+        rolls FORWARD when the front contract is so close to expiry that it would
+        be force-exited immediately (DTE < min_dte) or suffer expiry-day pin/
+        liquidity collapse. It does NOT chase further expiries on a marginal score
+        difference (which paid extra time-value for less gamma and added no proven
+        edge). Falls back to the absolute nearest if none clear the floor.
+        """
+        instruments = self._get_instruments(exchange)
+        expiries = sorted(
+            {
+                inst["expiry"]
+                for inst in instruments
+                if inst["name"] == underlying
+                and inst["instrument_type"] in ("CE", "PE")
+                and inst["expiry"] >= from_date
+            }
+        )
+        if not expiries:
+            raise ValueError(
+                f"No option expiry found for {underlying} on or after {from_date} "
+                f"in {exchange} instrument master."
+            )
+        for exp in expiries:
+            if (exp - from_date).days >= min_dte:
+                return exp
+        return expiries[0]  # all within the floor — trade the front rather than nothing
+
     def nearest_expiry(
         self,
         underlying: str,
