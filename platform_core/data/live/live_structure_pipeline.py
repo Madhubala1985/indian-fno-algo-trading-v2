@@ -4418,82 +4418,103 @@ _SUSPEND_GAP_SECONDS: float = 90.0
 _last_loop_wall:      float = time.time()
 
 while True:
-    time.sleep(1)
-    _loop_gap = time.time() - _last_loop_wall
-    _last_loop_wall = time.time()
-    if _loop_gap > _SUSPEND_GAP_SECONDS:
-        _resumed_ist = datetime.now(_IST)
-        print(
-            f"\n{'='*60}\n"
-            f"[HOST SUSPEND DETECTED] Main loop stalled {_loop_gap:.0f}s "
-            f"(probable machine sleep) — feed + bar stream have a DATA GAP.\n"
-            f"  resumed_at={_resumed_ist:%Y-%m-%d %H:%M:%S} IST — forcing reconnect.\n"
-            f"{'='*60}"
-        )
-        try:
-            _db.write_runtime_event(
-                "HOST_SUSPEND_GAP",
-                severity="CRITICAL",
-                message=(f"main loop stalled {_loop_gap:.0f}s (probable host sleep); "
-                         f"data gap; forcing reconnect"),
-                equity=_equity,
-                bar_index=_bar_count,
-            )
-        except Exception:
-            pass
-        try:
-            adapter.force_reconnect(f"host suspend gap {_loop_gap:.0f}s")
-        except Exception as _susp_exc:
-            print(f"[HOST SUSPEND] force_reconnect failed: {_susp_exc}")
-        _last_stall_action_ts = time.time()
-    if _shutdown_triggered:
-        sys.exit(0)
-    _now_ist = datetime.now(_IST)
-    _tod_min = _now_ist.hour * 60 + _now_ist.minute
-    if _tod_min >= _SESSION_CLOSE_TOD:
-        # Guard the EOD close: if it errors, log and retry next tick rather than
-        # letting the main loop die (which would strand the close).
-        try:
-            _handle_market_close_shutdown("main-loop 15:30 IST clock")
-        except Exception as _eod_exc:
-            print(f"[MARKET CLOSE] shutdown error: {_eod_exc} — will retry next tick")
-        continue
-
-    # Tick-staleness watchdog — market hours only (avoids pre-open/post-close
-    # false positives when the feed is legitimately quiet).
-    if _SESSION_OPEN_TOD <= _tod_min < _SESSION_CLOSE_TOD:
-        _tick_gap = adapter.seconds_since_last_tick()
-        if (_tick_gap > _TICK_STALE_SECONDS
-                and (time.time() - _last_stall_action_ts) > _STALL_ACTION_COOLDOWN):
-            _open_now = sum(
-                1 for _s in _runtime_by_underlying.values()
-                if _s.option_trader.has_open_position()
-            )
-            _risk_note = (
-                "  *** OPEN POSITION UNMANAGED WHILE FEED STALLED ***"
-                if _open_now else ""
-            )
+    # Main-loop crash guard: this is the wall-clock SAFETY thread (15:30 EOD
+    # force-close + suspend/feed watchdogs) and must survive any transient code
+    # fault — if it died, the guaranteed EOD close would be stranded (real-money
+    # position carried overnight). try/except ONLY (no lock). SystemExit (the
+    # intentional shutdown via sys.exit) is re-raised so shutdown still works.
+    try:
+        time.sleep(1)
+        _loop_gap = time.time() - _last_loop_wall
+        _last_loop_wall = time.time()
+        if _loop_gap > _SUSPEND_GAP_SECONDS:
+            _resumed_ist = datetime.now(_IST)
             print(
                 f"\n{'='*60}\n"
-                f"[FEED STALL] No ticks for {_tick_gap:.0f}s "
-                f"(threshold {_TICK_STALE_SECONDS:.0f}s) during market hours — "
-                f"forcing WebSocket reconnect.\n"
-                f"  open_positions={_open_now}{_risk_note}\n"
+                f"[HOST SUSPEND DETECTED] Main loop stalled {_loop_gap:.0f}s "
+                f"(probable machine sleep) — feed + bar stream have a DATA GAP.\n"
+                f"  resumed_at={_resumed_ist:%Y-%m-%d %H:%M:%S} IST — forcing reconnect.\n"
                 f"{'='*60}"
             )
             try:
-                adapter.force_reconnect(f"no ticks for {_tick_gap:.0f}s")
-            except Exception as _stall_exc:
-                print(f"[FEED STALL] force_reconnect failed: {_stall_exc}")
-            try:
                 _db.write_runtime_event(
-                    "FEED_STALL",
-                    severity="WARNING",
-                    message=f"no ticks for {_tick_gap:.0f}s; forced reconnect; open_positions={_open_now}",
+                    "HOST_SUSPEND_GAP",
+                    severity="CRITICAL",
+                    message=(f"main loop stalled {_loop_gap:.0f}s (probable host sleep); "
+                             f"data gap; forcing reconnect"),
                     equity=_equity,
                     bar_index=_bar_count,
                 )
             except Exception:
                 pass
+            try:
+                adapter.force_reconnect(f"host suspend gap {_loop_gap:.0f}s")
+            except Exception as _susp_exc:
+                print(f"[HOST SUSPEND] force_reconnect failed: {_susp_exc}")
             _last_stall_action_ts = time.time()
+        if _shutdown_triggered:
+            sys.exit(0)
+        _now_ist = datetime.now(_IST)
+        _tod_min = _now_ist.hour * 60 + _now_ist.minute
+        if _tod_min >= _SESSION_CLOSE_TOD:
+            # Guard the EOD close: if it errors, log and retry next tick rather
+            # than letting the main loop die (which would strand the close).
+            try:
+                _handle_market_close_shutdown("main-loop 15:30 IST clock")
+            except Exception as _eod_exc:
+                print(f"[MARKET CLOSE] shutdown error: {_eod_exc} — will retry next tick")
+            continue
+
+        # Tick-staleness watchdog — market hours only (avoids pre-open/post-close
+        # false positives when the feed is legitimately quiet).
+        if _SESSION_OPEN_TOD <= _tod_min < _SESSION_CLOSE_TOD:
+            _tick_gap = adapter.seconds_since_last_tick()
+            if (_tick_gap > _TICK_STALE_SECONDS
+                    and (time.time() - _last_stall_action_ts) > _STALL_ACTION_COOLDOWN):
+                _open_now = sum(
+                    1 for _s in _runtime_by_underlying.values()
+                    if _s.option_trader.has_open_position()
+                )
+                _risk_note = (
+                    "  *** OPEN POSITION UNMANAGED WHILE FEED STALLED ***"
+                    if _open_now else ""
+                )
+                print(
+                    f"\n{'='*60}\n"
+                    f"[FEED STALL] No ticks for {_tick_gap:.0f}s "
+                    f"(threshold {_TICK_STALE_SECONDS:.0f}s) during market hours — "
+                    f"forcing WebSocket reconnect.\n"
+                    f"  open_positions={_open_now}{_risk_note}\n"
+                    f"{'='*60}"
+                )
+                try:
+                    adapter.force_reconnect(f"no ticks for {_tick_gap:.0f}s")
+                except Exception as _stall_exc:
+                    print(f"[FEED STALL] force_reconnect failed: {_stall_exc}")
+                try:
+                    _db.write_runtime_event(
+                        "FEED_STALL",
+                        severity="WARNING",
+                        message=f"no ticks for {_tick_gap:.0f}s; forced reconnect; open_positions={_open_now}",
+                        equity=_equity,
+                        bar_index=_bar_count,
+                    )
+                except Exception:
+                    pass
+                _last_stall_action_ts = time.time()
+    except SystemExit:
+        raise
+    except Exception as _loop_exc:
+        print(f"[MAIN LOOP GUARD] caught {type(_loop_exc).__name__}: {_loop_exc} — continuing")
+        try:
+            _db.write_runtime_event(
+                "MAIN_LOOP_EXCEPTION",
+                severity="ERROR",
+                message=f"{type(_loop_exc).__name__}: {_loop_exc}",
+                equity=_equity,
+                bar_index=_bar_count,
+            )
+        except Exception:
+            pass
+        time.sleep(1)
 
