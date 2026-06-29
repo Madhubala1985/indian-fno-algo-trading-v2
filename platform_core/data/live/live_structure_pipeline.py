@@ -4349,7 +4349,42 @@ else:
 # matches local/restored state before the first live bar is processed.
 _do_position_reconcile("startup")
 
-adapter.add_tick_callback(on_ticks)
+# ── on_ticks crash guard ─────────────────────────────────────────────────────
+# The WS tick callback runs the ENTIRE decision pipeline. Wrap it so any uncaught
+# code exception (bad tick/bar, or a defect anywhere in structure/options/sizing/
+# shadow paths) is logged loudly and the bar batch is skipped — the WS thread and
+# pipeline keep running instead of dying mid-session. This is a try/except ONLY
+# (never a lock — locks across on_ticks deadlocked before), so it cannot block or
+# deadlock. Internet/feed failures are handled separately by the reconnect logic;
+# this covers CODE/technical failures so a single bad bar can't stop the model.
+_on_ticks_guard_errors = 0
+
+
+def _on_ticks_guarded(raw_ticks):
+    global _on_ticks_guard_errors
+    try:
+        on_ticks(raw_ticks)
+    except Exception as _exc:
+        _on_ticks_guard_errors += 1
+        import traceback as _tb
+        print(
+            f"\n[ON_TICKS GUARD] caught {type(_exc).__name__}: {_exc} "
+            f"(#{_on_ticks_guard_errors}) — bar batch skipped, pipeline continues."
+        )
+        _tb.print_exc()
+        try:
+            _db.write_runtime_event(
+                "ON_TICKS_EXCEPTION",
+                severity="ERROR",
+                message=f"{type(_exc).__name__}: {_exc} (#{_on_ticks_guard_errors})",
+                equity=_equity,
+                bar_index=_bar_count,
+            )
+        except Exception:
+            pass
+
+
+adapter.add_tick_callback(_on_ticks_guarded)
 
 adapter.connect(
     instrument_tokens=list(
@@ -4416,7 +4451,12 @@ while True:
     _now_ist = datetime.now(_IST)
     _tod_min = _now_ist.hour * 60 + _now_ist.minute
     if _tod_min >= _SESSION_CLOSE_TOD:
-        _handle_market_close_shutdown("main-loop 15:30 IST clock")
+        # Guard the EOD close: if it errors, log and retry next tick rather than
+        # letting the main loop die (which would strand the close).
+        try:
+            _handle_market_close_shutdown("main-loop 15:30 IST clock")
+        except Exception as _eod_exc:
+            print(f"[MARKET CLOSE] shutdown error: {_eod_exc} — will retry next tick")
         continue
 
     # Tick-staleness watchdog — market hours only (avoids pre-open/post-close
