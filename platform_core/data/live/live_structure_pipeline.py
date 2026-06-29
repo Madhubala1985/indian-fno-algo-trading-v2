@@ -1008,6 +1008,14 @@ from platform_core.data.live.htf_shadow import HTFShadow as _HTFShadow
 _htf_shadow = (
     _HTFShadow() if _os.environ.get("PAPER_HTF_SHADOW", "1") != "0" else None
 )
+# Phase-2 intelligence wiring: transparent, graded setup-conviction in SHADOW —
+# logs a per-decision conviction score (real inputs, cannot saturate) to
+# logs/conviction_shadow.jsonl, never affects the trade path. Replaces the
+# saturated MCB conf (1.00) / ML ConfidenceEngine (0.99). Disable PAPER_CONV_SHADOW=0.
+from platform_core.data.live.conviction_shadow import ConvictionShadow as _ConvictionShadow
+_conviction_shadow = (
+    _ConvictionShadow() if _os.environ.get("PAPER_CONV_SHADOW", "1") != "0" else None
+)
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
@@ -3564,6 +3572,22 @@ def on_ticks(raw_ticks):
                         f"bias={_mctx.bias}  conf={_mctx.confidence:.2f}  "
                         f"live_bars={_current_state.live_bars_seen}"
                     )
+
+                    # Phase-2 SHADOW: log a transparent graded conviction for this
+                    # decision (real inputs; cannot saturate). No trade effect.
+                    if _conviction_shadow is not None:
+                        _conviction_shadow.observe(
+                            underlying=_current_state.option_underlying,
+                            timestamp=completed_bar.start_timestamp,
+                            composite=getattr(_srec, "composite_score", 0.0),
+                            score_margin=(_current_state.captured_score_margin or 0.0),
+                            liquidity=getattr(getattr(_srec, "breakdown", None), "liquidity", 0.0),
+                            vol_ratio=max(_current_state.last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
+                            fvg_quality=_current_state.fvg_quality,
+                            mcb_conf=_mctx.confidence,
+                            effective_conf=_effective_conf,
+                            bias=str(_mctx.bias),
+                        )
 
                     # ── Pre-entry safety checks [A] warmup  [B] cooldown ─────
                     _pre_entry_block: str | None = None
