@@ -3872,12 +3872,19 @@ def on_ticks(raw_ticks):
                                 f"(min={_MIN_LIQUIDITY_TIER23:.2f}) for tier={_effective_tier}"
                             )
 
-                    # [A6] SENSEX-primary routing — NIFTY defers to SENSEX and only
-                    # enters on a very-strong setup (user directive 2026-06-17).  SENSEX
-                    # is the primary, historically-profitable target; NIFTY has churned
-                    # the same strike for net losses in range-bound tape.  Pure extra
-                    # restriction on NIFTY only — never loosens any gate.
+                    # [A6] Symbol routing.
+                    #  - Conviction-live (paper/dry-run): NO symbol is forced. Both
+                    #    SENSEX and NIFTY trade purely on their own conviction — the
+                    #    symmetric [A-conv] floor + conviction sizing + the 2-position
+                    #    limit decide. Removes the old ONE-WAY SENSEX force, which
+                    #    misfired 2026-06-30 (a weak SENSEX traded at full size and lost
+                    #    while a higher-conviction NIFTY was blocked). "Higher
+                    #    probability wins," no thumb on the scale.
+                    #  - Otherwise (real_armed / conviction off): keep the original
+                    #    SENSEX-primary directive (NIFTY defers to an open SENSEX and
+                    #    needs a very-strong MCB conf).
                     if (_pre_entry_block is None
+                            and not _CONV_LIVE
                             and _SENSEX_PRIMARY_ROUTING
                             and _current_state.option_underlying == "NIFTY"):
                         _sensex_rt = _runtime_by_underlying.get(_SENSEX_PRIORITY_UNDERLYING)
@@ -3886,17 +3893,6 @@ def on_ticks(raw_ticks):
                                 "SENSEX_PRIMARY_DEFER "
                                 "(SENSEX position open — NIFTY stands down)"
                             )
-                        elif _CONV_LIVE:
-                            # Conviction-based NIFTY gate: the saturated MCB conf
-                            # (0.95) blocked a high-conviction NIFTY while a weak
-                            # SENSEX traded and lost (2026-06-30). Gate on the
-                            # graded conviction instead.
-                            _nifty_conv = _live_conviction(_current_state, _srec)
-                            if _nifty_conv < _CONV_NIFTY_MIN:
-                                _pre_entry_block = (
-                                    f"NIFTY_LOW_CONVICTION conv={_nifty_conv:.2f}"
-                                    f"<{_CONV_NIFTY_MIN:.2f} (SENSEX-primary routing)"
-                                )
                         elif _effective_conf < _NIFTY_VERY_STRONG_CONF:
                             _pre_entry_block = (
                                 f"NIFTY_NOT_VERY_STRONG conf={_effective_conf:.2f}"
