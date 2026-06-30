@@ -1032,9 +1032,48 @@ _htf_shadow = (
 # logs/conviction_shadow.jsonl, never affects the trade path. Replaces the
 # saturated MCB conf (1.00) / ML ConfidenceEngine (0.99). Disable PAPER_CONV_SHADOW=0.
 from platform_core.data.live.conviction_shadow import ConvictionShadow as _ConvictionShadow
+from platform_core.data.live.conviction_shadow import ConvictionScorer as _ConvictionScorer
 _conviction_shadow = (
     _ConvictionShadow() if _os.environ.get("PAPER_CONV_SHADOW", "1") != "0" else None
 )
+
+# ── Phase-2 LIVE conviction wiring (paper / real_dry_run ONLY) ────────────────
+# Wire the transparent conviction score into live sizing + routing. real_armed
+# keeps the old MCB-conf behaviour until conviction is validated on a larger
+# sample (this is ONE-day evidence — bounded + reversible by design).
+#  - SIZING: feed conviction into the sizer's EXISTING confidence_scale (a bug
+#    fix — that input was the saturated MCB conf ≈1.0, so the scale did nothing;
+#    now weak setups size DOWN, strong UP, all within the existing 1.5× cap — no
+#    new risk envelope).
+#  - FLOOR: skip setups below a conservative conviction floor (pure risk cut).
+#  - NIFTY ROUTING: gate NIFTY on conviction instead of the saturated MCB conf
+#    (the 0.95 MCB gate blocked a high-conviction NIFTY while a weak SENSEX
+#    traded and lost on 2026-06-30).
+# All env-tunable; set PAPER_CONV_LIVE=0 to fall back to pure MCB behaviour.
+_conviction_scorer = _ConvictionScorer()
+_CONV_LIVE: bool = (
+    _EXECUTION_MODE in ("paper", "real_dry_run")
+    and _os.environ.get("PAPER_CONV_LIVE", "1") != "0"
+)
+_CONV_FLOOR:     float = float(_os.environ.get("PAPER_CONV_FLOOR", "0.40") or 0.40)
+_CONV_NIFTY_MIN: float = float(_os.environ.get("PAPER_CONV_NIFTY_MIN", "0.60") or 0.60)
+
+
+def _live_conviction(state, rec) -> float:
+    """Transparent conviction in [0,1] for this decision. Fail-OPEN (return 1.0
+    on any error) so a scoring fault never silently shrinks/skips a trade."""
+    try:
+        conv, _parts = _conviction_scorer.score(
+            composite=getattr(rec, "composite_score", 0.0),
+            score_margin=(state.captured_score_margin or 0.0),
+            liquidity=getattr(getattr(rec, "breakdown", None), "liquidity", 0.0),
+            vol_ratio=max(state.last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
+            fvg_quality=state.fvg_quality,
+        )
+        return conv
+    except Exception:
+        return 1.0
+
 _kite_session_valid: bool = True   # set False when token expiry is detected
 _kite_session_error: str  = ""
 
@@ -2290,6 +2329,13 @@ def _size_live_position(
         open_position_count=_open_pos_count,
     )
 
+    # Conviction-driven sizing (paper/dry-run): feed the graded conviction into
+    # the sizer's confidence_scale instead of the saturated MCB effective_conf,
+    # so weak setups size DOWN and strong UP within the existing 1.5× cap.
+    _conf_for_sizing = effective_conf
+    if _CONV_LIVE:
+        _conf_for_sizing = _live_conviction(state, rec)
+
     try:
         _result = sizer.size_position(
             request=PositionSizingRequest(
@@ -2303,7 +2349,7 @@ def _size_live_position(
                 lot_size=rec.lot_size,
                 minimum_lot_count=1,
                 maximum_lot_count=max_lots,
-                confidence_score=min(effective_conf, 1.0),
+                confidence_score=min(_conf_for_sizing, 1.0),
                 actionability_score=min(rec.composite_score, 1.0),
                 realized_volatility_ratio=max(state.last_atm_iv / max(_REFERENCE_IV, 0.001), 0.1),
                 liquidity_score=min(rec.breakdown.liquidity, 1.0),
@@ -3636,6 +3682,15 @@ def on_ticks(raw_ticks):
                             f"(bar={_bar_count})"
                         )
 
+                    # [A-conv] Conviction floor (paper/dry-run): skip genuinely weak
+                    # setups (pure risk reduction — never sizes UP, only skips).
+                    if _pre_entry_block is None and _CONV_LIVE:
+                        _entry_conv = _live_conviction(_current_state, _srec)
+                        if _entry_conv < _CONV_FLOOR:
+                            _pre_entry_block = (
+                                f"LOW_CONVICTION conv={_entry_conv:.2f}<{_CONV_FLOOR:.2f}"
+                            )
+
                     # [A0] Capital-tier simultaneous position limit.
                     # Prevents portfolio heat from breaching 10% at small capital.
                     _cur_open = sum(
@@ -3831,6 +3886,17 @@ def on_ticks(raw_ticks):
                                 "SENSEX_PRIMARY_DEFER "
                                 "(SENSEX position open — NIFTY stands down)"
                             )
+                        elif _CONV_LIVE:
+                            # Conviction-based NIFTY gate: the saturated MCB conf
+                            # (0.95) blocked a high-conviction NIFTY while a weak
+                            # SENSEX traded and lost (2026-06-30). Gate on the
+                            # graded conviction instead.
+                            _nifty_conv = _live_conviction(_current_state, _srec)
+                            if _nifty_conv < _CONV_NIFTY_MIN:
+                                _pre_entry_block = (
+                                    f"NIFTY_LOW_CONVICTION conv={_nifty_conv:.2f}"
+                                    f"<{_CONV_NIFTY_MIN:.2f} (SENSEX-primary routing)"
+                                )
                         elif _effective_conf < _NIFTY_VERY_STRONG_CONF:
                             _pre_entry_block = (
                                 f"NIFTY_NOT_VERY_STRONG conf={_effective_conf:.2f}"
