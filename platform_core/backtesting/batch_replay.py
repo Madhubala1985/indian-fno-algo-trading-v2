@@ -129,7 +129,9 @@ _MAX_ENTRY_DTE_DEFAULT: int = 8
 
 def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOptionChainFetcher,
                    all_bars: list[LiveBar], conv_floor: float | None = None,
-                   strikes: int = 8, max_entry_dte: int = _MAX_ENTRY_DTE_DEFAULT) -> DayReplay:
+                   strikes: int = 8, max_entry_dte: int = _MAX_ENTRY_DTE_DEFAULT,
+                   capital: float | None = None, risk_frac: float | None = None,
+                   max_lots: int | None = None) -> DayReplay:
     """Replay a single underlying/day on the real chain. Never raises — a fetch or
     data problem returns a SKIPPED DayReplay so the batch keeps going."""
     cfg = UNDERLYING_CFG[underlying]
@@ -161,8 +163,15 @@ def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOp
     except Exception as exc:
         dr.skipped = f"chain fetch failed: {type(exc).__name__}: {str(exc)[:80]}"
         return dr
+    _size_kw = {}
+    if capital is not None:
+        _size_kw["capital"] = capital
+    if risk_frac is not None:
+        _size_kw["risk_frac"] = risk_frac
+    if max_lots is not None:
+        _size_kw["max_lots"] = max_lots
     rep = SurgicalReplay(underlying_symbol=underlying, feed_symbol=cfg["feed"],
-                         conviction_floor=conv_floor)
+                         conviction_floor=conv_floor, **_size_kw)
     rep.warm_start(warm, cfg["feed"])
     dr.result = rep.run_day(underlying=underlying, feed_symbol=cfg["feed"], exchange=cfg["exch"],
                             expiry=expiry, lot_size=cfg["lot"], strike_step=cfg["step"], day=day,
@@ -171,7 +180,9 @@ def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOp
 
 
 def run_batch(*, underlyings: list[str], days: list[date], conv_floor: float | None = None,
-              strikes: int = 8, max_entry_dte: int = _MAX_ENTRY_DTE_DEFAULT, adapter=None,
+              strikes: int = 8, max_entry_dte: int = _MAX_ENTRY_DTE_DEFAULT,
+              capital: float | None = None, risk_frac: float | None = None,
+              max_lots: int | None = None, adapter=None,
               fetcher: HistoricalOptionChainFetcher | None = None,
               verbose: bool = True) -> BatchReplayResult:
     """Replay every (underlying, day) and aggregate. Builds one KiteAdapter +
@@ -190,7 +201,8 @@ def run_batch(*, underlyings: list[str], days: list[date], conv_floor: float | N
         for day in days:
             dr = replay_one_day(underlying=underlying, day=day, adapter=adapter, fetcher=fetcher,
                                 all_bars=all_bars, conv_floor=conv_floor, strikes=strikes,
-                                max_entry_dte=max_entry_dte)
+                                max_entry_dte=max_entry_dte, capital=capital,
+                                risk_frac=risk_frac, max_lots=max_lots)
             batch.days.append(dr)
             if verbose:
                 if dr.result is not None:

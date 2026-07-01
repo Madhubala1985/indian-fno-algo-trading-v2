@@ -38,6 +38,9 @@ from platform_core.options.strike_selection import (
     StrikeSelectionEngine, StrikeSelectionConfig,
 )
 from platform_core.data.live.conviction_shadow import ConvictionScorer
+from platform_core.risk.position_sizing import (
+    PositionSizer, PositionSizingConfig, PositionSizingRequest, PortfolioRiskSnapshot,
+)
 
 # ── Real StructureEngine stack (fidelity v2: BOS/CHOCH exits, not a bias proxy) ──
 from platform_core.analytics.structure.bos_detector import BOSDetector, BOSDetectorConfig
@@ -72,6 +75,21 @@ _SAME_CONTRACT_STRUCT_COOLDOWN_BARS:   int = int(os.environ.get("STRUCT_EXIT_CON
 _MAX_REENTRY_LOSSES:   int = int(os.environ.get("REENTRY_MAX_LOSSES", "3")   or 3)   # chop brake
 _REENTRY_LOCKOUT_BARS: int = int(os.environ.get("REENTRY_LOCKOUT_BARS", "60") or 60)
 _CONTEXT_CONTRADICTION_COOLDOWN_BARS: int = _cooldown_bars_from_env()               # default 5
+
+# ── Live position-sizing constants (fidelity v3, mirrored from live Tier-2) ──────
+# A fresh session sizes at Tier 2 (_determine_risk_tier: no drawdown, session didn't
+# open above the gain gate). We replicate that: risk-fraction × capital, conviction/
+# confidence/vol/liquidity scaling, lot ceilings + per-symbol caps + 10% heat — NOT
+# a fixed lot count. Defaults match the live conservative profile; override per run.
+_DEFAULT_CAPITAL: float = float(os.environ.get("REPLAY_CAPITAL", "400000") or 400000)  # ₹4L
+_TIER2_RISK_FRAC_DEFAULT: float = float(os.environ.get("REPLAY_RISK_FRAC", "0.020") or 0.020)  # 2%
+_TIER2_MAX_LOTS_DEFAULT: int = int(os.environ.get("REPLAY_MAX_LOTS", "4") or 4)
+_PER_SYMBOL_MAX_LOTS: dict[str, int] = {"NIFTY": int(os.environ.get("PAPER_NIFTY_MAX_LOTS", "5") or 5)}
+_MAX_HEAT_FRACTION: float = 0.10
+_MAX_CONF_SCALE: float = 1.25
+_MIN_CONF_SCALE: float = 0.25
+_MAX_ACCOUNT_DD: float = 0.15
+_REFERENCE_IV: float = 0.18
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
@@ -163,7 +181,10 @@ class SurgicalReplay:
     MIN_SCORE_MARGIN = 0.015   # SENSEX-style margin gate
 
     def __init__(self, *, underlying_symbol: str, feed_symbol: str | None = None,
-                 conviction_floor: float | None = None) -> None:
+                 conviction_floor: float | None = None,
+                 capital: float = _DEFAULT_CAPITAL,
+                 risk_frac: float = _TIER2_RISK_FRAC_DEFAULT,
+                 max_lots: int = _TIER2_MAX_LOTS_DEFAULT) -> None:
         # The structure stack validates each bar's instrument_id against its config,
         # and the adapter tags StructureBars with bar.symbol = the FEED symbol (e.g.
         # NIFTY50, not NIFTY). So swing/structure MUST be built on the feed symbol;
@@ -177,6 +198,20 @@ class SurgicalReplay:
         self._strike = StrikeSelectionEngine(config=StrikeSelectionConfig(top_n=5))
         self._conv = ConvictionScorer()
         self._conv_floor = conviction_floor
+
+        # ── Position sizing (fidelity v3): % of capital, not fixed lots ──────
+        self._capital = capital
+        self._max_lots = min(max_lots, _PER_SYMBOL_MAX_LOTS.get(underlying_symbol, max_lots))
+        self._sizer = PositionSizer(config=PositionSizingConfig(
+            max_risk_fraction_per_trade=risk_frac,
+            max_portfolio_heat_fraction=_MAX_HEAT_FRACTION,
+            max_confidence_scale=_MAX_CONF_SCALE,
+            min_confidence_scale=_MIN_CONF_SCALE,
+        ))
+        # Min-lot override budget (live _PAPER_MAX_SINGLE_TRADE_RISK_FRAC = risk_frac):
+        # when the sizer rejects a setup for insufficient budget, live still trades 1
+        # lot if that single lot's risk fits this cap and heat fits.
+        self._max_single_trade_frac = risk_frac
 
         # ── Real structure stack (fidelity v2) ───────────────────────────────
         # Built once per SurgicalReplay instance = once per replayed day. Live
@@ -223,6 +258,65 @@ class SurgicalReplay:
         )
         return result.emitted_events
 
+    def _size_lots(self, *, best, underlying: str, bias: str, atm_iv, conf: float,
+                   equity: float, peak: float, session_open: float,
+                   open_premium_cost: float, lot_size: int, bar_ts) -> int:
+        """% -of-capital lot sizing — mirrors live _size_live_position (Tier 2) and
+        BacktestRunner._size_position. lots = risk_frac × capital × conf/vol/liq/dd
+        scales ÷ per-unit-risk, capped by max_lots (+ per-symbol cap) and 10% heat.
+        Returns recommended lots (0 = not tradable → skip). Replaces the old fixed 3."""
+        entry_premium = float(best.last_traded_price)
+        stop_premium = max(entry_premium * self.STOP_PCT, 0.01)   # 30% stop, like live
+        sizing_equity = max(min(equity, session_open), 1.0)       # opening-equity basis
+        drawdown = max(0.0, (peak - equity) / max(peak, 1.0))
+        heat = min(open_premium_cost / max(equity, 1.0), 1.0)
+        portfolio = PortfolioRiskSnapshot(
+            equity=sizing_equity,
+            available_cash=max(sizing_equity - open_premium_cost, 0.0),
+            current_portfolio_heat=heat,
+            current_drawdown_fraction=drawdown,
+            max_allowed_drawdown_fraction=_MAX_ACCOUNT_DD,
+            correlation_exposure_fraction=0.0,
+            open_position_count=0,
+        )
+        try:
+            res = self._sizer.size_position(
+                request=PositionSizingRequest(
+                    underlying_symbol=underlying,
+                    timestamp=bar_ts,
+                    direction=bias,
+                    instrument_type="OPTION",
+                    entry_price=entry_premium,
+                    stop_price=stop_premium,
+                    contract_multiplier=1.0,
+                    lot_size=lot_size,
+                    minimum_lot_count=1,
+                    maximum_lot_count=self._max_lots,
+                    confidence_score=min(conf, 1.0),
+                    actionability_score=min(best.composite_score, 1.0),
+                    realized_volatility_ratio=max((atm_iv or _REFERENCE_IV) / max(_REFERENCE_IV, 0.001), 0.1),
+                    liquidity_score=min(best.breakdown.liquidity, 1.0),
+                    spread_bps=30.0,
+                    slippage_bps_estimate=10.0,
+                    expected_correlation_to_book=0.0,
+                    portfolio=portfolio,
+                ),
+                valuation_timestamp=bar_ts,
+            )
+        except Exception:
+            return 0
+        if res.tradable and res.recommended_lots >= 1:
+            return int(res.recommended_lots)
+        # ── Min-lot override (mirrors live ~2457-2490) ───────────────────────
+        # Sizer rejected for insufficient budget: still allow exactly 1 lot when
+        # its absolute risk fits the single-trade cap AND premium heat fits 10%.
+        one_lot_risk = (entry_premium - stop_premium) * lot_size
+        one_lot_heat = (open_premium_cost + entry_premium * lot_size) / max(equity, 1.0)
+        if (one_lot_risk <= self._max_single_trade_frac * sizing_equity
+                and one_lot_heat <= _MAX_HEAT_FRACTION):
+            return 1
+        return 0
+
     def _feed_bar(self, bar: LiveBar) -> None:
         self._ctx.update(bar=bar, timeframe="1m")
         for _tf, _b in self._mtf.update_bar(bar=bar).items():
@@ -254,6 +348,12 @@ class SurgicalReplay:
         last_contradiction_bar: int | None = None
         reentry_loss_streak = 0             # consecutive losing exits (chop brake)
         reentry_lockout_until_bar = -1      # entries blocked until this bar
+
+        # ── Capital/equity state for % sizing (session basis = starting capital) ─
+        equity = self._capital
+        peak_equity = self._capital
+        session_open = self._capital
+        open_premium_cost = 0.0
 
         def _block(reason_key: str) -> None:
             res.blocks[reason_key] = res.blocks.get(reason_key, 0) + 1
@@ -307,6 +407,11 @@ class SurgicalReplay:
                             if reentry_loss_streak >= _MAX_REENTRY_LOSSES:
                                 reentry_lockout_until_bar = bar_idx + _REENTRY_LOCKOUT_BARS
                                 reentry_loss_streak = 0
+                        # Roll equity forward so subsequent sizing sees realised P&L
+                        # (drawdown/heat evolve like live). Freed premium → heat 0.
+                        equity += pos.pnl
+                        peak_equity = max(peak_equity, equity)
+                        open_premium_cost = 0.0
                         res.trades.append(pos); pos = None
                 continue
 
@@ -388,9 +493,19 @@ class SurgicalReplay:
                 entry = float(best.last_traded_price)
                 if entry <= 0:
                     continue
+                # % -of-capital sizing (mirrors live Tier 2) — NOT a fixed lot count.
+                lots = self._size_lots(
+                    best=best, underlying=underlying, bias=bias, atm_iv=octx.atm_iv,
+                    conf=ctx.confidence, equity=equity, peak=peak_equity,
+                    session_open=session_open, open_premium_cost=open_premium_cost,
+                    lot_size=lot_size, bar_ts=bar.start_timestamp)
+                if lots < 1:
+                    _block("SIZING_ZERO_LOTS")
+                    continue
                 pos = ReplayTrade(underlying=underlying, contract=best.option_symbol,
                                   direction=bias, entry_ts=minute_iso, entry_prem=entry,
-                                  lots=3, lot_size=lot_size, conviction=round(conv, 3))
+                                  lots=lots, lot_size=lot_size, conviction=round(conv, 3))
+                open_premium_cost = entry * lot_size * lots
             except Exception:
                 continue
 

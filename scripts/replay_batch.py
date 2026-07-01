@@ -65,7 +65,13 @@ def main() -> int:
     ap.add_argument("--max-dte", type=int, default=8,
                     help="skip a day if the nearest listed expiry is farther than this "
                          "(guards against trading a far expiry when the true nearest expired)")
+    ap.add_argument("--capital", type=float, default=400000.0, help="sizing capital basis (₹)")
+    ap.add_argument("--risk-frac", type=float, default=0.020,
+                    help="per-trade risk fraction (live: 0.02 conservative / 0.04 balanced)")
+    ap.add_argument("--max-lots", type=int, default=4, help="Tier-2 lot ceiling")
     args = ap.parse_args()
+    print(f"[batch] sizing: capital=₹{args.capital:,.0f}  risk_frac={args.risk_frac:.1%}  "
+          f"max_lots={args.max_lots}  (% -of-capital, not fixed lots)")
 
     unders = [u.strip().upper() for u in args.underlyings.split(",") if u.strip()]
     bad = [u for u in unders if u not in UNDERLYING_CFG]
@@ -84,10 +90,12 @@ def main() -> int:
         fetcher = HistoricalOptionChainFetcher(adapter)
         print("\n[A] conviction OFF (floor=None):")
         a = run_batch(underlyings=unders, days=days, conv_floor=None, strikes=args.strikes,
-                      max_entry_dte=args.max_dte, adapter=adapter, fetcher=fetcher)
+                      max_entry_dte=args.max_dte, capital=args.capital, risk_frac=args.risk_frac,
+                      max_lots=args.max_lots, adapter=adapter, fetcher=fetcher)
         print(f"\n[B] conviction ON (floor={args.ab}):")
         b = run_batch(underlyings=unders, days=days, conv_floor=args.ab, strikes=args.strikes,
-                      max_entry_dte=args.max_dte, adapter=adapter, fetcher=fetcher)
+                      max_entry_dte=args.max_dte, capital=args.capital, risk_frac=args.risk_frac,
+                      max_lots=args.max_lots, adapter=adapter, fetcher=fetcher)
         _print_summary(a, "A: conviction OFF")
         _print_summary(b, f"B: conviction floor={args.ab}")
         print("\n" + "-" * 78)
@@ -101,7 +109,8 @@ def main() -> int:
         return 0
 
     batch = run_batch(underlyings=unders, days=days, conv_floor=args.conv_floor,
-                      strikes=args.strikes, max_entry_dte=args.max_dte)
+                      strikes=args.strikes, max_entry_dte=args.max_dte, capital=args.capital,
+                      risk_frac=args.risk_frac, max_lots=args.max_lots)
     _print_summary(batch, f"floor={args.conv_floor}")
     return 0
 

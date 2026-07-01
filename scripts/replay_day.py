@@ -60,6 +60,10 @@ def main() -> int:
     ap.add_argument("--day", required=True, help="YYYY-MM-DD")
     ap.add_argument("--conv-floor", type=float, default=None)
     ap.add_argument("--strikes", type=int, default=8)
+    ap.add_argument("--capital", type=float, default=400000.0, help="sizing capital basis (₹)")
+    ap.add_argument("--risk-frac", type=float, default=0.020,
+                    help="per-trade risk fraction of capital (live: 0.02 conservative / 0.04 balanced)")
+    ap.add_argument("--max-lots", type=int, default=4, help="Tier-2 lot ceiling")
     args = ap.parse_args()
 
     cfg = _CFG[args.underlying]
@@ -87,8 +91,11 @@ def main() -> int:
     chain_by_min = fetcher.load_day(cache)
     print(f"[replay] chain minutes={len(chain_by_min)}  cache={cache.name}")
 
+    print(f"[replay] sizing: capital=₹{args.capital:,.0f}  risk_frac={args.risk_frac:.1%}  "
+          f"max_lots={args.max_lots}  (% -of-capital, not fixed lots)")
     rep = SurgicalReplay(underlying_symbol=args.underlying, feed_symbol=cfg["feed"],
-                         conviction_floor=args.conv_floor)
+                         conviction_floor=args.conv_floor, capital=args.capital,
+                         risk_frac=args.risk_frac, max_lots=args.max_lots)
     rep.warm_start(warm, cfg["feed"])
     res = rep.run_day(underlying=args.underlying, feed_symbol=cfg["feed"], exchange=cfg["exch"],
                       expiry=expiry, lot_size=cfg["lot"], strike_step=cfg["step"], day=day,
