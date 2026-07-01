@@ -69,6 +69,9 @@ def main() -> int:
     ap.add_argument("--risk-frac", type=float, default=0.020,
                     help="per-trade risk fraction (live: 0.02 conservative / 0.04 balanced)")
     ap.add_argument("--max-lots", type=int, default=4, help="Tier-2 lot ceiling")
+    ap.add_argument("--risk-compare", action="store_true",
+                    help="run BOTH 2%% (conservative) and 4%% (balanced) and compare "
+                         "(the recommended view — sizing is the biggest P&L lever)")
     args = ap.parse_args()
     print(f"[batch] sizing: capital=₹{args.capital:,.0f}  risk_frac={args.risk_frac:.1%}  "
           f"max_lots={args.max_lots}  (% -of-capital, not fixed lots)")
@@ -81,6 +84,31 @@ def main() -> int:
     days = trading_days(date.fromisoformat(args.start), date.fromisoformat(args.end))
     print(f"[batch] underlyings={unders}  days={len(days)} "
           f"({args.start}..{args.end}, weekdays)  strikes=±{args.strikes}")
+
+    if args.risk_compare:
+        # Sizing is the biggest P&L lever — show both profiles side by side.
+        from platform_core.data.live.kite_adapter import KiteAdapter
+        from platform_core.backtesting.historical_option_chain import HistoricalOptionChainFetcher
+        adapter = KiteAdapter()
+        fetcher = HistoricalOptionChainFetcher(adapter)
+        results = []
+        for frac, name in ((0.020, "2% conservative (real-fund-safe)"),
+                           (0.040, "4% balanced (paper/validation)")):
+            print(f"\n[risk {frac:.0%}] {name}:")
+            r = run_batch(underlyings=unders, days=days, conv_floor=args.conv_floor,
+                          strikes=args.strikes, max_entry_dte=args.max_dte, capital=args.capital,
+                          risk_frac=frac, max_lots=args.max_lots, adapter=adapter, fetcher=fetcher)
+            results.append((name, r))
+        for name, r in results:
+            _print_summary(r, f"risk {name}")
+        (n0, r0), (n1, r1) = results
+        print("\n" + "-" * 78)
+        print(f"  RISK DELTA (4% − 2%):  P&L ₹{r1.total_pnl - r0.total_pnl:+,.0f}   "
+              f"(2%: ₹{r0.total_pnl:+,.0f}  |  4%: ₹{r1.total_pnl:+,.0f})   "
+              f"capital=₹{args.capital:,.0f}")
+        print("  → 2% is real-fund-safe; 4% is paper-only (>2.5% not approved for real funds).")
+        print("-" * 78)
+        return 0
 
     if args.ab is not None:
         # Build adapter/fetcher once; reuse across both passes (chains are cached).
