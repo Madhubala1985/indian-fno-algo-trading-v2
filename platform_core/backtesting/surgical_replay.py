@@ -93,6 +93,10 @@ _REFERENCE_IV: float = 0.18
 # Capital-scaled lot ceiling — MUST match live (_LOT_CAP_SCALE_BASE_CAPITAL) so the
 # replay and live size identically. Ceiling grows as capital exceeds the baseline.
 _LOT_CAP_SCALE_BASE: float = float(os.environ.get("LOT_CAP_SCALE_BASE_CAPITAL", "400000") or 400000)
+# Time-of-day entry cutoff (measured, default OFF). Data shows the model earns in the
+# morning trend (09-11 IST) and bleeds it back in afternoon chop + theta decay (12-14).
+# Block NEW entries at/after this IST hour. 0 = off. Env REPLAY_ENTRY_CUTOFF_IST.
+_ENTRY_CUTOFF_IST_HOUR: int = int(os.environ.get("REPLAY_ENTRY_CUTOFF_IST", "0") or 0)
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
@@ -456,7 +460,10 @@ class SurgicalReplay:
                 # v1 replay (no gates) exhibited. Quality gate (margin) is below,
                 # after these — matching live (contradiction precedes margin).
                 _blk: str | None = None
-                if bar_idx < reentry_lockout_until_bar:                         # [A-chop]
+                if _ENTRY_CUTOFF_IST_HOUR > 0 and \
+                        bar.start_timestamp.astimezone(_IST).hour >= _ENTRY_CUTOFF_IST_HOUR:
+                    _blk = f"TIME_CUTOFF(>={_ENTRY_CUTOFF_IST_HOUR}IST)"   # afternoon-chop guard
+                if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
                     _blk = "CHOP_REENTRY_LOCKOUT"
                 if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up
                     _blk = "WARM_START_LOCKOUT"
