@@ -90,6 +90,9 @@ _MAX_CONF_SCALE: float = 1.25
 _MIN_CONF_SCALE: float = 0.25
 _MAX_ACCOUNT_DD: float = 0.15
 _REFERENCE_IV: float = 0.18
+# Capital-scaled lot ceiling — MUST match live (_LOT_CAP_SCALE_BASE_CAPITAL) so the
+# replay and live size identically. Ceiling grows as capital exceeds the baseline.
+_LOT_CAP_SCALE_BASE: float = float(os.environ.get("LOT_CAP_SCALE_BASE_CAPITAL", "400000") or 400000)
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
@@ -270,6 +273,10 @@ class SurgicalReplay:
         entry_premium = float(best.last_traded_price)
         stop_premium = max(entry_premium * self.STOP_PCT, 0.01)   # 30% stop, like live
         sizing_equity = max(min(equity, session_open), 1.0)       # opening-equity basis
+        # Capital-scaled lot ceiling (matches live): grows as capital exceeds baseline.
+        eff_max_lots = self._max_lots
+        if _LOT_CAP_SCALE_BASE > 0.0:
+            eff_max_lots = int(self._max_lots * max(1.0, session_open / _LOT_CAP_SCALE_BASE))
         drawdown = max(0.0, (peak - equity) / max(peak, 1.0))
         heat = min(open_premium_cost / max(equity, 1.0), 1.0)
         portfolio = PortfolioRiskSnapshot(
@@ -293,7 +300,7 @@ class SurgicalReplay:
                     contract_multiplier=1.0,
                     lot_size=lot_size,
                     minimum_lot_count=1,
-                    maximum_lot_count=self._max_lots,
+                    maximum_lot_count=eff_max_lots,
                     confidence_score=min(conf, 1.0),
                     actionability_score=min(best.composite_score, 1.0),
                     realized_volatility_ratio=max((atm_iv or _REFERENCE_IV) / max(_REFERENCE_IV, 0.001), 0.1),

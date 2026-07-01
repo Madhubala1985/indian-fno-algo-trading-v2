@@ -478,6 +478,10 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     # NIFTY stays capped at PAPER_NIFTY_MAX_LOTS (default 5) so the loser can't
     # out-size the winner.
     if exec_mode in ("paper", "real_dry_run"):
+        # Approach-A recorder ON by default for paper/dry-run: capture the real
+        # option chain each bar to grow the offline validation dataset (safe —
+        # no extra Kite calls, never raises; RECORD_OPTION_CHAIN=0 to disable).
+        env.setdefault("RECORD_OPTION_CHAIN", "1")
         env.setdefault("PAPER_TIER2_RISK_FRAC", "0.08")
         env.setdefault("PAPER_TIER3_RISK_FRAC", "0.08")
         env.setdefault("PAPER_MAX_SINGLE_TRADE_RISK_FRAC", "0.08")

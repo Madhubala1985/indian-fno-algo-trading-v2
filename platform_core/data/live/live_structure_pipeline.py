@@ -531,6 +531,15 @@ _TIER1_MAX_LOTS:  int   = 1
 # + daily-loss halt remain hard. Env-overridable for tuning.
 _TIER2_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER2_MAX_LOTS", "4") or 4)
 _TIER3_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER3_MAX_LOTS", "6") or 6)
+# Capital-scaled lot ceiling (user directive 2026-07-01): the tier ceilings above are
+# the BASE at _LOT_CAP_SCALE_BASE_CAPITAL; as the account compounds past it, the
+# ceiling grows proportionally so sizing keeps scaling with capital instead of being
+# frozen at a fixed cap. Floored at 1.0x (never REDUCES the base ceiling below the
+# baseline). The 10-30% portfolio-heat cap + per-trade risk budget remain the real
+# safety limits. Env-tunable; LOT_CAP_SCALE_BASE_CAPITAL=0 disables (fixed ceiling).
+_LOT_CAP_SCALE_BASE_CAPITAL: float = float(
+    os.environ.get("LOT_CAP_SCALE_BASE_CAPITAL", "400000") or 400000
+)
 _TIER1_MIN_CONF:  float = 0.55    # higher conviction bar in defensive mode
 _TIER2_MIN_CONF:  float = 0.40
 _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selection
@@ -2361,6 +2370,12 @@ def _size_live_position(
     _sym_cap = _PER_SYMBOL_MAX_LOTS.get(state.option_underlying)
     if _sym_cap is not None:
         max_lots = min(max_lots, _sym_cap)
+
+    # Scale the ceiling with capital (only grows above the baseline). Uses the
+    # session-opening equity so intraday P&L doesn't move the ceiling mid-session.
+    if _LOT_CAP_SCALE_BASE_CAPITAL > 0.0:
+        _cap_scale = max(1.0, _session_opening_equity / _LOT_CAP_SCALE_BASE_CAPITAL)
+        max_lots = int(max_lots * _cap_scale)
 
     entry_premium = rec.last_traded_price
     stop_premium  = max(entry_premium * _STOP_LOSS_PCT, 0.01)
