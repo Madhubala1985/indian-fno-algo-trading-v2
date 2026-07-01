@@ -172,9 +172,45 @@ def _validate_access_token(api_key: str, token: str) -> tuple[str, str]:
 
 # ── Preflight ───────────────────────────────────────────────────────────────
 
+def _auto_warmstart_refresh_enabled() -> bool:
+    """Auto-refresh is ON by default; disable with SUPERVISOR_AUTO_WARMSTART_REFRESH=0.
+    Auto-refresh guarantees warm-start data is never stale at session start, so the
+    ~4h NEUTRAL blind-start (found 2026-07-01) can never return operationally."""
+    return str(os.environ.get("SUPERVISOR_AUTO_WARMSTART_REFRESH", "1")).strip().lower() \
+        not in ("0", "false", "no", "off")
+
+
+def _run_warmstart_refresh(days: int = 25) -> bool:
+    """Run scripts/refresh_mcb_warmstart_data.py as a subprocess (needs a VALID
+    token — call only after the token check passes). Returns True on success.
+    Time-bounded so a hung fetch can't block the session indefinitely."""
+    script = ROOT / "scripts" / "refresh_mcb_warmstart_data.py"
+    if not script.exists():
+        _warn(f"warm-start refresh script not found: {script.name}")
+        return False
+    _info(f"Auto-refreshing warm-start data ({days} trading days, all symbols)…")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "--days", str(days), "--overwrite"],
+            cwd=str(ROOT), timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        _warn("warm-start refresh timed out (>600s) — proceeding with existing data")
+        return False
+    except Exception as exc:
+        _warn(f"warm-start refresh failed to launch: {exc}")
+        return False
+    if result.returncode == 0:
+        _ok("warm-start data refreshed")
+        return True
+    _warn(f"warm-start refresh returned non-zero ({result.returncode}) — check output above")
+    return False
+
+
 def run_preflight(run_oi_diagnostics: bool) -> bool:
     _heading("PREFLIGHT CHECKS")
     ok = True
+    token_valid = False
 
     # 1. Access token — present AND valid (tokens expire daily)
     cfg_path = ROOT / "configs" / "kite_config.json"
@@ -190,6 +226,7 @@ def run_preflight(run_oi_diagnostics: bool) -> bool:
                 _ok(f"Access token present (length={len(token)})")
                 status, detail = _validate_access_token(api_key, token)
                 if status == "valid":
+                    token_valid = True
                     _ok(f"Access token valid — {detail}")
                 elif status == "expired":
                     _fail(f"Access token EXPIRED — {detail}")
@@ -203,24 +240,52 @@ def run_preflight(run_oi_diagnostics: bool) -> bool:
             _fail(f"Could not read kite_config.json: {exc}")
             ok = False
 
-    # 2. MCB warm-start CSV age
+    # 2. MCB warm-start CSV age — AUTO-REFRESH when stale/missing (never start blind).
     _PREFIX_MAP = {"BANKNIFTY": "banknifty", "NIFTY": "nifty", "SENSEX": "sensex"}
     today_ist = _now_ist().date()
+
+    def _stale_symbols() -> list[str]:
+        out = []
+        for sym, prefix in _PREFIX_MAP.items():
+            csv_path = _find_warmstart_csv(prefix)
+            if csv_path is None:
+                out.append(f"{sym} (missing)")
+                continue
+            last_ts = _csv_last_ts(csv_path)
+            if last_ts is None:
+                out.append(f"{sym} (unreadable)")
+                continue
+            if _trading_days_since(last_ts.date(), today_ist) > _STALE_THRESHOLD:
+                out.append(f"{sym} ({_trading_days_since(last_ts.date(), today_ist)}d)")
+        return out
+
+    stale = _stale_symbols()
+    if stale:
+        if token_valid and _auto_warmstart_refresh_enabled():
+            _warn(f"warm-start data stale/missing: {', '.join(stale)} — auto-refreshing")
+            _run_warmstart_refresh()
+            stale = _stale_symbols()   # re-check after refresh
+            if stale:
+                _warn(f"still stale/missing after refresh: {', '.join(stale)} "
+                      f"— MCB may start with reduced context")
+        elif not token_valid:
+            _warn(f"warm-start data stale/missing: {', '.join(stale)} — cannot auto-refresh "
+                  f"(token not valid); regenerate token, or run refresh manually")
+        else:
+            _warn(f"warm-start data stale/missing: {', '.join(stale)} — auto-refresh disabled "
+                  f"(SUPERVISOR_AUTO_WARMSTART_REFRESH=0); run scripts/refresh_mcb_warmstart_data.py")
+    # Report per-symbol freshness (post-refresh)
     for sym, prefix in _PREFIX_MAP.items():
         csv_path = _find_warmstart_csv(prefix)
         if csv_path is None:
-            _warn(f"{sym}: no warm-start CSV found in data/ — MCB will start cold")
+            _warn(f"{sym}: no warm-start CSV in data/ — MCB will start cold")
             continue
         last_ts = _csv_last_ts(csv_path)
-        if last_ts is None:
+        age = _trading_days_since(last_ts.date(), today_ist) if last_ts else -1
+        if age < 0:
             _warn(f"{sym}: could not read last timestamp from {csv_path.name}")
-            continue
-        age = _trading_days_since(last_ts.date(), today_ist)
-        if age > _STALE_THRESHOLD:
-            _warn(
-                f"{sym}: warm-start CSV is {age} trading days old ({csv_path.name})"
-                f" — run scripts/refresh_mcb_warmstart_data.py"
-            )
+        elif age > _STALE_THRESHOLD:
+            _warn(f"{sym}: warm-start CSV {age}d old ({csv_path.name}) — still stale")
         else:
             _ok(f"{sym}: warm-start CSV ok  file={csv_path.name}  age={age}d")
 
