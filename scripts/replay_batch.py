@@ -62,6 +62,9 @@ def main() -> int:
     ap.add_argument("--ab", type=float, default=None,
                     help="A/B: run floor=None vs floor=THIS and compare")
     ap.add_argument("--strikes", type=int, default=8)
+    ap.add_argument("--max-dte", type=int, default=8,
+                    help="skip a day if the nearest listed expiry is farther than this "
+                         "(guards against trading a far expiry when the true nearest expired)")
     args = ap.parse_args()
 
     unders = [u.strip().upper() for u in args.underlyings.split(",") if u.strip()]
@@ -80,11 +83,11 @@ def main() -> int:
         adapter = KiteAdapter()
         fetcher = HistoricalOptionChainFetcher(adapter)
         print("\n[A] conviction OFF (floor=None):")
-        a = run_batch(underlyings=unders, days=days, conv_floor=None,
-                      strikes=args.strikes, adapter=adapter, fetcher=fetcher)
+        a = run_batch(underlyings=unders, days=days, conv_floor=None, strikes=args.strikes,
+                      max_entry_dte=args.max_dte, adapter=adapter, fetcher=fetcher)
         print(f"\n[B] conviction ON (floor={args.ab}):")
-        b = run_batch(underlyings=unders, days=days, conv_floor=args.ab,
-                      strikes=args.strikes, adapter=adapter, fetcher=fetcher)
+        b = run_batch(underlyings=unders, days=days, conv_floor=args.ab, strikes=args.strikes,
+                      max_entry_dte=args.max_dte, adapter=adapter, fetcher=fetcher)
         _print_summary(a, "A: conviction OFF")
         _print_summary(b, f"B: conviction floor={args.ab}")
         print("\n" + "-" * 78)
@@ -98,7 +101,7 @@ def main() -> int:
         return 0
 
     batch = run_batch(underlyings=unders, days=days, conv_floor=args.conv_floor,
-                      strikes=args.strikes)
+                      strikes=args.strikes, max_entry_dte=args.max_dte)
     _print_summary(batch, f"floor={args.conv_floor}")
     return 0
 

@@ -74,6 +74,8 @@ class DayReplay:
     result: ReplayResult | None = None
     skipped: str = ""               # non-empty = why this day was skipped
     index_chg_pct: float = 0.0      # session open→close move (bias-vs-move context)
+    expiry: str = ""                # selected option expiry (fidelity visibility)
+    dte: int = 0                    # days-to-expiry of the selected expiry on `day`
 
 
 @dataclass
@@ -116,9 +118,18 @@ class BatchReplayResult:
         return agg
 
 
+# Max days-to-expiry we accept as the "nearest" contract. Kite's instrument dump is
+# current-only, so for a PAST day whose true-nearest weekly has already expired,
+# select_expiry silently returns a far still-listed expiry (e.g. 06-16 → 07-02 = 16d).
+# The model trades the NEAREST expiry (see project_expiry_selection), so replaying a
+# far contract is UNFAITHFUL. A weekly cycle tops out ~8 DTE; beyond this the true
+# nearest expired → SKIP the day rather than validate on the wrong contract.
+_MAX_ENTRY_DTE_DEFAULT: int = 8
+
+
 def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOptionChainFetcher,
                    all_bars: list[LiveBar], conv_floor: float | None = None,
-                   strikes: int = 8) -> DayReplay:
+                   strikes: int = 8, max_entry_dte: int = _MAX_ENTRY_DTE_DEFAULT) -> DayReplay:
     """Replay a single underlying/day on the real chain. Never raises — a fetch or
     data problem returns a SKIPPED DayReplay so the batch keeps going."""
     cfg = UNDERLYING_CFG[underlying]
@@ -135,6 +146,11 @@ def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOp
     dr.index_chg_pct = (c - o) / o * 100.0 if o else 0.0
     try:
         expiry = adapter.select_expiry(underlying, day, min_dte=2, exchange=cfg["exch"])
+        dr.expiry, dr.dte = expiry.isoformat(), (expiry - day).days
+        if dr.dte > max_entry_dte:
+            dr.skipped = (f"nearest expiry expired — only far expiry {dr.expiry} listed "
+                          f"(dte={dr.dte}>{max_entry_dte}); needs Approach-A recorder")
+            return dr
         cache = fetcher.fetch_day(underlying=underlying, day=day, expiry=expiry,
                                   spot_atm=session[0].open_price, strike_step=cfg["step"],
                                   strikes_around_atm=strikes, exchange=cfg["exch"])
@@ -145,7 +161,8 @@ def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOp
     except Exception as exc:
         dr.skipped = f"chain fetch failed: {type(exc).__name__}: {str(exc)[:80]}"
         return dr
-    rep = SurgicalReplay(underlying_symbol=underlying, conviction_floor=conv_floor)
+    rep = SurgicalReplay(underlying_symbol=underlying, feed_symbol=cfg["feed"],
+                         conviction_floor=conv_floor)
     rep.warm_start(warm, cfg["feed"])
     dr.result = rep.run_day(underlying=underlying, feed_symbol=cfg["feed"], exchange=cfg["exch"],
                             expiry=expiry, lot_size=cfg["lot"], strike_step=cfg["step"], day=day,
@@ -154,7 +171,8 @@ def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOp
 
 
 def run_batch(*, underlyings: list[str], days: list[date], conv_floor: float | None = None,
-              strikes: int = 8, adapter=None, fetcher: HistoricalOptionChainFetcher | None = None,
+              strikes: int = 8, max_entry_dte: int = _MAX_ENTRY_DTE_DEFAULT, adapter=None,
+              fetcher: HistoricalOptionChainFetcher | None = None,
               verbose: bool = True) -> BatchReplayResult:
     """Replay every (underlying, day) and aggregate. Builds one KiteAdapter +
     fetcher and loads each index CSV once, reusing across days."""
@@ -171,12 +189,14 @@ def run_batch(*, underlyings: list[str], days: list[date], conv_floor: float | N
         all_bars = csv_cache[underlying]
         for day in days:
             dr = replay_one_day(underlying=underlying, day=day, adapter=adapter, fetcher=fetcher,
-                                all_bars=all_bars, conv_floor=conv_floor, strikes=strikes)
+                                all_bars=all_bars, conv_floor=conv_floor, strikes=strikes,
+                                max_entry_dte=max_entry_dte)
             batch.days.append(dr)
             if verbose:
                 if dr.result is not None:
                     n = len(dr.result.trades)
                     print(f"  {underlying:9} {dr.day}  chg={dr.index_chg_pct:+5.2f}%  "
+                          f"exp={dr.expiry}(dte={dr.dte})  "
                           f"trades={n:2}  pnl=₹{dr.result.total_pnl:>+9,.0f}")
                 else:
                     print(f"  {underlying:9} {dr.day}  SKIPPED — {dr.skipped}")

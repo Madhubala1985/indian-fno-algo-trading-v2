@@ -87,7 +87,8 @@ def main() -> int:
     chain_by_min = fetcher.load_day(cache)
     print(f"[replay] chain minutes={len(chain_by_min)}  cache={cache.name}")
 
-    rep = SurgicalReplay(underlying_symbol=args.underlying, conviction_floor=args.conv_floor)
+    rep = SurgicalReplay(underlying_symbol=args.underlying, feed_symbol=cfg["feed"],
+                         conviction_floor=args.conv_floor)
     rep.warm_start(warm, cfg["feed"])
     res = rep.run_day(underlying=args.underlying, feed_symbol=cfg["feed"], exchange=cfg["exch"],
                       expiry=expiry, lot_size=cfg["lot"], strike_step=cfg["step"], day=day,

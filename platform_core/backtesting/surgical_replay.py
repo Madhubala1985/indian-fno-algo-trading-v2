@@ -162,7 +162,14 @@ class SurgicalReplay:
     TAKE_PROFIT_PCT = 2.00     # exit at ≥200% of entry (premium doubles), like live (_TAKE_PROFIT_PCT)
     MIN_SCORE_MARGIN = 0.015   # SENSEX-style margin gate
 
-    def __init__(self, *, underlying_symbol: str, conviction_floor: float | None = None) -> None:
+    def __init__(self, *, underlying_symbol: str, feed_symbol: str | None = None,
+                 conviction_floor: float | None = None) -> None:
+        # The structure stack validates each bar's instrument_id against its config,
+        # and the adapter tags StructureBars with bar.symbol = the FEED symbol (e.g.
+        # NIFTY50, not NIFTY). So swing/structure MUST be built on the feed symbol;
+        # only the MCB keys on the underlying. Defaults to underlying_symbol for the
+        # SENSEX case where feed == underlying.
+        struct_symbol = feed_symbol or underlying_symbol
         self._mtf = MultiTimeframeBuilder()
         self._daily = None
         self._ctx = MarketContextBuilder(underlying_symbol=underlying_symbol, min_history_bars=20)
@@ -180,24 +187,24 @@ class SurgicalReplay:
         _tf = "MIN_1"
         self._adapter = LiveStructureAdapter()
         self._swing = SwingDetector(
-            config=SwingDetectorConfig(instrument_id=underlying_symbol, timeframe=_tf)
+            config=SwingDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
         )
         self._engine = StructureEngine(
-            config=StructureEngineConfig(instrument_id=underlying_symbol, timeframe=_tf),
+            config=StructureEngineConfig(instrument_id=struct_symbol, timeframe=_tf),
             liquidity_sweep_detector=LiquiditySweepDetector(
-                config=LiquiditySweepDetectorConfig(instrument_id=underlying_symbol, timeframe=_tf)
+                config=LiquiditySweepDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
             ),
             bos_detector=BOSDetector(
-                config=BOSDetectorConfig(instrument_id=underlying_symbol, timeframe=_tf)
+                config=BOSDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
             ),
             choch_detector=CHOCHDetector(
-                config=CHOCHDetectorConfig(instrument_id=underlying_symbol, timeframe=_tf)
+                config=CHOCHDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
             ),
             fvg_engine=FVGEngine(
-                config=FVGEngineConfig(instrument_id=underlying_symbol, timeframe=_tf)
+                config=FVGEngineConfig(instrument_id=struct_symbol, timeframe=_tf)
             ),
             support_resistance_engine=SupportResistanceEngine(
-                config=SupportResistanceEngineConfig(instrument_id=underlying_symbol, timeframe=_tf)
+                config=SupportResistanceEngineConfig(instrument_id=struct_symbol, timeframe=_tf)
             ),
         )
 
