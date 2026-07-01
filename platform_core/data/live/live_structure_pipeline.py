@@ -1051,9 +1051,16 @@ _conviction_shadow = (
 #    traded and lost on 2026-06-30).
 # All env-tunable; set PAPER_CONV_LIVE=0 to fall back to pure MCB behaviour.
 _conviction_scorer = _ConvictionScorer()
+# REVERTED to shadow-only 2026-07-01 (default OFF, opt-in PAPER_CONV_LIVE=1). Two
+# live days were 1-1: 06-30 conviction ranked NIFTY>SENSEX and SENSEX lost (looked
+# right); 07-01 conviction ranked NIFTY>SENSEX again but NIFTY LOST and SENSEX won
+# (wrong) — and the pure-probability routing let NIFTY trade and cost -1,788 (85%
+# of the day's loss). Conviction is NOT validated (1-1), so it returns to SHADOW
+# and SENSEX-priority routing is restored. Re-enable only after it earns it on a
+# real sample.
 _CONV_LIVE: bool = (
     _EXECUTION_MODE in ("paper", "real_dry_run")
-    and _os.environ.get("PAPER_CONV_LIVE", "1") != "0"
+    and _os.environ.get("PAPER_CONV_LIVE", "0") == "1"
 )
 _CONV_FLOOR:     float = float(_os.environ.get("PAPER_CONV_FLOOR", "0.40") or 0.40)
 _CONV_NIFTY_MIN: float = float(_os.environ.get("PAPER_CONV_NIFTY_MIN", "0.60") or 0.60)
@@ -1758,16 +1765,34 @@ def _warm_start_mcb_from_csv() -> None:
     """
     for key, und_state in _runtime_by_underlying.items():
         existing_15m = len(und_state.bar_history.get("15m", []))
-        if existing_15m >= 20:
+        # Only skip the CSV if the state ALSO seeds the HIGHER timeframes (4h + 1d,
+        # which carry 60% of the MCB bias weight — 1d 0.35, 4h 0.25). The state
+        # persists 1m/15m/1h but NOT 4h/1d, so N 15m bars (~hours) cannot build
+        # daily/4h context — skipping the CSV then leaves the higher TFs BLIND and
+        # the MCB stuck NEUTRAL for hours (observed 2026-07-01: ~4h delay to first
+        # trade). Load the CSV whenever 4h or 1d is missing so previous-days'
+        # candles seed the higher timeframes near open, as the model did before.
+        try:
+            _tfs_ready = set(und_state.market_ctx_builder.build().timeframes_with_history)
+        except Exception:
+            _tfs_ready = set()
+        _higher_ready = {"4h", "1d"}.issubset(_tfs_ready)
+        if existing_15m >= 20 and _higher_ready:
             try:
                 _ctx = und_state.market_ctx_builder.build()
                 print(
-                    f"[MCB WARMSTART] {key}: state has {existing_15m} 15m bars — "
-                    f"skipping CSV  bias={_ctx.bias}  conf={_ctx.confidence:.2f}"
+                    f"[MCB WARMSTART] {key}: state has {existing_15m} 15m bars + 4h/1d "
+                    f"ready — skipping CSV  bias={_ctx.bias}  conf={_ctx.confidence:.2f}"
                 )
             except Exception:
                 pass
             continue
+        if existing_15m >= 20 and not _higher_ready:
+            print(
+                f"[MCB WARMSTART] {key}: state has {existing_15m} 15m bars but 4h/1d "
+                f"NOT seeded — loading CSV to warm the higher timeframes (avoids the "
+                f"NEUTRAL-bias startup delay)."
+            )
 
         csv_path = _find_warmstart_csv(key)
         if csv_path is None:
