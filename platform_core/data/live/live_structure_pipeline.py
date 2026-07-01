@@ -1920,6 +1920,47 @@ _print_gate_startup()  # print gate profile + per-underlying thresholds at every
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
 
+# ── Warm-start readiness guard — NEVER start blind ────────────────────────────
+# The 4h + 1d timeframes carry 60% of the MCB bias weight. If they are not seeded
+# the model starts BLIND and sits NEUTRAL for hours (observed 2026-07-01). The
+# model won't trade blind — bias stays NEUTRAL — but the operator MUST know to
+# refresh the warm-start data. Loud, unmissable CRITICAL alert; must be clean
+# before arming real funds.
+def _verify_warmstart_not_blind() -> None:
+    _blind: list[tuple[str, list[str]]] = []
+    for _k, _st in _runtime_by_underlying.items():
+        if not is_option_target_enabled(_k):
+            continue
+        try:
+            _rd = set(_st.market_ctx_builder.build().timeframes_with_history)
+        except Exception:
+            _rd = set()
+        if not {"4h", "1d"}.issubset(_rd):
+            _blind.append((_k, sorted(_rd)))
+    if _blind:
+        print("\n" + "=" * 66)
+        print("[MCB WARMSTART CRITICAL] Higher timeframes (4h/1d) NOT seeded —")
+        print("  the model would start BLIND (bias NEUTRAL for hours).")
+        for _k, _rd in _blind:
+            print(f"    {_k}: ready={_rd}  — missing 4h and/or 1d")
+        print("  FIX: PYTHONPATH=. python scripts/refresh_mcb_warmstart_data.py, then restart.")
+        print("  *** Do NOT arm real funds with a blind start. ***")
+        print("=" * 66 + "\n")
+        try:
+            _db.write_runtime_event(
+                "MCB_WARMSTART_BLIND", severity="CRITICAL",
+                message=f"higher timeframes not seeded: {_blind}",
+                equity=_INITIAL_EQUITY, bar_index=0,
+            )
+        except Exception:
+            pass
+    else:
+        print("[MCB WARMSTART] READINESS OK — all enabled underlyings have 4h+1d "
+              "seeded (not starting blind).")
+
+
+_verify_warmstart_not_blind()
+
 # Start persistence layer — fire-and-forget, never affects trading logic
 try:
     _session_ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
