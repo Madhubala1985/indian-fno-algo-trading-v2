@@ -96,13 +96,26 @@ class HistoricalOptionChainFetcher:
 
     # ── load a cached day into a minute-indexed structure ────────────────────
     def load_day(self, cache: Path) -> dict:
-        """{minute_iso: [contract_dict, ...]} from a cache file."""
-        by_min: dict[str, list] = {}
+        """{minute_iso: [contract_dict, ...]} from a cache file.
+
+        De-dupes by (ts, tradingsymbol), keeping the LAST occurrence — defensive
+        against the Approach-A recorder appending the same minute twice (e.g. a
+        same-day session restart re-records earlier minutes). A no-op for clean
+        Approach-B fetched files (no dupes)."""
+        by_key: dict[tuple, dict] = {}
+        order: list[tuple] = []
         for line in cache.read_text().splitlines():
             try:
                 d = json.loads(line)
             except Exception:
                 continue
+            k = (d["ts"], d.get("tradingsymbol"))
+            if k not in by_key:
+                order.append(k)
+            by_key[k] = d
+        by_min: dict[str, list] = {}
+        for k in order:
+            d = by_key[k]
             by_min.setdefault(d["ts"], []).append(d)
         return by_min
 

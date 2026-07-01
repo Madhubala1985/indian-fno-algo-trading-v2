@@ -143,6 +143,11 @@ from platform_core.data.live.live_structure_adapter import (
     LiveStructureAdapter,
 )
 
+# Approach-A live chain recorder (off by default; env RECORD_OPTION_CHAIN=1).
+# Exception-safe + no extra Kite calls — serialises a chain the live path already
+# fetched. See platform_core/data/live/option_chain_recorder.py.
+from platform_core.data.live.option_chain_recorder import record_chain as _record_chain
+
 from platform_core.data.live.live_tick_mapper import (
     LiveTickMapper,
 )
@@ -3160,6 +3165,18 @@ def on_ticks(raw_ticks):
                             strike_step=_current_state.strike_step,
                             exchange=_current_state.exchange,
                         )
+                        # Approach-A recorder: persist the REAL chain for replay
+                        # (no-op unless RECORD_OPTION_CHAIN=1; never raises). Keyed
+                        # to the bar's minute so it aligns with the replay's index.
+                        try:
+                            _record_chain(
+                                live_chain,
+                                underlying=_current_state.option_underlying,
+                                expiry=expiry,
+                                bar_ts=completed_bar.start_timestamp,
+                            )
+                        except Exception:
+                            pass
                         _chain_snapshots = [live_chain]
     
                         options_ctx = _opt_ctx_builder.build(
