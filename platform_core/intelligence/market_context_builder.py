@@ -46,6 +46,7 @@ Charter timeframe hierarchy preserved:
 """
 from __future__ import annotations
 
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -85,6 +86,20 @@ _TF_WEIGHTS: dict[str, float] = {
 # Directional score thresholds
 _LONG_THRESHOLD:  float = 0.18   # net weighted bullish score to confirm LONG
 _SHORT_THRESHOLD: float = -0.18  # net weighted bearish score to confirm SHORT
+
+# ── Graded confidence (de-saturation) ────────────────────────────────────────
+# The legacy confidence = clip(|trend_score| / 0.18) PEGS at 1.0 for ANY confirmed
+# signal (|trend_score| >= threshold), discarding the strength signal — measured
+# 100% of trades saturate at conf=1.0 while trend_score spans 0.18..0.9 AND
+# separates winners (0.565) from losers (0.383). Graded mode maps the confirmed
+# range [threshold, 1.0] -> [floor, 1.0] so confidence-scaled sizing can put more
+# on strong setups and less on marginal ones. Bias itself is unaffected (it keys on
+# trend_score, not confidence). OFF by default (MCB_GRADED_CONFIDENCE=1 enables) so
+# live is unchanged until proven on the batch. Floor 0.5 stays above the live entry
+# min_confidence gates (Tier2 0.40), so the trade SET does not change — only sizing.
+_GRADED_CONFIDENCE: bool = str(os.environ.get("MCB_GRADED_CONFIDENCE", "")).strip().lower() \
+    in ("1", "true", "yes", "on")
+_CONF_FLOOR: float = float(os.environ.get("MCB_CONF_FLOOR", "0.5") or 0.5)
 
 
 # ── Public types ───────────────────────────────────────────────────────────────
@@ -435,7 +450,18 @@ def _fuse_directions(
 
     # Confidence scaled to threshold
     max_threshold = max(_LONG_THRESHOLD, fabs(_SHORT_THRESHOLD))
-    confidence = _clip01(fabs(trend_score) / max_threshold)
+    _at = fabs(trend_score)
+    if _GRADED_CONFIDENCE:
+        # Grade the confirmed range [threshold, 1.0] -> [floor, 1.0]; below threshold
+        # (NEUTRAL, not traded) ramp 0 -> floor so it stays monotonic.
+        if _at >= max_threshold:
+            confidence = _clip01(
+                _CONF_FLOOR + (_at - max_threshold) / (1.0 - max_threshold) * (1.0 - _CONF_FLOOR)
+            )
+        else:
+            confidence = _clip01(_at / max_threshold * _CONF_FLOOR)
+    else:
+        confidence = _clip01(_at / max_threshold)   # legacy: saturates at threshold
 
     # Regime score — average classifier confidence
     regime_score = fmean(regime_confidences) if regime_confidences else 0.0

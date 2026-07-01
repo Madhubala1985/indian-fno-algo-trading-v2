@@ -159,6 +159,8 @@ class ReplayTrade:
     pnl: float = 0.0
     reason: str = ""
     conviction: float = 0.0
+    mcb_conf: float = 0.0      # MCB confidence at entry (saturation diagnostic)
+    trend_score: float = 0.0   # pre-clip weighted directional score at entry
 
 
 @dataclass
@@ -504,7 +506,9 @@ class SurgicalReplay:
                     continue
                 pos = ReplayTrade(underlying=underlying, contract=best.option_symbol,
                                   direction=bias, entry_ts=minute_iso, entry_prem=entry,
-                                  lots=lots, lot_size=lot_size, conviction=round(conv, 3))
+                                  lots=lots, lot_size=lot_size, conviction=round(conv, 3),
+                                  mcb_conf=round(float(ctx.confidence), 3),
+                                  trend_score=round(float(getattr(ctx, "trend_score", 0.0)), 3))
                 open_premium_cost = entry * lot_size * lots
             except Exception:
                 continue
