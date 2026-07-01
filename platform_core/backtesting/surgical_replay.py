@@ -74,9 +74,13 @@ _REENTRY_LOCKOUT_BARS: int = int(os.environ.get("REENTRY_LOCKOUT_BARS", "60") or
 _CONTEXT_CONTRADICTION_COOLDOWN_BARS: int = _cooldown_bars_from_env()               # default 5
 
 _IST = timezone(timedelta(hours=5, minutes=30))
-# MarketContextBuilder supports 1m/15m/1h/4h/1d — the MTF builder also emits 5m,
-# which is skipped (not a supported MCB slot).
-_TF_NAME = {"15m": "15m", "1h": "1h", "4h": "4h"}
+# Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
+# MIN_5/MIN_15/HOUR_1/HOUR_4 (NOT "15m"/"1h"/"4h"), so this MUST key on those raw
+# keys — mirrors live _MTF_KEY_MAP / BacktestRunner. MIN_5 is intentionally omitted
+# (5m is not an MCB SUPPORTED_TIMEFRAMES slot). Bug (fixed 1c): the old map keyed on
+# "15m"/"1h"/"4h", matched NOTHING, so 15m/1h/4h were NEVER fed to the MCB — bias ran
+# on 1m+1d only, causing the replay's bias to diverge (late-LONG) from live.
+_TF_NAME = {"MIN_15": "15m", "HOUR_1": "1h", "HOUR_4": "4h"}
 
 
 def _structure_exit_reason(emitted_events, direction: str) -> str | None:
