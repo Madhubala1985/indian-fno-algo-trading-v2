@@ -104,6 +104,9 @@ def main() -> int:
               f"pnl=₹{t.pnl:>+8.0f}  {t.reason}")
     print("-" * 74)
     print(f"  TRADES {len(res.trades)}   TOTAL P&L ₹{res.total_pnl:+,.0f}   (conv_floor={args.conv_floor})")
+    if res.blocks:
+        print("  entry-gate blocks: " + "  ".join(
+            f"{k}={v}" for k, v in sorted(res.blocks.items(), key=lambda kv: -kv[1])))
     print("=" * 74)
     return 0
 
