@@ -66,11 +66,15 @@ from platform_core.execution.context_cooldown import (
 # Shared ENTRY gates (same code path as live — no drift): time-of-day cutoff +
 # same-contract session loss limit. The OR engine below is the live class too.
 from platform_core.execution.entry_gates import (
+    DirectionEntryCounter as _DirectionEntryCounter,
     SameContractLossTracker as _SameContractLossTracker,
     entry_cutoff_hour as _entry_cutoff_hour,
     time_cutoff_blocked as _time_cutoff_blocked,
 )
 from platform_core.analytics.structure.opening_range import OpeningRangeEngine as _OREngine
+from platform_core.analytics.structure.session_context import (
+    SessionContextEngine as _SessionEngine,
+)
 
 # ── Live ENTRY-gate constants (fidelity v2, mirrored from live_structure_pipeline
 # so the replay applies the SAME gate stack). Same env vars + defaults keep a single
@@ -177,6 +181,8 @@ class ReplayTrade:
     conviction: float = 0.0
     mcb_conf: float = 0.0      # MCB confidence at entry (saturation diagnostic)
     trend_score: float = 0.0   # pre-clip weighted directional score at entry
+    or_ext: float = 0.0        # spot extension beyond the OR boundary in the trade
+                               # direction, in OR-width units (trend-day signature)
 
 
 @dataclass
@@ -371,7 +377,9 @@ class SurgicalReplay:
         reentry_loss_streak = 0             # consecutive losing exits (chop brake)
         reentry_lockout_until_bar = -1      # entries blocked until this bar
         contract_loss_tracker = _SameContractLossTracker()  # same-contract session loss limit
-        or_engine = _OREngine()             # live OR gate (incl. breakout buffer)
+        direction_counter = _DirectionEntryCounter()        # same-direction session entry cap
+        or_engine = _OREngine()             # live OR gate (buffer + extension chase)
+        session_engine = _SessionEngine()   # live session phases (blocks 15:00+ CLOSING)
 
         # ── Capital/equity state for % sizing (session basis = starting capital) ─
         equity = self._capital
@@ -476,6 +484,12 @@ class SurgicalReplay:
                 _blk: str | None = None
                 if _time_cutoff_blocked(bar.start_timestamp, _ENTRY_CUTOFF_IST_HOUR):
                     _blk = f"TIME_CUTOFF(>={_ENTRY_CUTOFF_IST_HOUR}IST)"   # afternoon-chop guard
+                # [SESSION] Live session-phase gate: PRE_OPEN/OPENING/CLOSING block
+                # entries (live_structure_pipeline gates on session_ctx.allow_entry).
+                # Fidelity fix: the replay previously allowed 15:00+ entries live
+                # would never take.
+                if _blk is None and not session_engine.classify(bar.start_timestamp).allow_entry:
+                    _blk = "SESSION_PHASE_NO_ENTRY"
                 # [OR] Opening-range filter (live: zeroes/penalizes effective_conf
                 # below every tier min-conf, so both cases BLOCK). Uses the same
                 # OpeningRange class incl. the breakout buffer.
@@ -490,6 +504,9 @@ class SurgicalReplay:
                 if _blk is None and contract_loss_tracker.blocked(
                         contract=best.option_symbol, direction=bias):
                     _blk = "SAME_CONTRACT_SESSION_BLOCK"
+                # [A-direction] Same-direction session entry cap (shared with live).
+                if _blk is None and direction_counter.blocked(direction=bias):
+                    _blk = "DIRECTION_ENTRY_CAP"
                 if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
                     _blk = "CHOP_REENTRY_LOCKOUT"
                 if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up
@@ -545,11 +562,19 @@ class SurgicalReplay:
                 if lots < 1:
                     _block("SIZING_ZERO_LOTS")
                     continue
+                _or_ext = 0.0
+                if or_engine.ready:
+                    _r = or_engine.current_range
+                    _w = max(_r.or_high - _r.or_low, 1e-9)
+                    _or_ext = ((spot - _r.or_high) if bias == "LONG"
+                               else (_r.or_low - spot)) / _w
                 pos = ReplayTrade(underlying=underlying, contract=best.option_symbol,
                                   direction=bias, entry_ts=minute_iso, entry_prem=entry,
                                   lots=lots, lot_size=lot_size, conviction=round(conv, 3),
                                   mcb_conf=round(float(ctx.confidence), 3),
-                                  trend_score=round(float(getattr(ctx, "trend_score", 0.0)), 3))
+                                  trend_score=round(float(getattr(ctx, "trend_score", 0.0)), 3),
+                                  or_ext=round(_or_ext, 3))
+                direction_counter.record_entry(direction=bias)
                 open_premium_cost = entry * lot_size * lots
             except Exception:
                 continue

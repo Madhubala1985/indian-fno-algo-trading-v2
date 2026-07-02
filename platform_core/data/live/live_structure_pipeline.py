@@ -111,6 +111,7 @@ from platform_core.analytics.structure.previous_day_levels import (
 )
 
 from platform_core.execution.entry_gates import (
+    DirectionEntryCounter as _DirectionEntryCounter,
     SameContractLossTracker as _SameContractLossTracker,
     entry_cutoff_hour as _entry_cutoff_hour,
     time_cutoff_blocked as _time_cutoff_blocked,
@@ -359,6 +360,9 @@ class UnderlyingRuntimeState:
     # Same-contract session loss limit: N losing exits on one contract+direction
     # block that pair for the rest of the session (same-strike churn killer).
     contract_loss_tracker: _SameContractLossTracker = field(default_factory=_SameContractLossTracker)
+    # Same-direction session entry cap: the day's initiative move gets harvested
+    # at most N times; later same-direction re-entries chase the tail (measured).
+    direction_entry_counter: _DirectionEntryCounter = field(default_factory=_DirectionEntryCounter)
     live_bars_seen:   int   = 0                 # live 1m bars received this session
     bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
     bars_since_save:  int  = 0                  # bars since last state-file write
@@ -695,11 +699,11 @@ from platform_core.execution.context_cooldown import (
 )
 _CONTEXT_CONTRADICTION_COOLDOWN_BARS: int = _cooldown_bars_from_env()
 
-# Time-of-day entry cutoff (afternoon-chop guard). Measured on real-premium
-# replay 06-24..07-01 (morning +16,916 vs 12-14 IST -15,694) and confirmed
-# OUT-OF-SAMPLE live 07-02 (both afternoon entries lost, -6,884 of -9,754).
-# Blocks NEW entries at/after this IST hour; managing/exits unaffected.
-# LIVE_ENTRY_CUTOFF_IST=0 disables.
+# Time-of-day entry cutoff — default OFF. The afternoon leak turned out to be
+# EXTENSION CHASING, not a time effect (per-trade replay: all afternoon losers
+# entered >=1.6 OR-widths into an extended move; a fresh afternoon breakout won).
+# The opening_range.py extension-chase gate (OR_MAX_EXTENSION=2.0) replaces this;
+# LIVE_ENTRY_CUTOFF_IST=<hour> re-arms a hard cutoff for A/B if ever needed.
 _ENTRY_CUTOFF_IST_HOUR: int = _entry_cutoff_hour("LIVE_ENTRY_CUTOFF_IST")
 
 # Strike quality gate for Tier2/3: reject low-quality strikes that passed OI filter.
@@ -867,12 +871,16 @@ def _print_gate_startup() -> None:
         f"SENSEX:{_MIN_ABS_OI_BY_SYM['SENSEX']:,.0f}  "
         f"(absolute tradeability — applies to all profiles/modes)"
     )
-    from platform_core.analytics.structure.opening_range import _BREAKOUT_BUFFER_FRAC as _or_buf
+    from platform_core.analytics.structure.opening_range import (
+        _BREAKOUT_BUFFER_FRAC as _or_buf,
+        _MAX_EXTENSION as _or_max_ext,
+    )
     print(
-        f"[CHOP GUARDS] entry_cutoff={_ENTRY_CUTOFF_IST_HOUR}:00 IST (0=off)  "
-        f"or_breakout_buffer_frac={_or_buf:.2f}  "
-        f"same_contract_session_max_losses="
-        f"{_SameContractLossTracker().max_losses}"
+        f"[CHOP GUARDS] or_breakout_buffer_frac={_or_buf:.2f}  "
+        f"or_max_extension={_or_max_ext:.1f} (chase guard)  "
+        f"same_contract_session_max_losses={_SameContractLossTracker().max_losses}  "
+        f"same_direction_session_max_entries={_DirectionEntryCounter().max_entries}  "
+        f"entry_cutoff={_ENTRY_CUTOFF_IST_HOUR}:00 IST (0=off)"
     )
     if _PAPER_GATE_PROFILE == "paper_trade_unlock":
         print("[WARNING] Paper trade-unlock experiment — not approved for real funds.")
@@ -1389,6 +1397,10 @@ def _save_state() -> bool:
             und: und_state.contract_loss_tracker.to_dict()
             for und, und_state in _runtime_by_underlying.items()
         },
+        "direction_session_entries_by_underlying": {
+            und: und_state.direction_entry_counter.to_dict()
+            for und, und_state in _runtime_by_underlying.items()
+        },
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1563,6 +1575,12 @@ def _load_state() -> None:
             if _und_state is not None and _loss_data:
                 _und_state.contract_loss_tracker.restore(_loss_data)
                 print(f"[STATE] {_und}: same-contract session loss counts restored: {_loss_data}")
+        _dirs_by_und = s.get("direction_session_entries_by_underlying") or {}
+        for _und, _dir_data in _dirs_by_und.items():
+            _und_state = _runtime_by_underlying.get(_und)
+            if _und_state is not None and _dir_data:
+                _und_state.direction_entry_counter.restore(_dir_data)
+                print(f"[STATE] {_und}: same-direction session entry counts restored: {_dir_data}")
     print(
         f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
@@ -3854,6 +3872,23 @@ def on_ticks(raw_ticks):
                             f"losing exits this session"
                         )
 
+                    # [A-direction] Same-direction session entry cap: after N
+                    # entries in one direction the day's move has been harvested —
+                    # later same-direction re-entries chase the tail (measured:
+                    # every 4th+ same-direction entry lost). A reversal is free.
+                    if (
+                        _pre_entry_block is None
+                        and _current_state.direction_entry_counter.blocked(
+                            direction=str(_mctx.bias)
+                        )
+                    ):
+                        _pre_entry_block = (
+                            f"DIRECTION_ENTRY_CAP {_mctx.bias} — "
+                            f"{_current_state.direction_entry_counter.entries(direction=str(_mctx.bias))} "
+                            f"entries this session (max "
+                            f"{_current_state.direction_entry_counter.max_entries})"
+                        )
+
                     # [A-chop] Chop re-entry lockout: after consecutive losing exits
                     # the underlying is locked out briefly (a win resets the streak).
                     if _pre_entry_block is None and _bar_count < _current_state.reentry_lockout_until_bar:
@@ -4394,6 +4429,9 @@ def on_ticks(raw_ticks):
                                                     bar_index=_bar_count,
                                                     lots=_lots,
                                                     entry_premium_override=_exec_premium,
+                                                )
+                                                _current_state.direction_entry_counter.record_entry(
+                                                    direction=str(_mctx.bias),
                                                 )
                                                 if _EXECUTION_MODE == "real_armed":
                                                     print(

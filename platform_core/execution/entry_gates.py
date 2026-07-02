@@ -32,8 +32,13 @@ from datetime import timedelta, timezone
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
-# 0 disables. Default 12 = block new entries from 12:00 IST onward (measured).
-_DEFAULT_ENTRY_CUTOFF_IST = 12
+# 0 disables (the DEFAULT). The blunt noon cutoff was replaced 2026-07-02 by the
+# opening_range.py extension-chase gate (OR_MAX_EXTENSION): per-trade replay data
+# showed the afternoon losses were EXTENSION CHASES (entering >=1.6 OR-widths into
+# an already-extended move), not a time-of-day effect — a fresh afternoon breakout
+# is tradeable and profitable (06-24 13:14 +1,465 at ext 1.59). Env re-enables a
+# hard cutoff for A/B without code changes.
+_DEFAULT_ENTRY_CUTOFF_IST = 0
 # Losing exits on one contract+direction before it is blocked for the session.
 _DEFAULT_MAX_CONTRACT_LOSSES = 2
 
@@ -101,4 +106,49 @@ class SameContractLossTracker:
             self._losses = {str(k): int(v) for k, v in data.items()}
 
 
-__all__ = ["entry_cutoff_hour", "time_cutoff_blocked", "SameContractLossTracker"]
+class DirectionEntryCounter:
+    """Per-session count of ENTRIES per direction on one underlying.
+
+    Measured (real-premium replay 06-24..07-01): every 4th+ same-direction
+    entry in a session LOST (07-01 SENSEX won #1-#3 then #4/#5 lost; NIFTY won
+    #1-#3 then #4 lost) — once the day's initiative move has been harvested,
+    later same-direction re-entries chase the tail of the move. Cap = 3 mirrors
+    the existing 3-based risk discipline (3-consec-loss halt, 3-loss chop
+    brake); a REVERSAL (opposite direction) is a fresh thesis and stays free.
+    Session-scoped — construct fresh each session/day.
+    """
+
+    def __init__(self, max_entries: int | None = None) -> None:
+        if max_entries is None:
+            try:
+                max_entries = int(
+                    os.environ.get("SAME_DIRECTION_SESSION_MAX_ENTRIES", "3") or 3)
+            except Exception:
+                max_entries = 3
+        self.max_entries = max_entries
+        self._entries: dict[str, int] = {}
+
+    def record_entry(self, *, direction: str) -> None:
+        self._entries[direction] = self._entries.get(direction, 0) + 1
+
+    def entries(self, *, direction: str) -> int:
+        return self._entries.get(direction, 0)
+
+    def blocked(self, *, direction: str) -> bool:
+        if self.max_entries <= 0:
+            return False
+        return self.entries(direction=direction) >= self.max_entries
+
+    # Persistence across a mid-session restart (same pattern as the tracker):
+    def to_dict(self) -> dict[str, int]:
+        return dict(self._entries)
+
+    def restore(self, data: dict | None) -> None:
+        if isinstance(data, dict):
+            self._entries = {str(k): int(v) for k, v in data.items()}
+
+
+__all__ = [
+    "entry_cutoff_hour", "time_cutoff_blocked",
+    "SameContractLossTracker", "DirectionEntryCounter",
+]

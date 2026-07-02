@@ -38,6 +38,19 @@ _BREAKOUT_BUFFER_FRAC: float = float(
     _os.environ.get("OR_BREAKOUT_BUFFER_FRAC", "0.25") or 0.25
 )
 
+# Extension-chase guard: entering WITH a move that has already extended far
+# beyond the opening range is late-trend chasing — the initiative (institutional)
+# phase of the breakout is over and responsive traders fade it. Measured on the
+# real-premium replay batch (06-24..07-01): every losing afternoon entry had
+# extension >= 1.6 OR-widths (1.93/2.19/2.25/2.29/2.36 all lost); every winner
+# entered at 0.28-1.59. Auction-theory motivated round threshold, NOT fitted to
+# the sample edge: past 2 full OR-widths the move is extended — do not chase.
+# This REPLACES the blunt 12:00 time cutoff: a fresh afternoon breakout (low
+# extension) stays tradeable; a chase is blocked at any hour. 0 disables.
+_MAX_EXTENSION: float = float(
+    _os.environ.get("OR_MAX_EXTENSION", "2.0") or 2.0
+)
+
 
 @dataclass(frozen=True, slots=True)
 class OpeningRange:
@@ -58,6 +71,14 @@ class OpeningRange:
             return "BELOW_OR"
         return "INSIDE_OR"
 
+    def extension(self, spot: float, bias: str) -> float:
+        """Signed distance beyond the OR boundary in the BIAS direction,
+        in OR-width units. Negative = spot on the other side of the range."""
+        width = max(self.or_high - self.or_low, 1e-9)
+        if bias == "SHORT":
+            return (self.or_low - spot) / width
+        return (spot - self.or_high) / width
+
     def confidence_multiplier(self, spot: float, bias: str) -> tuple[float, str]:
         """Returns (multiplier, reason)."""
         pos = self.position(spot)
@@ -68,8 +89,20 @@ class OpeningRange:
                 f", breakout buffer ±{buf:.0f})"
             )
         if bias == "LONG" and pos == "ABOVE_OR":
+            ext = self.extension(spot, bias)
+            if 0.0 < _MAX_EXTENSION < ext:
+                return 0.0, (
+                    f"extension chase: spot {ext:.2f} OR-widths above range "
+                    f"(max {_MAX_EXTENSION:.1f}) — move is extended, not chasing"
+                )
             return 1.0, ""
         if bias == "SHORT" and pos == "BELOW_OR":
+            ext = self.extension(spot, bias)
+            if 0.0 < _MAX_EXTENSION < ext:
+                return 0.0, (
+                    f"extension chase: spot {ext:.2f} OR-widths below range "
+                    f"(max {_MAX_EXTENSION:.1f}) — move is extended, not chasing"
+                )
             return 1.0, ""
         if bias == "LONG" and pos == "BELOW_OR":
             return _CONTRADICTION_MULT, f"LONG signal but spot below OR ({self.or_low:.0f})"
