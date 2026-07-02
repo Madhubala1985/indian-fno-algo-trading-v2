@@ -485,8 +485,14 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         env.setdefault("PAPER_TIER2_RISK_FRAC", "0.08")
         env.setdefault("PAPER_TIER3_RISK_FRAC", "0.08")
         env.setdefault("PAPER_MAX_SINGLE_TRADE_RISK_FRAC", "0.08")
-        env.setdefault("PAPER_TIER2_MAX_LOTS", "10")
-        env.setdefault("PAPER_TIER3_MAX_LOTS", "15")
+        # Pure %-of-capital sizing (user directive 2026-07-03): 0 = no fixed
+        # lot-count ceiling. Lots derive from the 8% risk budget, the 15%
+        # single-position premium cap (PAPER_MAX_POSITION_PREMIUM_FRAC, tail
+        # defense — an option buyer's worst case is the whole premium), the 30%
+        # portfolio heat cap, and the exchange freeze-qty rail. real_armed
+        # keeps the conservative fixed defaults.
+        env.setdefault("PAPER_TIER2_MAX_LOTS", "0")
+        env.setdefault("PAPER_TIER3_MAX_LOTS", "0")
         env.setdefault("PAPER_MAX_CONF_SCALE", "1.5")
         env.setdefault("PAPER_MAX_HEAT_FRACTION", "0.30")
         # Halt thresholds kept COHERENT with the aggressive sizing: at 8-10 lots

@@ -105,6 +105,16 @@ _REFERENCE_IV: float = 0.18
 # Capital-scaled lot ceiling — MUST match live (_LOT_CAP_SCALE_BASE_CAPITAL) so the
 # replay and live size identically. Ceiling grows as capital exceeds the baseline.
 _LOT_CAP_SCALE_BASE: float = float(os.environ.get("LOT_CAP_SCALE_BASE_CAPITAL", "400000") or 400000)
+# %-of-capital sizing rails — MUST match live: single-position premium cap (an
+# option buyer's true worst case is the whole premium) + exchange freeze-qty rail.
+_MAX_POSITION_PREMIUM_FRAC: float = float(
+    os.environ.get("PAPER_MAX_POSITION_PREMIUM_FRAC", "0.15") or 0.15
+)
+_FREEZE_QTY_BY_SYM: dict[str, int] = {
+    "NIFTY":     int(os.environ.get("FREEZE_QTY_NIFTY", "1800") or 1800),
+    "BANKNIFTY": int(os.environ.get("FREEZE_QTY_BANKNIFTY", "900") or 900),
+    "SENSEX":    int(os.environ.get("FREEZE_QTY_SENSEX", "1000") or 1000),
+}
 # Time-of-day entry cutoff (measured; promoted to live 2026-07-02 after the OOS
 # confirmation — the live 07-02 afternoon entries lost -6,884 of -9,754). Default
 # now matches live (12 IST) via the shared entry_gates module; env
@@ -292,10 +302,23 @@ class SurgicalReplay:
         entry_premium = float(best.last_traded_price)
         stop_premium = max(entry_premium * self.STOP_PCT, 0.01)   # 30% stop, like live
         sizing_equity = max(min(equity, session_open), 1.0)       # opening-equity basis
-        # Capital-scaled lot ceiling (matches live): grows as capital exceeds baseline.
+        # Lot rails — mirrors live _size_live_position exactly:
+        #   max_lots 0 = pure %-of-capital (no fixed ceiling); else capital-scaled.
+        #   Then freeze-qty rail + single-position premium cap (tail defense).
         eff_max_lots = self._max_lots
-        if _LOT_CAP_SCALE_BASE > 0.0:
+        if eff_max_lots <= 0:
+            eff_max_lots = 10_000
+        elif _LOT_CAP_SCALE_BASE > 0.0:
             eff_max_lots = int(self._max_lots * max(1.0, session_open / _LOT_CAP_SCALE_BASE))
+        _freeze_qty = _FREEZE_QTY_BY_SYM.get(underlying, 0)
+        if _freeze_qty > 0 and lot_size > 0:
+            eff_max_lots = min(eff_max_lots, max(_freeze_qty // lot_size, 1))
+        if _MAX_POSITION_PREMIUM_FRAC > 0.0 and entry_premium > 0.0 and lot_size > 0:
+            eff_max_lots = min(eff_max_lots, int(
+                (_MAX_POSITION_PREMIUM_FRAC * session_open) // (entry_premium * lot_size)
+            ))
+        if eff_max_lots < 1:
+            return 0    # one lot already exceeds the premium cap — reject
         drawdown = max(0.0, (peak - equity) / max(peak, 1.0))
         heat = min(open_premium_cost / max(equity, 1.0), 1.0)
         portfolio = PortfolioRiskSnapshot(

@@ -541,8 +541,29 @@ _TIER1_MAX_LOTS:  int   = 1
 # strong setups (high confidence + composite_score) book more; marginal setups
 # still size down via confidence_scale. Portfolio heat (10%) + drawdown haircuts
 # + daily-loss halt remain hard. Env-overridable for tuning.
+# 0 = NO fixed ceiling (pure %-of-capital sizing; user directive 2026-07-03):
+# lots derive from risk budget + premium cap + heat + freeze-qty rails only.
 _TIER2_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER2_MAX_LOTS", "4") or 4)
 _TIER3_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER3_MAX_LOTS", "6") or 6)
+
+# ── %-of-capital sizing rails (replace fixed lot-count ceilings) ─────────────
+# Single-position premium cap: for an option BUYER the true worst case is the
+# ENTIRE premium (gap/halt through the stop), not the stop distance. At 8% risk
+# and a 30% stop the sizer would otherwise deploy 26.7% of equity in ONE
+# position — a single catastrophe event would erase months of compounding.
+# Cap the premium outlay per position as a fraction of session-opening equity.
+# Applies in ALL modes (tail-defense, never loosened by profiles).
+_MAX_POSITION_PREMIUM_FRAC: float = float(
+    os.environ.get("PAPER_MAX_POSITION_PREMIUM_FRAC", "0.15") or 0.15
+)
+# Exchange freeze-quantity rail (NSE/BSE per-order limits — an exchange rule,
+# the only legitimate FIXED-number cap). Defensive: binds only when capital
+# grows far beyond the current base. Env-overridable if exchange revises.
+_FREEZE_QTY_BY_SYM: dict[str, int] = {
+    "NIFTY":     int(os.environ.get("FREEZE_QTY_NIFTY", "1800") or 1800),
+    "BANKNIFTY": int(os.environ.get("FREEZE_QTY_BANKNIFTY", "900") or 900),
+    "SENSEX":    int(os.environ.get("FREEZE_QTY_SENSEX", "1000") or 1000),
+}
 # Capital-scaled lot ceiling (user directive 2026-07-01): the tier ceilings above are
 # the BASE at _LOT_CAP_SCALE_BASE_CAPITAL; as the account compounds past it, the
 # ceiling grows proportionally so sizing keeps scaling with capital instead of being
@@ -1982,6 +2003,13 @@ print(
     f"  tier3={_TIER3_RISK_FRAC * 100:.1f}%"
     f"  max_single_trade={_PAPER_MAX_SINGLE_TRADE_RISK_FRAC * 100:.1f}%"
 )
+print(
+    f"[SIZING RAILS] lot_ceilings="
+    f"{'pure-%-of-capital (no fixed ceiling)' if _TIER2_MAX_LOTS <= 0 else f'T2={_TIER2_MAX_LOTS} T3={_TIER3_MAX_LOTS} (capital-scaled)'}"
+    f"  position_premium_cap={_MAX_POSITION_PREMIUM_FRAC:.0%} of equity"
+    f"  heat_cap={_MAX_HEAT_FRACTION:.0%}"
+    f"  freeze_qty=N:{_FREEZE_QTY_BY_SYM['NIFTY']} B:{_FREEZE_QTY_BY_SYM['BANKNIFTY']} S:{_FREEZE_QTY_BY_SYM['SENSEX']}"
+)
 if _TIER2_RISK_FRAC > 0.025:
     print(
         f"[WARNING] Paper risk profile '{_PAPER_RISK_PROFILE}' uses "
@@ -2422,19 +2450,70 @@ def _size_live_position(
 
     sizer    = state.sizers[tier]
     max_lots = _tier_maxlots[tier]
+
+    entry_premium = rec.last_traded_price
+
+    # Tier2/3 ceiling 0 = pure %-of-capital sizing: no fixed lot-count ceiling;
+    # the risk budget, premium cap, heat, and freeze-qty rails below bind
+    # instead. Tier0/1 (defensive) ALWAYS keep their fixed 1-lot ceiling.
+    if tier >= 2 and max_lots <= 0:
+        max_lots = 10_000  # sentinel: %-rails below are the real constraint
+    elif tier >= 2 and _LOT_CAP_SCALE_BASE_CAPITAL > 0.0:
+        # Fixed-ceiling mode: scale the ceiling with capital (only grows above
+        # the baseline). Session-opening equity so intraday P&L can't move it.
+        _cap_scale = max(1.0, _session_opening_equity / _LOT_CAP_SCALE_BASE_CAPITAL)
+        max_lots = int(max_lots * _cap_scale)
+
     # Allocation control: cap the proven net-loser (NIFTY) below the winner so
     # it cannot out-size SENSEX even at the raised ceilings (_PER_SYMBOL_MAX_LOTS).
     _sym_cap = _PER_SYMBOL_MAX_LOTS.get(state.option_underlying)
     if _sym_cap is not None:
         max_lots = min(max_lots, _sym_cap)
 
-    # Scale the ceiling with capital (only grows above the baseline). Uses the
-    # session-opening equity so intraday P&L doesn't move the ceiling mid-session.
-    if _LOT_CAP_SCALE_BASE_CAPITAL > 0.0:
-        _cap_scale = max(1.0, _session_opening_equity / _LOT_CAP_SCALE_BASE_CAPITAL)
-        max_lots = int(max_lots * _cap_scale)
+    # Exchange freeze-quantity rail (per-order exchange limit).
+    _freeze_qty = _FREEZE_QTY_BY_SYM.get(state.option_underlying, 0)
+    if _freeze_qty > 0 and rec.lot_size > 0:
+        max_lots = min(max_lots, max(_freeze_qty // rec.lot_size, 1))
 
-    entry_premium = rec.last_traded_price
+    # Single-position premium cap (tail defense — the buyer's true worst case
+    # is the whole premium). 0 lots is a legitimate outcome: if one lot costs
+    # more than the cap, the trade is rejected rather than oversized.
+    if _MAX_POSITION_PREMIUM_FRAC > 0.0 and entry_premium > 0.0 and rec.lot_size > 0:
+        _prem_cap_lots = int(
+            (_MAX_POSITION_PREMIUM_FRAC * max(_session_opening_equity, 1.0))
+            // (entry_premium * rec.lot_size)
+        )
+        max_lots = min(max_lots, _prem_cap_lots)
+
+    if max_lots < 1:
+        # One lot already exceeds a hard %-rail (premium cap): REJECT explicitly.
+        # Must not fall through to the sizer (maximum_lot_count=0 raises, and the
+        # exception fallback below returns a tradable 1-lot result — which would
+        # silently defeat the cap).
+        return PositionSizingResult(
+            underlying_symbol=rec.underlying_symbol,
+            timestamp=datetime.now(timezone.utc),
+            direction=str(market_ctx.bias),
+            recommended_units=0,
+            recommended_lots=0,
+            notional_exposure=0.0,
+            estimated_risk_amount=0.0,
+            estimated_round_trip_cost=0.0,
+            tradable=False,
+            rejection_reason=(
+                f"POSITION_PREMIUM_CAP one lot (₹{entry_premium * rec.lot_size:,.0f}) "
+                f"exceeds {_MAX_POSITION_PREMIUM_FRAC:.0%} of session equity"
+            ),
+            breakdown=PositionSizingBreakdown(
+                base_risk_budget=0.0, confidence_scale=1.0,
+                volatility_scale=1.0, liquidity_scale=1.0,
+                drawdown_scale=1.0, correlation_scale=1.0,
+                portfolio_heat_scale=1.0, cash_scale=1.0,
+                effective_risk_budget=0.0, per_unit_risk=0.0,
+                preliminary_units=0.0, capped_units=0.0,
+            ),
+            metadata={"premium_cap_frac": _MAX_POSITION_PREMIUM_FRAC},
+        )
     stop_premium  = max(entry_premium * _STOP_LOSS_PCT, 0.01)
     drawdown      = max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0))
     heat          = min(_open_premium_cost / max(_equity, 1.0), 1.0)
