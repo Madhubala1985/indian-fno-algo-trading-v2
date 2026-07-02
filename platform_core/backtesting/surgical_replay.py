@@ -121,6 +121,17 @@ _FREEZE_QTY_BY_SYM: dict[str, int] = {
 # REPLAY_ENTRY_CUTOFF_IST=0 turns it off for A/B.
 _ENTRY_CUTOFF_IST_HOUR: int = _entry_cutoff_hour("REPLAY_ENTRY_CUTOFF_IST")
 
+# ── Profit-protection exits (breakeven ratchet + trail) — A/B knobs ──────────
+# RATCHET: once premium reaches entry×(1+arm), the position can no longer close
+# below entry (exit at breakeven if it round-trips). TRAIL: once armed, exit if
+# premium gives back more than trail_frac from its peak. 0 = off. MUST match the
+# live OptionPaperTrader semantics once promoted.
+# Ratchet default 0.08 = live default (backtest_runner._RATCHET_ARM_PCT); the
+# trail stays 0 — measured: structure exits already capture ~53% of peak and a
+# mechanical trail cuts the big runners earlier (winners peak +17.9%/exit +9.4%).
+_RATCHET_ARM_PCT: float = float(os.environ.get("EXIT_RATCHET_ARM_PCT", "0.08") or 0.08)
+_TRAIL_GIVEBACK_FRAC: float = float(os.environ.get("EXIT_TRAIL_GIVEBACK_FRAC", "0") or 0)
+
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
 # MIN_5/MIN_15/HOUR_1/HOUR_4 (NOT "15m"/"1h"/"4h"), so this MUST key on those raw
@@ -193,6 +204,7 @@ class ReplayTrade:
     trend_score: float = 0.0   # pre-clip weighted directional score at entry
     or_ext: float = 0.0        # spot extension beyond the OR boundary in the trade
                                # direction, in OR-width units (trend-day signature)
+    peak_prem: float = 0.0     # max favorable premium seen while open (MFE)
 
 
 @dataclass
@@ -439,10 +451,22 @@ class SurgicalReplay:
             if pos is not None:
                 cur = ltp_of(pos.contract, minute_iso)
                 if cur is not None:
+                    pos.peak_prem = max(pos.peak_prem, cur)
                     pct = cur / max(pos.entry_prem, 0.001)
+                    _armed = (_RATCHET_ARM_PCT > 0.0
+                              and pos.peak_prem >= pos.entry_prem * (1.0 + _RATCHET_ARM_PCT))
                     reason = _structure_exit_reason(emitted, pos.direction)
                     if reason is None and pct <= self.STOP_PCT:
                         reason = f"STOP_LOSS ({1.0 - pct:.0%} loss)"
+                    # Profit protection (same precedence as live once promoted):
+                    # breakeven ratchet, then peak-giveback trail, then TP.
+                    if reason is None and _armed and cur <= pos.entry_prem:
+                        reason = "BREAKEVEN_RATCHET (was +{:.0%}, back to entry)".format(
+                            pos.peak_prem / pos.entry_prem - 1.0)
+                    if (reason is None and _armed and _TRAIL_GIVEBACK_FRAC > 0.0
+                            and cur <= pos.peak_prem * (1.0 - _TRAIL_GIVEBACK_FRAC)):
+                        reason = "TRAIL_STOP (peak +{:.0%}, gave back {:.0%})".format(
+                            pos.peak_prem / pos.entry_prem - 1.0, _TRAIL_GIVEBACK_FRAC)
                     if reason is None and pct >= self.TAKE_PROFIT_PCT:
                         reason = f"TAKE_PROFIT ({pct:.0%} of entry)"
                     if reason:
@@ -596,7 +620,7 @@ class SurgicalReplay:
                                   lots=lots, lot_size=lot_size, conviction=round(conv, 3),
                                   mcb_conf=round(float(ctx.confidence), 3),
                                   trend_score=round(float(getattr(ctx, "trend_score", 0.0)), 3),
-                                  or_ext=round(_or_ext, 3))
+                                  or_ext=round(_or_ext, 3), peak_prem=entry)
                 direction_counter.record_entry(direction=bias)
                 open_premium_cost = entry * lot_size * lots
             except Exception:

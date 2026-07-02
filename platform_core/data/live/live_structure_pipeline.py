@@ -1391,6 +1391,7 @@ def _save_state() -> bool:
                 "entry_iv":          _p.entry_iv,
                 "direction":         _p.direction,
                 "bar_index":         _p.bar_index,
+                "peak_premium":      _p.peak_premium,
             } if (_p := und_s.option_trader._position) is not None else None
             for und, und_s in _runtime_by_underlying.items()
         },
@@ -1641,6 +1642,10 @@ def _load_state() -> None:
                 entry_iv          = float(_pos_raw_r["entry_iv"]),
                 direction         = str(_pos_raw_r["direction"]),
                 bar_index         = int(_pos_raw_r["bar_index"]),
+                # Ratchet peak survives a same-day restart (missing in older
+                # state files → falls back to entry = ratchet re-arms from live marks).
+                peak_premium      = float(_pos_raw_r.get("peak_premium")
+                                          or _pos_raw_r["entry_premium"]),
             )
             _pos_target_r.option_trader._position = OptionPosition(**_pos_data_r)
             _open_premium_cost += (
@@ -2002,6 +2007,12 @@ print(
     f"  tier2={_TIER2_RISK_FRAC * 100:.1f}%"
     f"  tier3={_TIER3_RISK_FRAC * 100:.1f}%"
     f"  max_single_trade={_PAPER_MAX_SINGLE_TRADE_RISK_FRAC * 100:.1f}%"
+)
+from platform_core.backtesting.backtest_runner import _RATCHET_ARM_PCT as _ratchet_arm
+print(
+    f"[EXIT PROTECTION] breakeven_ratchet_arm=+{_ratchet_arm:.0%}"
+    f" (armed winner can't become a loser; armed position frees its risk slot;"
+    f" EXIT_RATCHET_ARM_PCT=0 disables)"
 )
 print(
     f"[SIZING RAILS] lot_ceilings="
@@ -3986,11 +3997,14 @@ def on_ticks(raw_ticks):
                                 f"LOW_CONVICTION conv={_entry_conv:.2f}<{_CONV_FLOOR:.2f}"
                             )
 
-                    # [A0] Capital-tier simultaneous position limit.
-                    # Prevents portfolio heat from breaching 10% at small capital.
+                    # [A0] Capital-tier simultaneous position limit — counts
+                    # AT-RISK positions only: a ratchet-armed (breakeven-protected)
+                    # winner no longer consumes a risk slot, so the next
+                    # opportunity can be taken while the winner trails. The heat
+                    # cap still counts ALL open premium (gap risk is not zero).
                     _cur_open = sum(
                         1 for _s in _runtime_by_underlying.values()
-                        if _s.option_trader.has_open_position()
+                        if _s.option_trader.position_at_risk()
                     )
                     if _pre_entry_block is None and _cur_open >= _MAX_OPEN_POSITIONS:
                         _pre_entry_block = (
@@ -4183,10 +4197,13 @@ def on_ticks(raw_ticks):
                             and _SENSEX_PRIMARY_ROUTING
                             and _current_state.option_underlying == "NIFTY"):
                         _sensex_rt = _runtime_by_underlying.get(_SENSEX_PRIORITY_UNDERLYING)
-                        if _sensex_rt is not None and _sensex_rt.option_trader.has_open_position():
+                        # Defer only to an AT-RISK SENSEX position: once SENSEX is
+                        # ratchet-armed (risk-free winner trailing), NIFTY may take
+                        # the next opportunity instead of standing down all day.
+                        if _sensex_rt is not None and _sensex_rt.option_trader.position_at_risk():
                             _pre_entry_block = (
                                 "SENSEX_PRIMARY_DEFER "
-                                "(SENSEX position open — NIFTY stands down)"
+                                "(SENSEX position at risk — NIFTY stands down)"
                             )
                         elif _effective_conf < _NIFTY_VERY_STRONG_CONF:
                             _pre_entry_block = (

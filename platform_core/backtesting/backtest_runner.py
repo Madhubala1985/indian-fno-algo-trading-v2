@@ -30,6 +30,7 @@ Backward compatible:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from math import floor
@@ -252,6 +253,16 @@ class BacktestConfig:
 
 # ── Option position and trade tracking ────────────────────────────────────────
 
+# Breakeven ratchet (measured 2026-07-03 on real recorded premium paths): every
+# honest winner peaked >= +10.4% while every loser peaked <= +5.9% — so once a
+# position is up ARM_PCT it is a winner; if it ever round-trips to entry, exit
+# at breakeven instead of letting it become a loser. Costs nothing in-sample
+# (structure exits fire first on normal paths); removes the winner-turned-loser
+# failure mode. A ratchet-ARMED position is risk-free and no longer consumes a
+# risk slot (position limit / SENSEX-primary defer), enabling the next
+# opportunity while the winner trails. 0 disables.
+_RATCHET_ARM_PCT: float = float(os.environ.get("EXIT_RATCHET_ARM_PCT", "0.08") or 0.08)
+
 @dataclass(slots=True)
 class OptionPosition:
     underlying_symbol: str
@@ -266,6 +277,7 @@ class OptionPosition:
     entry_iv: float
     direction: str
     bar_index: int
+    peak_premium: float = 0.0   # max favorable premium while open (breakeven ratchet)
 
 
 @dataclass(slots=True)
@@ -314,6 +326,21 @@ class OptionPaperTrader:
     def has_open_position(self) -> bool:
         return self._position is not None
 
+    def ratchet_armed(self) -> bool:
+        """True when the open position has peaked past the ratchet arm level —
+        it can no longer close below entry (breakeven-protected winner)."""
+        pos = self._position
+        return (
+            pos is not None
+            and _RATCHET_ARM_PCT > 0.0
+            and pos.peak_premium >= pos.entry_premium * (1.0 + _RATCHET_ARM_PCT)
+        )
+
+    def position_at_risk(self) -> bool:
+        """Open AND still able to lose money. A ratchet-armed position is
+        risk-free and should not consume a risk slot (position limit/routing)."""
+        return self._position is not None and not self.ratchet_armed()
+
     def open(
         self,
         *,
@@ -347,6 +374,7 @@ class OptionPaperTrader:
             entry_iv=recommendation.implied_volatility,
             direction=direction,
             bar_index=bar_index,
+            peak_premium=_entry_premium,
         )
 
     def evaluate_and_close(
@@ -398,6 +426,7 @@ class OptionPaperTrader:
                 current_premium = pos.entry_premium * 0.5
 
         dte = (pos.expiry_date - current_date).days
+        pos.peak_premium = max(pos.peak_premium, current_premium)
         pct_of_entry = current_premium / max(pos.entry_premium, 0.001)
 
         exit_reason = force_reason
@@ -450,6 +479,17 @@ class OptionPaperTrader:
             _max_loss = 1.0 - stop_loss_pct
             _actual_loss = 1.0 - pct_of_entry
             exit_reason = f"STOP_LOSS max_loss={_max_loss:.0%} actual_loss={_actual_loss:.0%}"
+        # Breakeven ratchet: an armed winner that round-trips to entry exits at
+        # breakeven instead of turning into a loser. Structure exits (force_reason)
+        # and the stop take precedence; TP comes after.
+        if (exit_reason is None and _RATCHET_ARM_PCT > 0.0
+                and pos.peak_premium >= pos.entry_premium * (1.0 + _RATCHET_ARM_PCT)
+                and current_premium <= pos.entry_premium):
+            exit_reason = (
+                f"BREAKEVEN_RATCHET (peaked "
+                f"+{pos.peak_premium / max(pos.entry_premium, 0.001) - 1.0:.0%}, "
+                f"back to entry)"
+            )
         if exit_reason is None and pct_of_entry >= take_profit_pct:
             exit_reason = f"TAKE_PROFIT ({pct_of_entry:.0%} of entry)"
         if exit_reason is None:
