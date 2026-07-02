@@ -110,6 +110,11 @@ from platform_core.analytics.structure.previous_day_levels import (
     PreviousDayLevelsEngine,
 )
 
+from platform_core.execution.entry_gates import (
+    SameContractLossTracker as _SameContractLossTracker,
+    entry_cutoff_hour as _entry_cutoff_hour,
+    time_cutoff_blocked as _time_cutoff_blocked,
+)
 from platform_core.analytics.structure.opening_range import (
     OpeningRangeEngine,
 )
@@ -351,6 +356,9 @@ class UnderlyingRuntimeState:
     last_struct_exit_contract: str = ""        # contract symbol of last structure exit
     reentry_loss_streak:       int = 0          # consecutive losing exits (chop re-entry brake)
     reentry_lockout_until_bar: int = -1         # block new entries on this underlying until this bar
+    # Same-contract session loss limit: N losing exits on one contract+direction
+    # block that pair for the rest of the session (same-strike churn killer).
+    contract_loss_tracker: _SameContractLossTracker = field(default_factory=_SameContractLossTracker)
     live_bars_seen:   int   = 0                 # live 1m bars received this session
     bar_history:      dict = field(default_factory=dict)  # {tf: [bar_dict, ...]}
     bars_since_save:  int  = 0                  # bars since last state-file write
@@ -687,6 +695,13 @@ from platform_core.execution.context_cooldown import (
 )
 _CONTEXT_CONTRADICTION_COOLDOWN_BARS: int = _cooldown_bars_from_env()
 
+# Time-of-day entry cutoff (afternoon-chop guard). Measured on real-premium
+# replay 06-24..07-01 (morning +16,916 vs 12-14 IST -15,694) and confirmed
+# OUT-OF-SAMPLE live 07-02 (both afternoon entries lost, -6,884 of -9,754).
+# Blocks NEW entries at/after this IST hour; managing/exits unaffected.
+# LIVE_ENTRY_CUTOFF_IST=0 disables.
+_ENTRY_CUTOFF_IST_HOUR: int = _entry_cutoff_hour("LIVE_ENTRY_CUTOFF_IST")
+
 # Strike quality gate for Tier2/3: reject low-quality strikes that passed OI filter.
 # Proven defect (2026-06-04): SENSEX iv_attr=0.000 and all entries SCORE_MARGIN_LOW.
 _MIN_SCORE_MARGIN_TIER23: float = 0.05   # min rank-1 minus rank-2 score gap
@@ -851,6 +866,13 @@ def _print_gate_startup() -> None:
         f"NIFTY:{_MIN_ABS_OI_BY_SYM['NIFTY']:,.0f} "
         f"SENSEX:{_MIN_ABS_OI_BY_SYM['SENSEX']:,.0f}  "
         f"(absolute tradeability — applies to all profiles/modes)"
+    )
+    from platform_core.analytics.structure.opening_range import _BREAKOUT_BUFFER_FRAC as _or_buf
+    print(
+        f"[CHOP GUARDS] entry_cutoff={_ENTRY_CUTOFF_IST_HOUR}:00 IST (0=off)  "
+        f"or_breakout_buffer_frac={_or_buf:.2f}  "
+        f"same_contract_session_max_losses="
+        f"{_SameContractLossTracker().max_losses}"
     )
     if _PAPER_GATE_PROFILE == "paper_trade_unlock":
         print("[WARNING] Paper trade-unlock experiment — not approved for real funds.")
@@ -1360,6 +1382,13 @@ def _save_state() -> bool:
             if und_state.last_contradiction_bar is not None else None
             for und, und_state in _runtime_by_underlying.items()
         },
+        # Same-contract session loss counts — intra-session only. Restored on a
+        # same-day restart so a crash-restart cannot reset the churn brake;
+        # ignored (fresh) on the next session.
+        "contract_session_losses_by_underlying": {
+            und: und_state.contract_loss_tracker.to_dict()
+            for und, und_state in _runtime_by_underlying.items()
+        },
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1524,6 +1553,16 @@ def _load_state() -> None:
                 f"[STATE] {_und}: context-contradiction cooldown re-armed "
                 f"(age={_age_min:.1f}m < {_CONTEXT_CONTRADICTION_COOLDOWN_BARS} bars)"
             )
+    # Same-contract session loss counts — same-day restarts only (never
+    # carried to the next session; a new day starts with a clean slate).
+    _today_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).date().isoformat()
+    if str(s.get("session_date") or "") == _today_ist:
+        _losses_by_und = s.get("contract_session_losses_by_underlying") or {}
+        for _und, _loss_data in _losses_by_und.items():
+            _und_state = _runtime_by_underlying.get(_und)
+            if _und_state is not None and _loss_data:
+                _und_state.contract_loss_tracker.restore(_loss_data)
+                print(f"[STATE] {_und}: same-contract session loss counts restored: {_loss_data}")
     print(
         f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
@@ -3522,6 +3561,24 @@ def on_ticks(raw_ticks):
                     if "STRUCTURE_EXIT" in str(_closed.exit_reason):
                         _current_state.last_struct_exit_bar      = _bar_count
                         _current_state.last_struct_exit_contract = _closed.contract_symbol
+                    # Same-contract session loss limit: count losing exits per
+                    # (contract, direction); at the limit that pair is blocked
+                    # for the rest of the session (same-strike churn killer).
+                    _current_state.contract_loss_tracker.record_exit(
+                        contract=_closed.contract_symbol,
+                        direction=str(_closed.direction),
+                        pnl=_final_pnl,
+                    )
+                    if _current_state.contract_loss_tracker.blocked(
+                        contract=_closed.contract_symbol,
+                        direction=str(_closed.direction),
+                    ):
+                        print(
+                            f"[SAME-CONTRACT SESSION BLOCK] {_closed.contract_symbol} "
+                            f"{_closed.direction}: "
+                            f"{_current_state.contract_loss_tracker.losses(contract=_closed.contract_symbol, direction=str(_closed.direction))} "
+                            f"losing exits — blocked for the rest of the session"
+                        )
                     # Chop re-entry brake: consecutive losing exits lock the
                     # underlying briefly; a win resets immediately (trend continues).
                     if _closed.pnl > 0:
@@ -3771,9 +3828,35 @@ def on_ticks(raw_ticks):
                     _pre_entry_block: str | None = None
                     _bars_since_stop = _bar_count - _current_state.last_stop_bar
 
+                    # [A-time] Time-of-day entry cutoff (afternoon-chop guard,
+                    # measured in replay + confirmed OOS live 07-02). New entries
+                    # only — open positions manage and exit normally.
+                    if _time_cutoff_blocked(
+                        completed_bar.start_timestamp, _ENTRY_CUTOFF_IST_HOUR
+                    ):
+                        _pre_entry_block = (
+                            f"ENTRY_TIME_CUTOFF at/after {_ENTRY_CUTOFF_IST_HOUR}:00 IST "
+                            f"(afternoon-chop guard, LIVE_ENTRY_CUTOFF_IST=0 disables)"
+                        )
+
+                    # [A-contract] Same-contract session loss limit: this exact
+                    # contract+direction already took the session's loss budget.
+                    if (
+                        _pre_entry_block is None
+                        and _current_state.contract_loss_tracker.blocked(
+                            contract=_srec.option_symbol, direction=str(_mctx.bias)
+                        )
+                    ):
+                        _pre_entry_block = (
+                            f"SAME_CONTRACT_SESSION_BLOCK {_srec.option_symbol} "
+                            f"{_mctx.bias} — "
+                            f"{_current_state.contract_loss_tracker.losses(contract=_srec.option_symbol, direction=str(_mctx.bias))} "
+                            f"losing exits this session"
+                        )
+
                     # [A-chop] Chop re-entry lockout: after consecutive losing exits
                     # the underlying is locked out briefly (a win resets the streak).
-                    if _bar_count < _current_state.reentry_lockout_until_bar:
+                    if _pre_entry_block is None and _bar_count < _current_state.reentry_lockout_until_bar:
                         _pre_entry_block = (
                             f"CHOP_REENTRY_LOCKOUT until bar "
                             f"{_current_state.reentry_lockout_until_bar} "

@@ -27,6 +27,17 @@ _OR_END   = 9 * 60 + 30   # 09:30 IST — range finalized after this minute
 _INSIDE_PENALTY      = 0.0   # no entry inside OR
 _CONTRADICTION_MULT  = 0.40  # directional contradiction penalty
 
+# Breakout buffer: a marginal poke just past the OR boundary is not a breakout.
+# 2026-07-02: entry at spot 77373 vs OR high 77349 (+24 pts on a 211-pt range)
+# immediately failed back into the range (-5,740). Require spot to clear the
+# boundary by this fraction of the OR width before treating it as ABOVE/BELOW.
+# 0 restores the old edge-trigger behaviour. Env-tunable for replay A/B.
+import os as _os
+
+_BREAKOUT_BUFFER_FRAC: float = float(
+    _os.environ.get("OR_BREAKOUT_BUFFER_FRAC", "0.25") or 0.25
+)
+
 
 @dataclass(frozen=True, slots=True)
 class OpeningRange:
@@ -35,10 +46,15 @@ class OpeningRange:
     or_mid: float
     trading_date: str
 
+    @property
+    def breakout_buffer(self) -> float:
+        return max(self.or_high - self.or_low, 0.0) * _BREAKOUT_BUFFER_FRAC
+
     def position(self, spot: float) -> str:
-        if spot > self.or_high:
+        buf = self.breakout_buffer
+        if spot > self.or_high + buf:
             return "ABOVE_OR"
-        if spot < self.or_low:
+        if spot < self.or_low - buf:
             return "BELOW_OR"
         return "INSIDE_OR"
 
@@ -46,7 +62,11 @@ class OpeningRange:
         """Returns (multiplier, reason)."""
         pos = self.position(spot)
         if pos == "INSIDE_OR":
-            return _INSIDE_PENALTY, f"spot inside opening range ({self.or_low:.0f}–{self.or_high:.0f})"
+            buf = self.breakout_buffer
+            return _INSIDE_PENALTY, (
+                f"spot inside opening range ({self.or_low:.0f}–{self.or_high:.0f}"
+                f", breakout buffer ±{buf:.0f})"
+            )
         if bias == "LONG" and pos == "ABOVE_OR":
             return 1.0, ""
         if bias == "SHORT" and pos == "BELOW_OR":

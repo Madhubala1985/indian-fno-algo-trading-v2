@@ -141,41 +141,39 @@ with tempfile.TemporaryDirectory() as tmp:
     check("dominant_bias=SHORT", parsed["dominant_bias"] == "SHORT",
           f"got {parsed['dominant_bias']}")
 
-# ── Test 5: _parse_trades empty CSV ──────────────────────────────────────────
-print("\n[Test 5] _parse_trades handles empty CSV")
+# ── Test 5: _parse_trades — log with no trades ───────────────────────────────
+print("\n[Test 5] _parse_trades handles a log with no trades")
 with tempfile.TemporaryDirectory() as tmp:
     d = Path(tmp)
-    trades_path = d / "paper_trades.csv"
-    _write_trades(trades_path, [])
+    log = d / "live_run_20260702.log"
+    _write_log(log, ["[KITE] WebSocket connected."])
 
-    _orig_logs = _mod.LOGS_DIR
-    _mod.LOGS_DIR = d
-    result = _parse_trades()
-    _mod.LOGS_DIR = _orig_logs
+    result = _parse_trades(log)
 
-    check("count=0 for empty CSV", result["count"] == 0, f"got {result['count']}")
+    check("count=0 for no-trade log", result["count"] == 0, f"got {result['count']}")
     check("total_pnl=0 for empty", result["total_pnl"] == 0.0,
           f"got {result['total_pnl']}")
 
-# ── Test 6: _parse_trades counts and sums ────────────────────────────────────
-print("\n[Test 6] _parse_trades counts trades and sums PnL")
+# ── Test 6: _parse_trades counts SESSION trades from the log ─────────────────
+# Regression (2026-07-02): the header previously summed the whole CUMULATIVE
+# paper_trades.csv (52 trades / +₹25,935 on a 3-trade -₹9,754 day). Session
+# trades must come from [TRADE LOGGED] lines in THIS session's log.
+print("\n[Test 6] _parse_trades counts session trades and sums PnL from log")
 with tempfile.TemporaryDirectory() as tmp:
     d = Path(tmp)
-    trades_path = d / "paper_trades.csv"
-    _write_trades(trades_path, [
-        {"symbol": "BNK", "direction": "SHORT", "entry_price": 100,
-         "exit_price": 90, "quantity": 1, "pnl": 500},
-        {"symbol": "BNK", "direction": "SHORT", "entry_price": 100,
-         "exit_price": 95, "quantity": 1, "pnl": 250},
+    log = d / "live_run_20260702.log"
+    _write_log(log, [
+        "  [TRADE LOGGED]  SENSEX2670977500CE LONG  entry=₹528.60  exit=₹514.25  pnl=₹-2,870.00",
+        "[BAR] SENSEX 77300.00",
+        "  [TRADE LOGGED]  NIFTY2670724000PE SHORT  entry=₹214.40  exit=₹295.55  pnl=₹+1,250.00",
     ])
 
-    _orig_logs = _mod.LOGS_DIR
-    _mod.LOGS_DIR = d
-    result = _parse_trades()
-    _mod.LOGS_DIR = _orig_logs
+    result = _parse_trades(log)
 
     check("count=2", result["count"] == 2, f"got {result['count']}")
-    check("total_pnl=750", result["total_pnl"] == 750.0, f"got {result['total_pnl']}")
+    check("total_pnl=-1620", result["total_pnl"] == -1620.0, f"got {result['total_pnl']}")
+    check("direction parsed", result["rows"][0]["direction"] == "LONG",
+          f"got {result['rows'][0]['direction']}")
 
 # ── Test 7: _render produces required sections ────────────────────────────────
 print("\n[Test 7] _render produces all required sections")

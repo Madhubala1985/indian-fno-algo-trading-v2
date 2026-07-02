@@ -63,6 +63,14 @@ from platform_core.execution.context_cooldown import (
     contradiction_cooldown_active as _contradiction_cooldown_active,
     cooldown_bars_from_env as _cooldown_bars_from_env,
 )
+# Shared ENTRY gates (same code path as live — no drift): time-of-day cutoff +
+# same-contract session loss limit. The OR engine below is the live class too.
+from platform_core.execution.entry_gates import (
+    SameContractLossTracker as _SameContractLossTracker,
+    entry_cutoff_hour as _entry_cutoff_hour,
+    time_cutoff_blocked as _time_cutoff_blocked,
+)
+from platform_core.analytics.structure.opening_range import OpeningRangeEngine as _OREngine
 
 # ── Live ENTRY-gate constants (fidelity v2, mirrored from live_structure_pipeline
 # so the replay applies the SAME gate stack). Same env vars + defaults keep a single
@@ -93,10 +101,11 @@ _REFERENCE_IV: float = 0.18
 # Capital-scaled lot ceiling — MUST match live (_LOT_CAP_SCALE_BASE_CAPITAL) so the
 # replay and live size identically. Ceiling grows as capital exceeds the baseline.
 _LOT_CAP_SCALE_BASE: float = float(os.environ.get("LOT_CAP_SCALE_BASE_CAPITAL", "400000") or 400000)
-# Time-of-day entry cutoff (measured, default OFF). Data shows the model earns in the
-# morning trend (09-11 IST) and bleeds it back in afternoon chop + theta decay (12-14).
-# Block NEW entries at/after this IST hour. 0 = off. Env REPLAY_ENTRY_CUTOFF_IST.
-_ENTRY_CUTOFF_IST_HOUR: int = int(os.environ.get("REPLAY_ENTRY_CUTOFF_IST", "0") or 0)
+# Time-of-day entry cutoff (measured; promoted to live 2026-07-02 after the OOS
+# confirmation — the live 07-02 afternoon entries lost -6,884 of -9,754). Default
+# now matches live (12 IST) via the shared entry_gates module; env
+# REPLAY_ENTRY_CUTOFF_IST=0 turns it off for A/B.
+_ENTRY_CUTOFF_IST_HOUR: int = _entry_cutoff_hour("REPLAY_ENTRY_CUTOFF_IST")
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
@@ -361,6 +370,8 @@ class SurgicalReplay:
         last_contradiction_bar: int | None = None
         reentry_loss_streak = 0             # consecutive losing exits (chop brake)
         reentry_lockout_until_bar = -1      # entries blocked until this bar
+        contract_loss_tracker = _SameContractLossTracker()  # same-contract session loss limit
+        or_engine = _OREngine()             # live OR gate (incl. breakout buffer)
 
         # ── Capital/equity state for % sizing (session basis = starting capital) ─
         equity = self._capital
@@ -380,6 +391,7 @@ class SurgicalReplay:
         for bar_idx, bar in enumerate(session_bars):
             bars_seen = bar_idx + 1
             self._feed_bar(bar)
+            or_engine.update_bar(bar)
             emitted = self._feed_structure(bar)   # real BOS/CHOCH events this bar
             spot = bar.close_price
             minute_iso = bar.start_timestamp.astimezone(timezone.utc).isoformat()
@@ -411,6 +423,8 @@ class SurgicalReplay:
                             last_stop_bar, last_stop_contract = bar_idx, pos.contract
                         if "STRUCTURE_EXIT" in reason:
                             last_struct_exit_bar, last_struct_exit_contract = bar_idx, pos.contract
+                        contract_loss_tracker.record_exit(
+                            contract=pos.contract, direction=pos.direction, pnl=pos.pnl)
                         # Chop brake: a win resets the streak (trend); consecutive
                         # losing exits lock the underlying out briefly.
                         if pos.pnl > 0:
@@ -460,9 +474,22 @@ class SurgicalReplay:
                 # v1 replay (no gates) exhibited. Quality gate (margin) is below,
                 # after these — matching live (contradiction precedes margin).
                 _blk: str | None = None
-                if _ENTRY_CUTOFF_IST_HOUR > 0 and \
-                        bar.start_timestamp.astimezone(_IST).hour >= _ENTRY_CUTOFF_IST_HOUR:
+                if _time_cutoff_blocked(bar.start_timestamp, _ENTRY_CUTOFF_IST_HOUR):
                     _blk = f"TIME_CUTOFF(>={_ENTRY_CUTOFF_IST_HOUR}IST)"   # afternoon-chop guard
+                # [OR] Opening-range filter (live: zeroes/penalizes effective_conf
+                # below every tier min-conf, so both cases BLOCK). Uses the same
+                # OpeningRange class incl. the breakout buffer.
+                if _blk is None and or_engine.ready:
+                    _or_mult, _or_reason = or_engine.current_range.confidence_multiplier(
+                        spot=spot, bias=bias)
+                    if _or_mult == 0.0:
+                        _blk = "OR_FILTER_INSIDE"
+                    elif _or_mult < 1.0:
+                        _blk = "OR_FILTER_CONTRADICTION"
+                # [A-contract] Same-contract session loss limit (shared with live).
+                if _blk is None and contract_loss_tracker.blocked(
+                        contract=best.option_symbol, direction=bias):
+                    _blk = "SAME_CONTRACT_SESSION_BLOCK"
                 if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
                     _blk = "CHOP_REENTRY_LOCKOUT"
                 if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up

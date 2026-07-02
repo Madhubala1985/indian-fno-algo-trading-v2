@@ -3,8 +3,8 @@ generate_daily_reflection.py
 ──────────────────────────────────────────────────────────────────────
 Generate a structured daily reflection markdown file from live session
 artifacts:
-  - Most recent live_run_*.log
-  - logs/paper_trades.csv
+  - Most recent live_run_*.log (block counts AND session trades — the
+    cumulative logs/paper_trades.csv is deliberately NOT used for the header)
   - logs/paper_trading_state.json
   - logs/strike_selection_audit.jsonl
   - logs/live_issue_register_<date>.md (if present)
@@ -23,7 +23,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import re
 import sys
@@ -146,23 +145,40 @@ def _parse_log(log_path: Path) -> dict:
     }
 
 
-def _parse_trades() -> dict:
-    trades_path = LOGS_DIR / "paper_trades.csv"
-    if not trades_path.exists():
-        return {"count": 0, "total_pnl": 0.0, "rows": []}
+_TRADE_LOGGED_RE = re.compile(
+    r"\[TRADE LOGGED\]\s+(?P<contract>\S+)\s+(?P<direction>LONG|SHORT)\s+"
+    r"entry=₹(?P<entry>[\d,.]+)\s+exit=₹(?P<exit>[\d,.]+)\s+pnl=₹(?P<pnl>[-+\d,.]+)"
+)
 
-    rows = []
-    with trades_path.open(newline="", encoding="utf-8") as fh:
-        for row in csv.DictReader(fh):
-            rows.append(row)
 
+def _parse_trades(log_path: Path) -> dict:
+    """SESSION trades, parsed from the session log itself.
+
+    Bug fix (2026-07-02): this previously summed the whole cumulative
+    logs/paper_trades.csv, so the header claimed 52 trades / +₹25,935 on a
+    3-trade -₹9,754 day. The reflection is a per-session report — everything
+    in it must come from THIS session's log.
+    """
+    rows: list[dict] = []
     total_pnl = 0.0
-    for r in rows:
-        try:
-            total_pnl += float(r.get("pnl", 0))
-        except (ValueError, TypeError):
-            pass
-
+    if log_path.exists():
+        with log_path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = _TRADE_LOGGED_RE.search(line)
+                if not m:
+                    continue
+                try:
+                    pnl = float(m.group("pnl").replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+                rows.append({
+                    "symbol": m.group("contract"),
+                    "direction": m.group("direction"),
+                    "entry_price": m.group("entry").replace(",", ""),
+                    "exit_price": m.group("exit").replace(",", ""),
+                    "pnl": pnl,
+                })
+                total_pnl += pnl
     return {"count": len(rows), "total_pnl": round(total_pnl, 2), "rows": rows}
 
 
@@ -239,8 +255,8 @@ def _render(
         f"| **Source:** `{log_path.name}`"
     )
     lines.append(
-        f"**Trades:** {trade_cnt}  "
-        f"| **PnL:** ₹{total_pnl:+,.2f}  "
+        f"**Session trades:** {trade_cnt}  "
+        f"| **Session PnL:** ₹{total_pnl:+,.2f}  "
         f"| **Equity:** {equity_str}"
     )
     lines.append("")
@@ -397,7 +413,7 @@ def main() -> int:
     print(f"[REFLECTION] Output     : {out_path.name}")
 
     log_data = _parse_log(log_path)
-    trades   = _parse_trades()
+    trades   = _parse_trades(log_path)
     state    = _parse_state()
     audit    = _parse_audit()
 
