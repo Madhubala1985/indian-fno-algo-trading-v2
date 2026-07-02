@@ -556,6 +556,14 @@ _TIER3_MAX_LOTS:  int   = int(os.environ.get("PAPER_TIER3_MAX_LOTS", "6") or 6)
 _MAX_POSITION_PREMIUM_FRAC: float = float(
     os.environ.get("PAPER_MAX_POSITION_PREMIUM_FRAC", "0.15") or 0.15
 )
+# Correlated same-direction heat: SENSEX/NIFTY/BANKNIFTY are ~0.9-correlated —
+# two same-direction option positions are ONE doubled bet, not diversification.
+# Cap the COMBINED same-direction premium outlay across underlyings at this
+# fraction of session equity (sits inside the 30% total heat cap; opposite-
+# direction pairs are true hedges and are not restricted). 0 disables.
+_CORRELATED_HEAT_FRACTION: float = float(
+    os.environ.get("CORRELATED_HEAT_FRACTION", "0.20") or 0.20
+)
 # Exchange freeze-quantity rail (NSE/BSE per-order limits — an exchange rule,
 # the only legitimate FIXED-number cap). Defensive: binds only when capital
 # grows far beyond the current base. Env-overridable if exchange revises.
@@ -610,6 +618,12 @@ _SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
 # already computed in the options context.  Default OFF — enable with
 # GEX_REGIME_GATE=1 for a deliberate A/B paper session before trusting it.
 _GEX_REGIME_GATE:        bool  = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
+# MEASURED 2026-07-03 (batch 06-24..07-01, real OI): the veto DESTROYS the edge
+# in both configs (full: +31,938 -> -1,082; wall-only: -6,918, 20% WR). The
+# model's winners are momentum THROUGH walls (initiative flow), not fades — do
+# NOT enable the veto. Shadow mode logs the verdict per entry evaluation
+# without ever blocking, so live data keeps accumulating for re-evaluation.
+_GEX_GATE_SHADOW:        bool  = (os.environ.get("GEX_GATE_SHADOW", "1") == "1")
 # Widened 2026-06-23: at 0.25% the wall veto never triggered (0 blocks over two
 # 06-19 sessions). 0.5% makes "near a wall" actually meaningful.
 _GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
@@ -2018,6 +2032,7 @@ print(
     f"[SIZING RAILS] lot_ceilings="
     f"{'pure-%-of-capital (no fixed ceiling)' if _TIER2_MAX_LOTS <= 0 else f'T2={_TIER2_MAX_LOTS} T3={_TIER3_MAX_LOTS} (capital-scaled)'}"
     f"  position_premium_cap={_MAX_POSITION_PREMIUM_FRAC:.0%} of equity"
+    f"  correlated_same_dir_cap={_CORRELATED_HEAT_FRACTION:.0%}"
     f"  heat_cap={_MAX_HEAT_FRACTION:.0%}"
     f"  freeze_qty=N:{_FREEZE_QTY_BY_SYM['NIFTY']} B:{_FREEZE_QTY_BY_SYM['BANKNIFTY']} S:{_FREEZE_QTY_BY_SYM['SENSEX']}"
 )
@@ -2496,11 +2511,29 @@ def _size_live_position(
         )
         max_lots = min(max_lots, _prem_cap_lots)
 
+    # Correlated same-direction heat: budget = frac × equity minus premium
+    # already deployed in the SAME direction on OTHER underlyings (armed
+    # winners included — gap risk is not zero). Opposite-direction is free.
+    if _CORRELATED_HEAT_FRACTION > 0.0 and entry_premium > 0.0 and rec.lot_size > 0:
+        _same_dir_prem = sum(
+            _p.entry_premium * _p.lot_size * _p.lots
+            for _u, _s in _runtime_by_underlying.items()
+            if _s is not state
+            and (_p := _s.option_trader._position) is not None
+            and str(_p.direction) == str(market_ctx.bias)
+        )
+        if _same_dir_prem > 0.0:
+            _corr_budget = (
+                _CORRELATED_HEAT_FRACTION * max(_session_opening_equity, 1.0)
+                - _same_dir_prem
+            )
+            max_lots = min(max_lots, max(int(_corr_budget // (entry_premium * rec.lot_size)), 0))
+
     if max_lots < 1:
-        # One lot already exceeds a hard %-rail (premium cap): REJECT explicitly.
-        # Must not fall through to the sizer (maximum_lot_count=0 raises, and the
-        # exception fallback below returns a tradable 1-lot result — which would
-        # silently defeat the cap).
+        # One lot already exceeds a hard %-rail (premium cap / correlated heat):
+        # REJECT explicitly. Must not fall through to the sizer
+        # (maximum_lot_count=0 raises, and the exception fallback below returns
+        # a tradable 1-lot result — which would silently defeat the cap).
         return PositionSizingResult(
             underlying_symbol=rec.underlying_symbol,
             timestamp=datetime.now(timezone.utc),
@@ -2512,8 +2545,9 @@ def _size_live_position(
             estimated_round_trip_cost=0.0,
             tradable=False,
             rejection_reason=(
-                f"POSITION_PREMIUM_CAP one lot (₹{entry_premium * rec.lot_size:,.0f}) "
-                f"exceeds {_MAX_POSITION_PREMIUM_FRAC:.0%} of session equity"
+                f"PREMIUM_RAIL_CAP one lot (₹{entry_premium * rec.lot_size:,.0f}) exceeds "
+                f"the remaining %-rail budget (position cap {_MAX_POSITION_PREMIUM_FRAC:.0%}"
+                f" / correlated same-direction cap {_CORRELATED_HEAT_FRACTION:.0%})"
             ),
             breakdown=PositionSizingBreakdown(
                 base_risk_budget=0.0, confidence_scale=1.0,
@@ -4211,10 +4245,11 @@ def on_ticks(raw_ticks):
                                 f"<{_NIFTY_VERY_STRONG_CONF:.2f} (SENSEX-primary routing)"
                             )
 
-                    # [A7] GEX wall-proximity gate (PROTOTYPE, opt-in via GEX_REGIME_GATE):
-                    # veto a directional entry chasing INTO a dealer-gamma wall, and log
-                    # the gamma regime + wall distances for offline analysis either way.
-                    if _GEX_REGIME_GATE and _pre_entry_block is None:
+                    # [A7] GEX wall-proximity gate. MEASURED HARMFUL as a veto
+                    # (see _GEX_GATE_SHADOW note) — GEX_REGIME_GATE stays opt-in
+                    # and should NOT be enabled on current evidence. Shadow mode
+                    # logs the verdict per entry evaluation without blocking.
+                    if (_GEX_REGIME_GATE or _GEX_GATE_SHADOW) and _pre_entry_block is None:
                         _gx = _current_state.captured_gex_snapshot
                         if _gx is not None:
                             _gex_blk = _gex_wall_block(
@@ -4225,14 +4260,15 @@ def on_ticks(raw_ticks):
                                 block_long_gamma=_GEX_REGIME_VETO,
                             )
                             print(
-                                f"[GEX] {_current_state.option_underlying} "
+                                f"[GEX{'' if _GEX_REGIME_GATE else ' SHADOW'}] "
+                                f"{_current_state.option_underlying} "
                                 f"regime={getattr(_gx, 'net_gamma_regime', '?')} "
                                 f"call_wall={getattr(_gx, 'call_wall_strike', None)} "
                                 f"put_wall={getattr(_gx, 'put_wall_strike', None)} "
                                 f"spot={completed_bar.close_price:.0f} "
-                                f"verdict={'BLOCK' if _gex_blk else 'ok'}"
+                                f"verdict={('BLOCK' if _gex_blk else 'ok') if _GEX_REGIME_GATE else ('would-block' if _gex_blk else 'ok')}"
                             )
-                            if _gex_blk:
+                            if _GEX_REGIME_GATE and _gex_blk:
                                 _pre_entry_block = _gex_blk
 
                     if _pre_entry_block is not None:

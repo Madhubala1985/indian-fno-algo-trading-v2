@@ -75,6 +75,12 @@ from platform_core.analytics.structure.opening_range import OpeningRangeEngine a
 from platform_core.analytics.structure.session_context import (
     SessionContextEngine as _SessionEngine,
 )
+# GEX dealer-positioning gate — same module + env knobs as live [A7].
+from platform_core.options.gex_gate import gex_wall_block as _gex_wall_block
+
+_GEX_REGIME_GATE: bool = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
+_GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
+_GEX_REGIME_VETO: bool = (os.environ.get("GEX_REGIME_VETO", "1") == "1")
 
 # ── Live ENTRY-gate constants (fidelity v2, mirrored from live_structure_pipeline
 # so the replay applies the SAME gate stack). Same env vars + defaults keep a single
@@ -554,6 +560,14 @@ class SurgicalReplay:
                 # [A-direction] Same-direction session entry cap (shared with live).
                 if _blk is None and direction_counter.blocked(direction=bias):
                     _blk = "DIRECTION_ENTRY_CAP"
+                # [A7] GEX dealer-positioning gate (same module as live; opt-in).
+                if _blk is None and _GEX_REGIME_GATE:
+                    _gex_blk = _gex_wall_block(
+                        bias=bias, spot=spot, gex=octx.gex_snapshot,
+                        proximity_pct=_GEX_WALL_PROXIMITY_PCT,
+                        block_long_gamma=_GEX_REGIME_VETO)
+                    if _gex_blk:
+                        _blk = _gex_blk.split()[0]
                 if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
                     _blk = "CHOP_REENTRY_LOCKOUT"
                 if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up
