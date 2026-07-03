@@ -57,7 +57,11 @@ from platform_core.utils.live_log_resolver import (
 
 _IST      = timezone(timedelta(hours=5, minutes=30))
 _MIN_CSV_BYTES   = 50_000
-_STALE_THRESHOLD = 3     # trading days
+# Warm-start CSV must contain the LAST COMPLETED trading day (age=1 pre-open is
+# the freshest possible). Was 3, which let a 2-day-old CSV pass on 2026-07-03 —
+# the 4h/1d timeframes then missed the previous session entirely. age > 1 →
+# auto-refresh from Kite (which publishes the prior day's minutes by morning).
+_STALE_THRESHOLD = 1     # trading days
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -180,7 +184,7 @@ def _auto_warmstart_refresh_enabled() -> bool:
         not in ("0", "false", "no", "off")
 
 
-def _run_warmstart_refresh(days: int = 25) -> bool:
+def _run_warmstart_refresh(days: int = 30) -> bool:
     """Run scripts/refresh_mcb_warmstart_data.py as a subprocess (needs a VALID
     token — call only after the token check passes). Returns True on success.
     Time-bounded so a hung fetch can't block the session indefinitely."""
