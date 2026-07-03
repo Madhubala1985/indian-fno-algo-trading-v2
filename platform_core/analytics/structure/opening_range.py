@@ -143,6 +143,20 @@ class OpeningRangeEngine:
     def ready(self) -> bool:
         return self._current_range is not None
 
+    def restore_range(self, *, or_high: float, or_low: float, trading_date: str) -> None:
+        """Re-seed a finalized opening range (same-day crash-restart). Without
+        this, a mid-day restart has NO opening range for the rest of the day and
+        every OR-based guard (buffer / extension chase / inside-block) is
+        silently inactive."""
+        self._current_range = OpeningRange(
+            or_high=float(or_high),
+            or_low=float(or_low),
+            or_mid=(float(or_high) + float(or_low)) / 2.0,
+            trading_date=str(trading_date),
+        )
+        self._current_date = str(trading_date)
+        self._finalized = True
+
     def update_bar(self, bar: LiveBar) -> None:
         ist = bar.start_timestamp.astimezone(_IST)
         tod = ist.hour * 60 + ist.minute

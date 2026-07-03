@@ -1437,6 +1437,14 @@ def _save_state() -> bool:
             und: und_state.direction_entry_counter.to_dict()
             for und, und_state in _runtime_by_underlying.items()
         },
+        # Finalized opening range — same-day crash-restarts only. Without it a
+        # restarted process has NO opening range for the rest of the day and
+        # the OR guards (buffer/extension/inside) silently deactivate.
+        "opening_range_by_underlying": {
+            und: (und_state.or_engine.current_range.to_dict()
+                  if und_state.or_engine.ready else None)
+            for und, und_state in _runtime_by_underlying.items()
+        },
     }
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1617,6 +1625,24 @@ def _load_state() -> None:
             if _und_state is not None and _dir_data:
                 _und_state.direction_entry_counter.restore(_dir_data)
                 print(f"[STATE] {_und}: same-direction session entry counts restored: {_dir_data}")
+        _or_by_und = s.get("opening_range_by_underlying") or {}
+        for _und, _or_data in _or_by_und.items():
+            _und_state = _runtime_by_underlying.get(_und)
+            if (_und_state is None or not _or_data
+                    or str(_or_data.get("trading_date")) != _today_ist):
+                continue  # OR is strictly same-day — never carried across sessions
+            try:
+                _und_state.or_engine.restore_range(
+                    or_high=float(_or_data["or_high"]),
+                    or_low=float(_or_data["or_low"]),
+                    trading_date=str(_or_data["trading_date"]),
+                )
+                print(
+                    f"[STATE] {_und}: opening range restored "
+                    f"({_or_data['or_low']:.0f}–{_or_data['or_high']:.0f}) — OR guards stay active"
+                )
+            except Exception:
+                pass  # a bad OR record must never block startup
     print(
         f"[STATE] Restored: equity=₹{_equity:,.0f}  peak=₹{_peak_equity:,.0f}  "
         f"daily_pnl=₹{_daily_pnl:+,.0f}  consec={_consecutive_losses}  "
