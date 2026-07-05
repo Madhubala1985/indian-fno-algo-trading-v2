@@ -82,6 +82,34 @@ _GEX_REGIME_GATE: bool = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
 _GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
 _GEX_REGIME_VETO: bool = (os.environ.get("GEX_REGIME_VETO", "1") == "1")
 
+# Robust ATM IV → strike-selection scoring A/B (mirrors the live-pipeline fix:
+# the near-ATM strike's OWN raw IV instead of the surface-interpolated
+# options_ctx.atm_iv, which mis-interpolates on the SENSEX/BSE chain and can
+# zero iv_attractiveness). Default OFF = current committed live behaviour.
+_REPLAY_ROBUST_ATM_IV: bool = (os.environ.get("REPLAY_ROBUST_ATM_IV", "0") == "1")
+
+
+def _robust_atm_iv(octx) -> float:
+    """Near-ATM strike's own raw IV, falling back to the surface value then the
+    reference IV — same logic as live_structure_pipeline._robust_atm_iv."""
+    try:
+        atm_strike = getattr(octx, "atm_strike", None)
+        cands = getattr(octx, "strike_candidates", None) or ()
+        if atm_strike is not None and cands:
+            near = min(
+                (c for c in cands if getattr(c, "implied_volatility", 0.0) > 0.0),
+                key=lambda c: abs(c.strike_price - atm_strike),
+                default=None,
+            )
+            if near is not None and near.implied_volatility > 0.0:
+                return float(near.implied_volatility)
+        surface = getattr(octx, "atm_iv", None)
+        if surface is not None and surface > 0.0:
+            return float(surface)
+    except Exception:
+        pass
+    return _REFERENCE_IV
+
 # ── Live ENTRY-gate constants (fidelity v2, mirrored from live_structure_pipeline
 # so the replay applies the SAME gate stack). Same env vars + defaults keep a single
 # behavioural source of truth; if live retunes these, set the same env var here. ──
@@ -519,11 +547,28 @@ class SurgicalReplay:
                 cands = list(octx.strike_candidates)
                 if not cands:
                     continue
+                _iv_for_scoring = octx.atm_iv
+                if _REPLAY_ROBUST_ATM_IV:
+                    _iv_for_scoring = _robust_atm_iv(octx)
                 sel = self._strike.select(bias=bias, candidates=cands,
                                           valuation_timestamp=bar.start_timestamp,
                                           oi_snapshot=octx.oi_snapshot,
-                                          gex_snapshot=octx.gex_snapshot, atm_iv=octx.atm_iv)
+                                          gex_snapshot=octx.gex_snapshot, atm_iv=_iv_for_scoring)
                 best = sel.best()
+                # A/B diagnostics: on minutes where robust and surface IV diverge
+                # >10%, re-score with the surface IV and count changed outcomes —
+                # shows how often the fix actually alters selection (not just P&L).
+                if _REPLAY_ROBUST_ATM_IV and octx.atm_iv and abs(_iv_for_scoring - octx.atm_iv) / octx.atm_iv > 0.10:
+                    _block("DIAG_IVFIX_DIVERGENT_MIN")
+                    _sel_surf = self._strike.select(bias=bias, candidates=cands,
+                                                    valuation_timestamp=bar.start_timestamp,
+                                                    oi_snapshot=octx.oi_snapshot,
+                                                    gex_snapshot=octx.gex_snapshot, atm_iv=octx.atm_iv)
+                    _best_surf = _sel_surf.best()
+                    if (_best_surf is None) != (best is None) or (
+                            best is not None and _best_surf is not None
+                            and best.option_symbol != _best_surf.option_symbol):
+                        _block("DIAG_IVFIX_PICK_CHANGED")
                 if best is None:
                     continue
 
