@@ -33,8 +33,11 @@ def _print_summary(batch: BatchReplayResult, label: str) -> None:
     print("=" * 78)
     print(f"  days replayed: {len(replayed)}   skipped: {len(skipped)}   "
           f"conv_floor: {batch.conv_floor}")
+    costs = sum(getattr(t, "costs", 0.0) for t in trades)
     print(f"  TRADES {len(trades)}   WINS {batch.wins}   WIN-RATE {wr*100:.1f}%   "
-          f"TOTAL P&L ₹{batch.total_pnl:+,.0f}")
+          f"NET P&L ₹{batch.total_pnl:+,.0f}"
+          + (f"   (gross ₹{batch.total_pnl + costs:+,.0f}, toll ₹{costs:,.0f})"
+             if costs else "   (COST_MODEL off — GROSS)"))
     if trades:
         avg = batch.total_pnl / len(trades)
         print(f"  avg P&L/trade ₹{avg:+,.0f}   "

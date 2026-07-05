@@ -96,6 +96,7 @@ from platform_core.analytics.structure.sweep_validation import (
     LiquiditySweepValidationEngine, SetupValidation,
 )
 from platform_core.backtesting.strike_validator import StrikeSelectionValidator
+from platform_core.execution.transaction_costs import apply_costs as _apply_costs
 from platform_core.data.historical.option_chain_feed import HistoricalOptionChainFeed
 
 
@@ -295,6 +296,7 @@ class OptionTrade:
     pnl: float
     exit_reason: str
     bars_held: int
+    costs: float = 0.0   # round-trip toll already deducted from pnl (pnl is NET)
 
     def as_paper_trade(self) -> PaperTrade:
         return PaperTrade(
@@ -496,6 +498,12 @@ class OptionPaperTrader:
             return None
 
         pnl = (current_premium - pos.entry_premium) * pos.lot_size * pos.lots
+        # Report NET of the real round-trip toll (brokerage/STT/txn/GST/stamp +
+        # spread crossing) — gross P&L was fiction; see transaction_costs module.
+        pnl, _costs = _apply_costs(
+            pnl, entry_premium=pos.entry_premium, exit_premium=current_premium,
+            quantity=pos.lot_size * pos.lots, underlying=pos.underlying_symbol,
+        )
         trade = OptionTrade(
             underlying_symbol=pos.underlying_symbol,
             contract_symbol=pos.contract_symbol,
@@ -509,6 +517,7 @@ class OptionPaperTrader:
             exit_premium=current_premium,
             pnl=pnl,
             exit_reason=exit_reason,
+            costs=_costs,
             # Floor at 0: a position carried ACROSS sessions (opened in a prior
             # session that was killed before EOD, exited in a later one) has an
             # entry bar_index from the old session while bar_index restarted at 0,

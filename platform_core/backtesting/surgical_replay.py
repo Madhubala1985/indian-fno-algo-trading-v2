@@ -77,6 +77,8 @@ from platform_core.analytics.structure.session_context import (
 )
 # GEX dealer-positioning gate — same module + env knobs as live [A7].
 from platform_core.options.gex_gate import gex_wall_block as _gex_wall_block
+# Real round-trip toll (brokerage/STT/txn/GST/stamp + spread) — P&L is NET.
+from platform_core.execution.transaction_costs import apply_costs as _apply_costs
 
 _GEX_REGIME_GATE: bool = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
 _GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
@@ -239,6 +241,7 @@ class ReplayTrade:
     or_ext: float = 0.0        # spot extension beyond the OR boundary in the trade
                                # direction, in OR-width units (trend-day signature)
     peak_prem: float = 0.0     # max favorable premium seen while open (MFE)
+    costs: float = 0.0         # round-trip toll already deducted (pnl is NET)
 
 
 @dataclass
@@ -506,6 +509,11 @@ class SurgicalReplay:
                     if reason:
                         pos.exit_ts, pos.exit_prem = minute_iso, cur
                         pos.pnl = (cur - pos.entry_prem) * pos.lot_size * pos.lots
+                        # NET of the real round-trip toll — same model as live
+                        # OptionPaperTrader (COST_MODEL=0 restores gross).
+                        pos.pnl, pos.costs = _apply_costs(
+                            pos.pnl, entry_premium=pos.entry_prem, exit_premium=cur,
+                            quantity=pos.lot_size * pos.lots, underlying=underlying)
                         pos.reason = reason
                         # ── Arm re-entry cooldowns (mirrors live ~3484-3507) ──
                         if "STOP_LOSS" in reason:
@@ -691,6 +699,9 @@ class SurgicalReplay:
             cur = ltp_of(pos.contract, last_iso) or pos.entry_prem
             pos.exit_ts, pos.exit_prem = last_iso, cur
             pos.pnl = (cur - pos.entry_prem) * pos.lot_size * pos.lots
+            pos.pnl, pos.costs = _apply_costs(
+                pos.pnl, entry_premium=pos.entry_prem, exit_premium=cur,
+                quantity=pos.lot_size * pos.lots, underlying=underlying)
             pos.reason = "EOD"
             res.trades.append(pos)
         return res

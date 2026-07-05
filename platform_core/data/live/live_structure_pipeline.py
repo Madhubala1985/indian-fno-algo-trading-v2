@@ -775,6 +775,9 @@ _MIN_IV_ATTR_TIER23:      float = float(os.environ.get("PAPER_MIN_IV_ATTR", "0.0
 
 import os as _os
 from platform_core.execution.execution_router import ExecutionRouter as _ExecutionRouter
+# Real round-trip toll — paper/dry-run P&L is netted inside OptionPaperTrader;
+# these imports cover the real_armed fill-override paths (statutory only).
+from platform_core.execution.transaction_costs import apply_costs as _apply_txn_costs
 from platform_core.execution.position_reconciler import reconcile_positions
 from platform_core.execution.gate_profiles import (
     PROFILE_GATE_TABLES as _PROFILE_GATE_TABLES,
@@ -3025,6 +3028,12 @@ def _eod_force_close_all() -> None:
                 (_closed.exit_premium - _closed.entry_premium)
                 * _closed.lot_size * _closed.lots
             )
+            # Real fills embed the spread; deduct statutory charges only.
+            _closed.pnl, _closed.costs = _apply_txn_costs(
+                _closed.pnl, entry_premium=_closed.entry_premium,
+                exit_premium=_closed.exit_premium,
+                quantity=_closed.lot_size * _closed.lots,
+                underlying=_closed.underlying_symbol, spread_frac_per_side=0.0)
             _eod_price_source = "REAL_FILL"
         elif _EXECUTION_MODE == "real_armed":
             _eod_miss = _eod_exit_fill.status if _eod_exit_fill is not None else "ROUTER_ERROR"
@@ -3674,6 +3683,13 @@ def on_ticks(raw_ticks):
                             (_final_exit_premium - _closed.entry_premium)
                             * _closed.lot_size * _closed.lots
                         )
+                        # Real fills embed the spread; statutory charges only.
+                        _final_pnl, _closed.costs = _apply_txn_costs(
+                            _final_pnl, entry_premium=_closed.entry_premium,
+                            exit_premium=_final_exit_premium,
+                            quantity=_closed.lot_size * _closed.lots,
+                            underlying=_closed.underlying_symbol,
+                            spread_frac_per_side=0.0)
                         print(
                             f"[REAL FILL] EXIT {_closed.contract_symbol} filled "
                             f"@₹{_final_exit_premium:.2f} qty={_exit_fill.filled_quantity} "
