@@ -251,6 +251,70 @@ def _check_real_interlocks() -> tuple[bool, list[str]]:
     return (len(missing) == 0), missing
 
 
+def validate_real_order_caps(intent: OrderIntent) -> tuple[bool, str]:
+    """
+    Enforce the VALUES of the cap/scope interlocks on a real BUY order.
+
+    _check_real_interlocks only verifies the env vars are SET — before
+    2026-07-05 nothing read their values, so the caps were decorative.
+    Applies to entries (BUY) only: an exit must never be blocked by a cap,
+    or a live position could be trapped. Each check is skipped when its
+    env var is unset (paper/dry-run contexts); set-but-unparsable values
+    and a MARKET BUY with no reference premium fail CLOSED.
+    (MAX_REAL_DAILY_LOSS / MAX_REAL_CAPITAL are session-level and enforced
+    in the live pipeline's entry path, where daily P&L is known.)
+    """
+    if intent.transaction_type.upper() != "BUY":
+        return True, ""
+
+    def _fail(reason: str) -> tuple[bool, str]:
+        return False, f"REAL_CAP_BLOCKED: {reason}"
+
+    raw = os.environ.get("REAL_ALLOWED_UNDERLYINGS", "")
+    if raw:
+        allow = {u.strip().upper() for u in raw.split(",") if u.strip()}
+        if intent.underlying.upper() not in allow:
+            return _fail(f"underlying '{intent.underlying}' not in "
+                         f"REAL_ALLOWED_UNDERLYINGS={sorted(allow)}")
+
+    raw = os.environ.get("REAL_ALLOWED_EXCHANGES", "")
+    if raw:
+        allow = {e.strip().upper() for e in raw.split(",") if e.strip()}
+        if intent.exchange.upper() not in allow:
+            return _fail(f"exchange '{intent.exchange}' not in "
+                         f"REAL_ALLOWED_EXCHANGES={sorted(allow)}")
+
+    raw = os.environ.get("REAL_MAX_LOTS_PER_ORDER", "")
+    if raw:
+        try:
+            max_lots = int(float(raw))
+        except (TypeError, ValueError):
+            return _fail(f"REAL_MAX_LOTS_PER_ORDER={raw!r} is not a number")
+        if intent.lots > max_lots:
+            return _fail(f"lots={intent.lots} > REAL_MAX_LOTS_PER_ORDER={max_lots}")
+
+    raw = os.environ.get("MAX_REAL_ORDER_VALUE", "")
+    if raw:
+        try:
+            max_value = float(raw)
+        except (TypeError, ValueError):
+            return _fail(f"MAX_REAL_ORDER_VALUE={raw!r} is not a number")
+        ref_price = intent.price
+        if ref_price <= 0.0:
+            try:
+                ref_price = float(intent.strike_context.get("premium", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                ref_price = 0.0
+        if ref_price <= 0.0:
+            return _fail("MARKET BUY with no reference premium — cannot verify "
+                         "MAX_REAL_ORDER_VALUE")
+        value = ref_price * intent.quantity
+        if value > max_value:
+            return _fail(f"order value ₹{value:,.0f} > MAX_REAL_ORDER_VALUE ₹{max_value:,.0f}")
+
+    return True, ""
+
+
 # ── Adapters ─────────────────────────────────────────────────────────────────
 
 class PaperBrokerAdapter:
@@ -441,6 +505,18 @@ class KiteLiveBrokerAdapter:
                 rejection_reason=reason,
             )
 
+        # Step 2.5: enforce cap/scope interlock VALUES (BUY only — never exits)
+        ok, reason = validate_real_order_caps(intent)
+        if not ok:
+            print(f"[REAL ORDER BLOCKED] {direction} rejected: {reason}")
+            return OrderResult(
+                success=False,
+                order_id="",
+                mode=self.MODE,
+                status="CAP_BLOCKED",
+                rejection_reason=reason,
+            )
+
         # Step 3: kite SDK call (only reached when all interlocks pass)
         if self._kite is None:
             print("[REAL ORDER BLOCKED] kite SDK client not initialised")
@@ -584,6 +660,7 @@ __all__ = [
     "KiteLiveBrokerAdapter",
     "get_broker_adapter",
     "validate_order_intent",
+    "validate_real_order_caps",
     "_check_real_interlocks",
     "_required_exchange",
     "EXECUTION_MODES",

@@ -481,6 +481,16 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     #   - portfolio heat 10% -> 30%      (the real binding cap for option-buying)
     # NIFTY stays capped at PAPER_NIFTY_MAX_LOTS (default 5) so the loser can't
     # out-size the winner.
+    if exec_mode == "real_armed":
+        # First-armed-week profile: the NET-validated real-fund-safe risk level
+        # (2% — the 4% code default is paper/validation-only, >2.5% is not
+        # approved for real funds). Recorder stays on (data flywheel — no extra
+        # Kite calls). setdefault so an explicit env override always wins.
+        env.setdefault("RECORD_OPTION_CHAIN", "1")
+        env.setdefault("PAPER_TIER2_RISK_FRAC", "0.02")
+        env.setdefault("PAPER_TIER3_RISK_FRAC", "0.02")
+        env.setdefault("PAPER_MAX_SINGLE_TRADE_RISK_FRAC", "0.02")
+
     if exec_mode in ("paper", "real_dry_run"):
         # Approach-A recorder ON by default for paper/dry-run: capture the real
         # option chain each bar to grow the offline validation dataset (safe —

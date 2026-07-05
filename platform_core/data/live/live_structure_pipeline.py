@@ -4559,6 +4559,49 @@ def on_ticks(raw_ticks):
                                                     )
                                                 except Exception:
                                                     pass
+                                            # ── Hard rupee caps: MAX_REAL_DAILY_LOSS / MAX_REAL_CAPITAL.
+                                            # These interlocks were required-but-UNREAD before 2026-07-05
+                                            # (decorative). Enforced at ENTRY only — exits are never
+                                            # blocked, or a live position could be trapped. Unparsable
+                                            # values fail closed.
+                                            if _margin_ok:
+                                                try:
+                                                    _max_dl  = float(os.environ.get("MAX_REAL_DAILY_LOSS", "0") or 0)
+                                                    _max_cap = float(os.environ.get("MAX_REAL_CAPITAL", "0") or 0)
+                                                except (TypeError, ValueError):
+                                                    _max_dl = _max_cap = -1.0
+                                                _cap_block = None
+                                                if _max_dl < 0 or _max_cap < 0:
+                                                    _cap_block = "unparsable MAX_REAL_DAILY_LOSS/MAX_REAL_CAPITAL (fail-closed)"
+                                                elif _max_dl > 0 and -_daily_pnl >= _max_dl:
+                                                    _cap_block = (f"daily loss ₹{-_daily_pnl:,.0f} >= "
+                                                                  f"MAX_REAL_DAILY_LOSS ₹{_max_dl:,.0f}")
+                                                elif _max_cap > 0 and _open_premium_cost + _need_margin > _max_cap:
+                                                    _cap_block = (f"premium outlay ₹{_open_premium_cost + _need_margin:,.0f} "
+                                                                  f"would exceed MAX_REAL_CAPITAL ₹{_max_cap:,.0f}")
+                                                if _cap_block is not None:
+                                                    _margin_ok = False
+                                                    print_warning_block(
+                                                        "REAL ENTRY BLOCKED — RUPEE CAP",
+                                                        bar_index=_bar_count,
+                                                        underlying=_srec.underlying_symbol,
+                                                        reason=_cap_block,
+                                                    )
+                                                    try:
+                                                        _db.write_decision(
+                                                            bar_index=_bar_count,
+                                                            bar_ts=datetime.now(timezone.utc).isoformat(),
+                                                            underlying=_srec.underlying_symbol,
+                                                            bias=str(_mctx.bias),
+                                                            conf_raw=_mctx.confidence,
+                                                            conf_eff=_effective_conf,
+                                                            outcome="REAL_CAP_BLOCK",
+                                                            filter_reason=_cap_block[:120],
+                                                            equity=_equity,
+                                                            drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                                                        )
+                                                    except Exception:
+                                                        pass
                                         if _entry_ok and _margin_ok:
                                             # ── Execute: route order → confirm fill → open at ACTUAL fill ──
                                             # paper/real_dry_run: route is a no-op/log and confirm_fill
