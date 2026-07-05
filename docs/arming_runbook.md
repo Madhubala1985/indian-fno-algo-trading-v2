@@ -34,7 +34,7 @@ about the operational chain, not the model.
   halt in rupees, `MAX_REAL_ORDER_VALUE` = the 15% premium cap in rupees,
   `REAL_MAX_LOTS_PER_ORDER` = freeze-qty scale) are backstops against bugs and
   must never bind on a normal trade — if one fires, treat it as an incident.
-- Expected worst normal day at this profile ≈ the 15% daily halt (₹37.5k on ₹2.5L).
+- Expected worst normal day at this profile ≈ the 15% daily halt (₹60k on ₹4L).
 - P&L is judged NET (cost model, commit 6912d75). Break-even is not the old gross bar.
 - No knob changes during the armed week. Anything learned goes through the
   replay/batch first (measure-first discipline unchanged — it is the edge).
