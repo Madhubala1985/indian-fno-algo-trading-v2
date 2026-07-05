@@ -10,7 +10,7 @@ about the operational chain, not the model.
 |---|-------|-----|-------------------|
 | 1 | Readiness gate 11/11 | `PYTHONPATH=. python scripts/real_funds_readiness_check.py` (with interlocks sourced) | 7/11 — remaining 4 are arm-time env + git-clean |
 | 2 | Cap interlocks ENFORCED | `validate_real_order_caps` + pipeline rupee-cap gate (added 2026-07-05; were decorative before) | DONE, 9 unit cases + 59-test suite pass |
-| 3 | Real-fund risk profile | Supervisor pins real_armed to 2% risk (net-validated level; 4% is paper-only) | DONE |
+| 3 | Profile parity | real_armed runs the EXACT paper/dry-run profile (8% risk, %-of-capital, same gates incl. SENSEX margin 0.015) — parity directive 2026-07-05; interlocks are backstops only | DONE |
 | 4 | Fresh OOS validation days | Mon: backfill 07-04 chains + index, dry-run Mon (+Tue if Mon is red), batch must be NET-positive incl. new days | PENDING — the actual gate |
 | 5 | Capital funded & matched | Broker account funded; MAX_REAL_CAPITAL = funded amount; paper state equity basis sane vs it | PENDING (user) |
 | 6 | Token fresh | Generate 08:30–09:10 IST the same morning (pre-dawn tokens get invalidated) | Daily |
@@ -25,11 +25,16 @@ about the operational chain, not the model.
 4. Operator gives the explicit arming instruction (the literal phrase — never
    implied, never scripted).
 5. `PYTHONPATH=. python scripts/run_supervised_live_session.py --execution-mode real_armed`
-6. Verify the banner: `Real orders: true`, risk fracs 0.02, recorder on.
+6. Verify the banner: `Real orders: true`, risk fracs 0.08 (same as dry-run), recorder on.
 
 ## First-week rails (do not relax mid-week)
 
-- 2% per-trade risk, `REAL_MAX_LOTS_PER_ORDER=2` (canary), `MAX_REAL_DAILY_LOSS=7500`.
+- Sizing/gates are IDENTICAL to the validated dry-run profile — what was observed
+  live is what trades armed. The interlocks (`MAX_REAL_DAILY_LOSS` = the 15% daily
+  halt in rupees, `MAX_REAL_ORDER_VALUE` = the 15% premium cap in rupees,
+  `REAL_MAX_LOTS_PER_ORDER` = freeze-qty scale) are backstops against bugs and
+  must never bind on a normal trade — if one fires, treat it as an incident.
+- Expected worst normal day at this profile ≈ the 15% daily halt (₹37.5k on ₹2.5L).
 - P&L is judged NET (cost model, commit 6912d75). Break-even is not the old gross bar.
 - No knob changes during the armed week. Anything learned goes through the
   replay/batch first (measure-first discipline unchanged — it is the edge).
@@ -47,8 +52,10 @@ about the operational chain, not the model.
 
 ## Known residual risks (accepted, monitored)
 
-- Live edge is thin net of costs (+₹2,337/10 days at 2% on ₹4L replay basis) and
-  mostly in-sample; the first armed week IS the out-of-sample test — hence canary caps.
+- Live edge is thin net of costs (+₹2,337/10 days at 2% replay basis; the armed 8%
+  profile scales both wins AND losses ~4x) and mostly in-sample; the first armed
+  week IS the out-of-sample test, at full size by explicit user decision (parity
+  directive 2026-07-05).
 - Spread crossing on market orders is modelled at 0.25%/side, unverified against
   real fills; first armed fills calibrate it (compare fill vs bar LTP).
 - Host suspend / internet loss mid-position: crash guards + EOD close exist, but a

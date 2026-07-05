@@ -461,38 +461,32 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     if "LIVE_TERMINAL_MODE" not in env:
         env["LIVE_TERMINAL_MODE"] = "compact"
 
-    # SENSEX strike-margin floor — loosen 0.05 -> 0.015 for paper / real_dry_run
-    # ONLY. SENSEX near-ATM strikes are structural near-ties in low vol (margins
-    # 0.00-0.03), so the strict 0.05 default blocks ~100% of SENSEX bars (137 of
-    # 154 strike-quality blocks on 2026-06-25 were score_margin-only). 0.015 still
-    # floors out genuine coin-flip ties. real_armed is deliberately excluded so
-    # the real-funds gate stays strict at 0.05. An explicit
-    # PAPER_SENSEX_SCORE_MARGIN_MIN (or PAPER_GATE_PROFILE override) always wins.
-    if exec_mode in ("paper", "real_dry_run") and "PAPER_SENSEX_SCORE_MARGIN_MIN" not in env:
+    # SENSEX strike-margin floor — loosen 0.05 -> 0.015. SENSEX near-ATM strikes
+    # are structural near-ties in low vol (margins 0.00-0.03), so the strict 0.05
+    # default blocks ~100% of SENSEX bars (137 of 154 strike-quality blocks on
+    # 2026-06-25 were score_margin-only). 0.015 still floors out genuine coin-flip
+    # ties. Applies to ALL modes incl. real_armed (user directive 2026-07-05:
+    # real_armed must behave EXACTLY like the validated paper/dry-run sessions —
+    # a stricter armed gate would deploy behaviour never observed live). An
+    # explicit PAPER_SENSEX_SCORE_MARGIN_MIN (or profile override) always wins.
+    if "PAPER_SENSEX_SCORE_MARGIN_MIN" not in env:
         env["PAPER_SENSEX_SCORE_MARGIN_MIN"] = "0.015"
 
-    # Aggressive conviction-scaled sizing — paper / real_dry_run ONLY (the
-    # experiment under validation). real_armed stays on the conservative code
-    # defaults (4% risk, 6-lot ceiling, 10% heat). setdefault() so an explicit
-    # env value or a profile block (e.g. paper_trade_unlock) always wins.
+    # Aggressive conviction-scaled sizing — ALL live modes incl. real_armed
+    # (user directive 2026-07-05: real_armed must run the EXACT profile the
+    # paper/dry-run sessions validated — parity is the point; a derated armed
+    # profile would deploy sizing never observed live). The rupee interlocks
+    # (MAX_REAL_*, REAL_MAX_LOTS_PER_ORDER) remain as absolute BACKSTOPS
+    # against bugs, set at levels the sizer never reaches. setdefault() so an
+    # explicit env value or a profile block (e.g. paper_trade_unlock) wins.
     #   - risk/trade 4% -> 8%            (more lots)
     #   - tier ceilings 4/6 -> 10/15     (best setups can press)
     #   - conviction top 1.25x -> 1.5x   (best setups bigger, normal unchanged)
     #   - portfolio heat 10% -> 30%      (the real binding cap for option-buying)
     # NIFTY stays capped at PAPER_NIFTY_MAX_LOTS (default 5) so the loser can't
     # out-size the winner.
-    if exec_mode == "real_armed":
-        # First-armed-week profile: the NET-validated real-fund-safe risk level
-        # (2% — the 4% code default is paper/validation-only, >2.5% is not
-        # approved for real funds). Recorder stays on (data flywheel — no extra
-        # Kite calls). setdefault so an explicit env override always wins.
-        env.setdefault("RECORD_OPTION_CHAIN", "1")
-        env.setdefault("PAPER_TIER2_RISK_FRAC", "0.02")
-        env.setdefault("PAPER_TIER3_RISK_FRAC", "0.02")
-        env.setdefault("PAPER_MAX_SINGLE_TRADE_RISK_FRAC", "0.02")
-
-    if exec_mode in ("paper", "real_dry_run"):
-        # Approach-A recorder ON by default for paper/dry-run: capture the real
+    if exec_mode in ("paper", "real_dry_run", "real_armed"):
+        # Approach-A recorder ON by default: capture the real
         # option chain each bar to grow the offline validation dataset (safe —
         # no extra Kite calls, never raises; RECORD_OPTION_CHAIN=0 to disable).
         env.setdefault("RECORD_OPTION_CHAIN", "1")
@@ -503,8 +497,8 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         # lot-count ceiling. Lots derive from the 8% risk budget, the 15%
         # single-position premium cap (PAPER_MAX_POSITION_PREMIUM_FRAC, tail
         # defense — an option buyer's worst case is the whole premium), the 30%
-        # portfolio heat cap, and the exchange freeze-qty rail. real_armed
-        # keeps the conservative fixed defaults.
+        # portfolio heat cap, and the exchange freeze-qty rail (all modes —
+        # real_armed runs this same profile, parity directive 2026-07-05).
         env.setdefault("PAPER_TIER2_MAX_LOTS", "0")
         env.setdefault("PAPER_TIER3_MAX_LOTS", "0")
         env.setdefault("PAPER_MAX_CONF_SCALE", "1.5")
@@ -514,7 +508,7 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         # single loss. Raised so 8 lots -> halt on 3rd loss, 10 lots -> 2nd, and
         # the auto-resuming daily halt (15%) fires before the manual-restart
         # account-DD halt (21%). Stop is reliably ~30% (intrabar-capped) so the
-        # loss-per-trade is predictable. real_armed keeps 2%/4%/15%.
+        # loss-per-trade is predictable. (Applies to real_armed too — parity.)
         # Soft-halt raised to 0.14 (just below the 0.15 hard stop) ON PURPOSE:
         # the sizer's SMOOTH drawdown-haircut (size ∝ remaining room to account
         # DD) already de-risks continuously as the day loses (e.g. 10→6→3→2
@@ -522,7 +516,7 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         # switches to the 0.7%-risk/1-lot sizer; at 6% it pre-empted the smooth
         # taper and slammed to 1 lot after a single loss. Kept only as a thin
         # final buffer before the hard stop so the two de-risk systems don't
-        # overlap/double-count. real_armed keeps the conservative 2%.
+        # overlap/double-count. (Applies to real_armed too — parity.)
         env.setdefault("PAPER_SOFT_HALT_DAILY_LOSS", "0.14")
         env.setdefault("PAPER_HARD_HALT_DAILY_LOSS", "0.15")
         env.setdefault("PAPER_MAX_ACCOUNT_DD", "0.21")
