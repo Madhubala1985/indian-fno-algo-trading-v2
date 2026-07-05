@@ -3060,7 +3060,10 @@ def _eod_force_close_all() -> None:
         _peak_equity           = max(_peak_equity, _equity)
         _open_premium_cost     = _compute_open_premium_cost()
         _daily_pnl            += _closed.pnl
-        if _closed.pnl < 0:
+        # Guards classify on GROSS (market outcome): the cost toll must not turn
+        # a breakeven exit into a "loss" for streak/halt purposes — these guards
+        # were calibrated pre-cost-model (P&L accounting stays NET).
+        if (_closed.pnl + getattr(_closed, "costs", 0.0)) < 0:
             _consecutive_losses += 1
         else:
             _consecutive_losses = 0
@@ -3743,7 +3746,9 @@ def on_ticks(raw_ticks):
                     _peak_equity = max(_peak_equity, _equity)
                     _open_premium_cost = _compute_open_premium_cost()
                     _daily_pnl += _final_pnl
-                    if _final_pnl < 0:
+                    # Guards classify on GROSS — see EOD-close site (breakeven
+                    # exits must not feed loss streaks because of the toll).
+                    if (_final_pnl + getattr(_closed, "costs", 0.0)) < 0:
                         _consecutive_losses += 1
                     else:
                         _consecutive_losses = 0
@@ -3762,7 +3767,8 @@ def on_ticks(raw_ticks):
                     _current_state.contract_loss_tracker.record_exit(
                         contract=_closed.contract_symbol,
                         direction=str(_closed.direction),
-                        pnl=_final_pnl,
+                        # GROSS: a toll-only negative is not a losing exit.
+                        pnl=_final_pnl + getattr(_closed, "costs", 0.0),
                     )
                     if _current_state.contract_loss_tracker.blocked(
                         contract=_closed.contract_symbol,
@@ -3776,7 +3782,8 @@ def on_ticks(raw_ticks):
                         )
                     # Chop re-entry brake: consecutive losing exits lock the
                     # underlying briefly; a win resets immediately (trend continues).
-                    if _closed.pnl > 0:
+                    # GROSS classification (identical to pre-cost-model behaviour).
+                    if (_closed.pnl + getattr(_closed, "costs", 0.0)) > 0:
                         _current_state.reentry_loss_streak = 0
                     else:
                         _current_state.reentry_loss_streak += 1

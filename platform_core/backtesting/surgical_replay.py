@@ -520,11 +520,14 @@ class SurgicalReplay:
                             last_stop_bar, last_stop_contract = bar_idx, pos.contract
                         if "STRUCTURE_EXIT" in reason:
                             last_struct_exit_bar, last_struct_exit_contract = bar_idx, pos.contract
+                        # Guards classify on GROSS (pnl + costs) — the toll must
+                        # not turn a breakeven exit into a "loss" (mirrors live).
                         contract_loss_tracker.record_exit(
-                            contract=pos.contract, direction=pos.direction, pnl=pos.pnl)
+                            contract=pos.contract, direction=pos.direction,
+                            pnl=pos.pnl + pos.costs)
                         # Chop brake: a win resets the streak (trend); consecutive
                         # losing exits lock the underlying out briefly.
-                        if pos.pnl > 0:
+                        if pos.pnl + pos.costs > 0:
                             reentry_loss_streak = 0
                         else:
                             reentry_loss_streak += 1
