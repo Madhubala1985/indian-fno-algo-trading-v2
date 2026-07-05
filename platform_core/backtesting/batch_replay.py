@@ -147,12 +147,20 @@ def replay_one_day(*, underlying: str, day: date, adapter, fetcher: HistoricalOp
     o, c = session[0].open_price, session[-1].close_price
     dr.index_chg_pct = (c - o) / o * 100.0 if o else 0.0
     try:
-        expiry = adapter.select_expiry(underlying, day, min_dte=2, exchange=cfg["exch"])
-        dr.expiry, dr.dte = expiry.isoformat(), (expiry - day).days
-        if dr.dte > max_entry_dte:
-            dr.skipped = (f"nearest expiry expired — only far expiry {dr.expiry} listed "
-                          f"(dte={dr.dte}>{max_entry_dte}); needs Approach-A recorder")
-            return dr
+        # Cache first: a cached file's name holds the expiry that was faithfully
+        # selected while it was still listed (fetch or live recorder) — usable
+        # even after that expiry vanishes from Kite's current-only dump, and
+        # exempt from the DTE guard (which only distrusts dump-derived picks).
+        expiry = fetcher.cached_expiry(underlying, day)
+        if expiry is not None:
+            dr.expiry, dr.dte = expiry.isoformat(), (expiry - day).days
+        else:
+            expiry = adapter.select_expiry(underlying, day, min_dte=2, exchange=cfg["exch"])
+            dr.expiry, dr.dte = expiry.isoformat(), (expiry - day).days
+            if dr.dte > max_entry_dte:
+                dr.skipped = (f"nearest expiry expired — only far expiry {dr.expiry} listed "
+                              f"(dte={dr.dte}>{max_entry_dte}); needs Approach-A recorder")
+                return dr
         cache = fetcher.fetch_day(underlying=underlying, day=day, expiry=expiry,
                                   spot_atm=session[0].open_price, strike_step=cfg["step"],
                                   strikes_around_atm=strikes, exchange=cfg["exch"])

@@ -55,6 +55,27 @@ class HistoricalOptionChainFetcher:
                 out.append(i)
         return out
 
+    # ── cache-first expiry lookup ────────────────────────────────────────────
+    def cached_expiry(self, underlying: str, day: date) -> date | None:
+        """Expiry of an already-cached chain for (underlying, day), if any.
+
+        The cache filename encodes the expiry that select_expiry chose when the
+        contract was still listed (fetch or live recorder), so it stays faithful
+        after that expiry drops out of Kite's current-only instrument dump.
+        Returns the nearest cached expiry >= day, or None if nothing is cached.
+        """
+        found: list[date] = []
+        for p in self._cache_dir.glob(f"{underlying}_{day.isoformat()}_*.jsonl"):
+            if p.stat().st_size == 0:
+                continue
+            try:
+                exp = date.fromisoformat(p.stem.rsplit("_", 1)[-1])
+            except ValueError:
+                continue
+            if exp >= day:
+                found.append(exp)
+        return min(found) if found else None
+
     # ── fetch + cache one day ────────────────────────────────────────────────
     def fetch_day(self, *, underlying, day: date, expiry: date, spot_atm: float,
                   strike_step: float, strikes_around_atm: int = 10,
