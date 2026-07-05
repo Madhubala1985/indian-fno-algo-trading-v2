@@ -24,8 +24,15 @@ about the operational chain, not the model.
 3. `PYTHONPATH=. python scripts/real_funds_readiness_check.py` → must print 11/11
 4. Operator gives the explicit arming instruction (the literal phrase — never
    implied, never scripted).
-5. `PYTHONPATH=. python scripts/run_supervised_live_session.py --execution-mode real_armed`
-6. Verify the banner: `Real orders: true`, risk fracs 0.08 (same as dry-run), recorder on.
+5. **First armed day only**: launch with `--capital <funded amount>` (e.g.
+   `--capital 400000`). The paper state's compounded equity (₹427,997) includes
+   void pre-06-30 BSM-fiction gains and must NOT become the real sizing basis;
+   the explicit capital archives the paper state (preserved in archive/) and
+   starts the real ledger at the actual funded amount. From day 2 onward launch
+   WITHOUT `--capital` — compounding then rolls the REAL ledger forward.
+   `PYTHONPATH=. python scripts/run_supervised_live_session.py --execution-mode real_armed --capital 400000`
+6. Verify the banner: `Real orders: true`, risk fracs 0.08 (same as dry-run),
+   recorder on, `starting_capital` = the funded amount.
 
 ## First-week rails (do not relax mid-week)
 

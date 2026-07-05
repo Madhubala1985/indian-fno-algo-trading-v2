@@ -1140,10 +1140,11 @@ _conviction_scorer = _ConvictionScorer()
 # of the day's loss). Conviction is NOT validated (1-1), so it returns to SHADOW
 # and SENSEX-priority routing is restored. Re-enable only after it earns it on a
 # real sample.
-_CONV_LIVE: bool = (
-    _EXECUTION_MODE in ("paper", "real_dry_run")
-    and _os.environ.get("PAPER_CONV_LIVE", "0") == "1"
-)
+# Parity (2026-07-05): mode-INDEPENDENT — the supervisor builds an identical
+# env for all modes, so if this experiment is ever enabled it behaves the same
+# in dry-run and real_armed instead of silently diverging. Default 0 = shadow
+# everywhere (conviction is not validated — hard-rule: stays shadow).
+_CONV_LIVE: bool = _os.environ.get("PAPER_CONV_LIVE", "0") == "1"
 _CONV_FLOOR:     float = float(_os.environ.get("PAPER_CONV_FLOOR", "0.40") or 0.40)
 _CONV_NIFTY_MIN: float = float(_os.environ.get("PAPER_CONV_NIFTY_MIN", "0.60") or 0.60)
 
