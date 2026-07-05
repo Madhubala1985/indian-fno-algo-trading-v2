@@ -2889,8 +2889,13 @@ def _run_shadow_option_intelligence(
             valuation_timestamp=datetime.now(timezone.utc),
         )
 
+        # Same robust ATM IV feeds BOTH sizing AND strike-selection scoring.
+        # Previously selection used the surface options_ctx.atm_iv, which
+        # mis-interpolates on the SENSEX/BSE chain (undershoots on high-vol
+        # days) → near-ATM strikes scored EXPENSIVE → iv_attractiveness=0.
+        _robust_iv = _robust_atm_iv(options_ctx)
         if options_ctx.atm_iv:
-            state.last_atm_iv = _robust_atm_iv(options_ctx)
+            state.last_atm_iv = _robust_iv
 
         if not options_ctx.strike_candidates:
             _outcome_bucket[0] = "no_candidate"
@@ -2904,7 +2909,7 @@ def _run_shadow_option_intelligence(
             valuation_timestamp=datetime.now(timezone.utc),
             oi_snapshot=options_ctx.oi_snapshot,
             gex_snapshot=options_ctx.gex_snapshot,
-            atm_iv=options_ctx.atm_iv,
+            atm_iv=_robust_iv,
         )
 
         if _selection_result.best() is None:
@@ -3417,9 +3422,14 @@ def on_ticks(raw_ticks):
                             valuation_timestamp=datetime.now(timezone.utc),
                         )
     
+                        # Robust ATM IV (near-ATM strike's own raw IV) feeds BOTH
+                        # sizing and strike-selection scoring — see companion fix
+                        # in the shadow path. Surface atm_iv undershoots on the
+                        # SENSEX/BSE chain and spuriously zeroed iv_attractiveness.
+                        _robust_iv = _robust_atm_iv(options_ctx)
                         if options_ctx.atm_iv:
-                            _current_state.last_atm_iv = _robust_atm_iv(options_ctx)
-    
+                            _current_state.last_atm_iv = _robust_iv
+
                         if options_ctx.strike_candidates:
                             _candidates_list = list(options_ctx.strike_candidates)
                             _selection_result = _strike_engine.select(
@@ -3428,7 +3438,7 @@ def on_ticks(raw_ticks):
                                 valuation_timestamp=datetime.now(timezone.utc),
                                 oi_snapshot=options_ctx.oi_snapshot,
                                 gex_snapshot=options_ctx.gex_snapshot,
-                                atm_iv=options_ctx.atm_iv,
+                                atm_iv=_robust_iv,
                             )
                             best = _selection_result.best()
                             if best is not None:
