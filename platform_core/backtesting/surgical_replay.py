@@ -167,6 +167,12 @@ _ENTRY_CUTOFF_IST_HOUR: int = _entry_cutoff_hour("REPLAY_ENTRY_CUTOFF_IST")
 # mechanical trail cuts the big runners earlier (winners peak +17.9%/exit +9.4%).
 _RATCHET_ARM_PCT: float = float(os.environ.get("EXIT_RATCHET_ARM_PCT", "0.08") or 0.08)
 _TRAIL_GIVEBACK_FRAC: float = float(os.environ.get("EXIT_TRAIL_GIVEBACK_FRAC", "0") or 0)
+# Exit-timeframe promotion A/B (measured hypothesis from the 2026-07-05 exit-leak
+# study: day-scale thesis, minute-scale exit → 0.36 MFE capture). Once the
+# breakeven ratchet ARMS (position free-rolls), the STRUCTURE exit decision is
+# promoted from 1m to this timeframe ("MIN_5" / "MIN_15"); stop, breakeven
+# floor and TP still check every minute. "" = off (live behaviour).
+_EXIT_STRUCT_TF_AFTER_ARM: str = os.environ.get("EXIT_STRUCT_TF_AFTER_ARM", "").strip()
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
@@ -325,6 +331,46 @@ class SurgicalReplay:
                 config=SupportResistanceEngineConfig(instrument_id=struct_symbol, timeframe=_tf)
             ),
         )
+        self._last_mtf_finalized: dict = {}
+        if _EXIT_STRUCT_TF_AFTER_ARM:
+            self._build_exit_structure_stack(struct_symbol)
+
+    def _build_exit_structure_stack(self, struct_symbol: str) -> None:
+        """Second swing→structure stack at _EXIT_STRUCT_TF_AFTER_ARM, fed with
+        that TF's finalized bars (session-only, fresh per day — same semantics
+        as the 1m stack). Used ONLY for the armed-exit decision."""
+        _tf = _EXIT_STRUCT_TF_AFTER_ARM
+        self._exit_adapter = LiveStructureAdapter()
+        self._exit_swing = SwingDetector(
+            config=SwingDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
+        )
+        self._exit_engine = StructureEngine(
+            config=StructureEngineConfig(instrument_id=struct_symbol, timeframe=_tf),
+            liquidity_sweep_detector=LiquiditySweepDetector(
+                config=LiquiditySweepDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
+            ),
+            bos_detector=BOSDetector(
+                config=BOSDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
+            ),
+            choch_detector=CHOCHDetector(
+                config=CHOCHDetectorConfig(instrument_id=struct_symbol, timeframe=_tf)
+            ),
+            fvg_engine=FVGEngine(
+                config=FVGEngineConfig(instrument_id=struct_symbol, timeframe=_tf)
+            ),
+            support_resistance_engine=SupportResistanceEngine(
+                config=SupportResistanceEngineConfig(instrument_id=struct_symbol, timeframe=_tf)
+            ),
+        )
+
+    def _feed_exit_structure(self, tf_bar: LiveBar):
+        """Feed one finalized higher-TF bar through the exit stack."""
+        sbar = self._exit_adapter.convert_bar(live_bar=tf_bar)
+        swing = self._exit_swing.process_bar(sbar)
+        result = self._exit_engine.process(
+            payload=StructureEngineInput(bar=sbar, swing_points=swing.confirmed_points)
+        )
+        return result.emitted_events
 
     def _feed_structure(self, bar: LiveBar):
         """Feed one 1m bar through swing→structure, returning emitted_events.
@@ -419,7 +465,8 @@ class SurgicalReplay:
 
     def _feed_bar(self, bar: LiveBar) -> None:
         self._ctx.update(bar=bar, timeframe="1m")
-        for _tf, _b in self._mtf.update_bar(bar=bar).items():
+        self._last_mtf_finalized = self._mtf.update_bar(bar=bar)
+        for _tf, _b in self._last_mtf_finalized.items():
             name = _TF_NAME.get(_tf)
             if name:
                 self._ctx.update(bar=_b, timeframe=name)
@@ -473,6 +520,13 @@ class SurgicalReplay:
             self._feed_bar(bar)
             or_engine.update_bar(bar)
             emitted = self._feed_structure(bar)   # real BOS/CHOCH events this bar
+            # Exit-TF promotion: feed the higher-TF exit stack whenever one of
+            # its bars finalizes this minute (continuous, position-independent).
+            exit_tf_events = []
+            if _EXIT_STRUCT_TF_AFTER_ARM:
+                _tfb = self._last_mtf_finalized.get(_EXIT_STRUCT_TF_AFTER_ARM)
+                if _tfb is not None:
+                    exit_tf_events = self._feed_exit_structure(_tfb)
             spot = bar.close_price
             minute_iso = bar.start_timestamp.astimezone(timezone.utc).isoformat()
             ctx = self._ctx.build(valuation_timestamp=bar.start_timestamp)
@@ -492,7 +546,18 @@ class SurgicalReplay:
                     pct = cur / max(pos.entry_prem, 0.001)
                     _armed = (_RATCHET_ARM_PCT > 0.0
                               and pos.peak_prem >= pos.entry_prem * (1.0 + _RATCHET_ARM_PCT))
-                    reason = _structure_exit_reason(emitted, pos.direction)
+                    if _EXIT_STRUCT_TF_AFTER_ARM and _armed:
+                        # Promoted exit: an armed (free-rolling) runner ignores
+                        # 1m noise — only a higher-TF BOS/CHOCH against the
+                        # position exits it. Stop/breakeven floor/TP still
+                        # check every minute below.
+                        reason = _structure_exit_reason(exit_tf_events, pos.direction)
+                        if reason is not None:
+                            reason = reason.replace(
+                                "STRUCTURE_EXIT",
+                                f"STRUCTURE_EXIT_{_EXIT_STRUCT_TF_AFTER_ARM}")
+                    else:
+                        reason = _structure_exit_reason(emitted, pos.direction)
                     if reason is None and pct <= self.STOP_PCT:
                         reason = f"STOP_LOSS ({1.0 - pct:.0%} loss)"
                     # Profit protection (same precedence as live once promoted):
