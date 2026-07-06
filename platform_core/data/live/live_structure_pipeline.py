@@ -4706,7 +4706,41 @@ def on_ticks(raw_ticks):
                                             except Exception:
                                                 _entry_fill = None   # unexpected router error → fail-closed
 
-                                            if _entry_fill is not None and _entry_fill.is_filled:
+                                            # PARTIAL entry fill (real_armed): confirm_fill has
+                                            # already cancelled the remainder, but the broker
+                                            # HOLDS the filled lots — refusing to open locally
+                                            # would leave an unmanaged orphan bleeding premium
+                                            # until the periodic reconciler halts. ADOPT the
+                                            # filled lots as the position instead (options fill
+                                            # in lot multiples) and manage them normally.
+                                            _adopt_partial = False
+                                            if (_entry_fill is not None
+                                                    and _entry_fill.status == "PARTIAL"
+                                                    and _entry_fill.average_price > 0.0
+                                                    and _entry_fill.filled_quantity >= _srec.lot_size):
+                                                _part_lots = int(_entry_fill.filled_quantity // _srec.lot_size)
+                                                print_warning_block(
+                                                    "PARTIAL ENTRY FILL ADOPTED",
+                                                    bar_index=_bar_count,
+                                                    underlying=_srec.underlying_symbol,
+                                                    reason=(f"filled {_entry_fill.filled_quantity}"
+                                                            f"/{_lots * _srec.lot_size} qty → managing "
+                                                            f"{_part_lots} lots (remainder cancelled)"),
+                                                )
+                                                try:
+                                                    _db.write_runtime_event(
+                                                        "REAL_PARTIAL_ENTRY_ADOPTED", severity="WARNING",
+                                                        message=(f"{_srec.option_symbol} filled "
+                                                                 f"{_entry_fill.filled_quantity}"
+                                                                 f"/{_lots * _srec.lot_size}"),
+                                                        equity=_equity,
+                                                    )
+                                                except Exception:
+                                                    pass
+                                                _lots = _part_lots
+                                                _adopt_partial = True
+
+                                            if _entry_fill is not None and (_entry_fill.is_filled or _adopt_partial):
                                                 _exec_premium = _entry_fill.average_price
                                                 _exec_cost    = _exec_premium * _srec.lot_size * _lots
                                                 _open_premium_cost += _exec_cost
