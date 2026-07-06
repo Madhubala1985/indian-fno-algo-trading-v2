@@ -38,7 +38,9 @@ about the operational chain, not the model.
 
 - Sizing/gates are IDENTICAL to the validated dry-run profile — what was observed
   live is what trades armed. The interlocks (`MAX_REAL_DAILY_LOSS` = the 15% daily
-  halt in rupees, `MAX_REAL_ORDER_VALUE` = the 15% premium cap in rupees,
+  halt in rupees, `MAX_REAL_ORDER_VALUE` = the 35% premium cap in rupees
+  (₹1.25–1.5L deployment, 2026-07-06 directive; a single 30% stop on a full
+  position ≈ ₹42k ≈ 10.5% of capital — two stops ≈ the daily halt),
   `REAL_MAX_LOTS_PER_ORDER` = freeze-qty scale) are backstops against bugs and
   must never bind on a normal trade — if one fires, treat it as an incident.
 - Expected worst normal day at this profile ≈ the 15% daily halt (₹60k on ₹4L).

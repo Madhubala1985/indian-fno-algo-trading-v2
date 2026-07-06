@@ -502,7 +502,16 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         env.setdefault("PAPER_TIER2_MAX_LOTS", "0")
         env.setdefault("PAPER_TIER3_MAX_LOTS", "0")
         env.setdefault("PAPER_MAX_CONF_SCALE", "1.5")
-        env.setdefault("PAPER_MAX_HEAT_FRACTION", "0.30")
+        # Deployment scale-up (user directive 2026-07-06, measured on the
+        # open-drive config: risk 8% / cap 35% = +87,639 vs +78,976 at cap 15%
+        # on 14 day-samples — IN-SAMPLE, rides on the open-drive edge; this
+        # week's dry-runs are the zero-risk OOS test): single-position premium
+        # cap 15% → 35% of session-open equity (₹1.25–1.5L at ₹4L). Heat 30% →
+        # 40% so the heat rail can't silently shrink the requested size; the
+        # 20% correlated same-direction rail still prevents stacking the same
+        # bet, and an armed (breakeven-ratcheted) winner frees its slot.
+        env.setdefault("PAPER_MAX_POSITION_PREMIUM_FRAC", "0.35")
+        env.setdefault("PAPER_MAX_HEAT_FRACTION", "0.40")
         # Halt thresholds kept COHERENT with the aggressive sizing: at 8-10 lots
         # one stopped trade is ~6-8%, so the old 2%/4% halts would stop after a
         # single loss. Raised so 8 lots -> halt on 3rd loss, 10 lots -> 2nd, and
