@@ -182,8 +182,13 @@ _DAY_GIVEBACK_LOCK: float = float(os.environ.get("REPLAY_DAY_GIVEBACK_LOCK", "0"
 _DAY_GIVEBACK_FLOOR_FRAC: float = 0.005
 # B. Re-entry risk haircut: 2nd+ same-direction session entry sizes at this
 #    fraction of normal lots (07-06: the day's LARGEST size landed on the
-#    lowest-quality re-entry). 0 = off.
-_REENTRY_RISK_HAIRCUT: float = float(os.environ.get("REPLAY_REENTRY_RISK_HAIRCUT", "0") or 0)
+#    lowest-quality re-entry). Measured WINNER → wired live (0ac7cfb) with
+#    default 0.5; the replay mirrors the SAME live env/default for parity.
+#    REPLAY_REENTRY_RISK_HAIRCUT overrides for A/B (0 = off).
+_REENTRY_RISK_HAIRCUT: float = float(
+    os.environ.get("REPLAY_REENTRY_RISK_HAIRCUT",
+                   os.environ.get("PAPER_REENTRY_RISK_HAIRCUT", "0.5") or "0.5")
+    or 0)
 # C. Fast-fail exit: an UNARMED position exits the minute spot closes back
 #    INSIDE the opening range — breakout thesis dead (from the Fable-day
 #    exercise: cut traps in 5-20 min vs structure exits' 26-81 bars).
