@@ -211,6 +211,10 @@ _OPEN_DRIVE: bool = (os.environ.get(
     "REPLAY_OPEN_DRIVE",
     os.environ.get("PAPER_OPEN_DRIVE_WINDOW", "1") or "1") == "1")
 
+# Midday inside-OR window (edge-hunt candidate, default OFF — measure only):
+# lets bias-aligned entries pass OR_FILTER_INSIDE during 11:00-11:59 IST.
+_MIDDAY_INSIDE_OR: bool = os.environ.get("REPLAY_MIDDAY_INSIDE_OR", "0") == "1"
+
 # Gate ablation (attribution studies): comma-separated gate-family prefixes to
 # DISABLE, e.g. REPLAY_DISABLE_GATES="OR_FILTER,SCORE_MARGIN". A disabled gate
 # is evaluated (side effects like cooldown arming preserved) but never blocks;
@@ -769,7 +773,13 @@ class SurgicalReplay:
                     _or_mult, _or_reason = or_engine.current_range.confidence_multiplier(
                         spot=spot, bias=bias)
                     if _or_mult == 0.0:
-                        _blk = _gate("OR_FILTER_INSIDE")
+                        # Midday inside-OR window A/B (edge-hunt 2026-07-06:
+                        # 11:00-12:00 inside-OR blocked set = 17 trades +10,166
+                        # in the universe — bias-aligned pullback re-entries).
+                        # Default OFF; OOS-gated like every unlock. Counter-
+                        # bias extension (CONTRADICTION) stays blocked always.
+                        if not (_MIDDAY_INSIDE_OR and _ist_now.hour == 11):
+                            _blk = _gate("OR_FILTER_INSIDE")
                     elif _or_mult < 1.0:
                         _blk = _gate("OR_FILTER_CONTRADICTION")
                 # [A-contract] Same-contract session loss limit (shared with live).
