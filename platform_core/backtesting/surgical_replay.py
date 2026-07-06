@@ -198,6 +198,23 @@ _FASTFAIL_INSIDE_OR: bool = os.environ.get("REPLAY_FASTFAIL_INSIDE_OR", "0") == 
 #    proven right — the 06-24 monster-day mechanism).
 _TREND_ADDON: bool = os.environ.get("REPLAY_TREND_ADDON", "0") == "1"
 
+# Gate ablation (attribution studies): comma-separated gate-family prefixes to
+# DISABLE, e.g. REPLAY_DISABLE_GATES="OR_FILTER,SCORE_MARGIN". A disabled gate
+# is evaluated (side effects like cooldown arming preserved) but never blocks;
+# the REST of the chain still runs — true leave-one-out. Measurement only:
+# never wire a removal live without an out-of-sample confirmation.
+_DISABLED_GATES: frozenset = frozenset(
+    g.strip().upper() for g in
+    os.environ.get("REPLAY_DISABLE_GATES", "").split(",") if g.strip())
+
+
+def _gate(name: str) -> str | None:
+    """Return the block reason, or None when this gate family is disabled."""
+    up = name.upper()
+    if any(up.startswith(d) for d in _DISABLED_GATES):
+        return None
+    return name
+
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
 # MIN_5/MIN_15/HOUR_1/HOUR_4 (NOT "15m"/"1h"/"4h"), so this MUST key on those raw
@@ -705,13 +722,13 @@ class SurgicalReplay:
                 # after these — matching live (contradiction precedes margin).
                 _blk: str | None = None
                 if _time_cutoff_blocked(bar.start_timestamp, _ENTRY_CUTOFF_IST_HOUR):
-                    _blk = f"TIME_CUTOFF(>={_ENTRY_CUTOFF_IST_HOUR}IST)"   # afternoon-chop guard
+                    _blk = _gate(f"TIME_CUTOFF(>={_ENTRY_CUTOFF_IST_HOUR}IST)")   # afternoon-chop guard
                 # [SESSION] Live session-phase gate: PRE_OPEN/OPENING/CLOSING block
                 # entries (live_structure_pipeline gates on session_ctx.allow_entry).
                 # Fidelity fix: the replay previously allowed 15:00+ entries live
                 # would never take.
                 if _blk is None and not session_engine.classify(bar.start_timestamp).allow_entry:
-                    _blk = "SESSION_PHASE_NO_ENTRY"
+                    _blk = _gate("SESSION_PHASE_NO_ENTRY")
                 # [OR] Opening-range filter (live: zeroes/penalizes effective_conf
                 # below every tier min-conf, so both cases BLOCK). Uses the same
                 # OpeningRange class incl. the breakout buffer.
@@ -719,16 +736,16 @@ class SurgicalReplay:
                     _or_mult, _or_reason = or_engine.current_range.confidence_multiplier(
                         spot=spot, bias=bias)
                     if _or_mult == 0.0:
-                        _blk = "OR_FILTER_INSIDE"
+                        _blk = _gate("OR_FILTER_INSIDE")
                     elif _or_mult < 1.0:
-                        _blk = "OR_FILTER_CONTRADICTION"
+                        _blk = _gate("OR_FILTER_CONTRADICTION")
                 # [A-contract] Same-contract session loss limit (shared with live).
                 if _blk is None and contract_loss_tracker.blocked(
                         contract=best.option_symbol, direction=bias):
-                    _blk = "SAME_CONTRACT_SESSION_BLOCK"
+                    _blk = _gate("SAME_CONTRACT_SESSION_BLOCK")
                 # [A-direction] Same-direction session entry cap (shared with live).
                 if _blk is None and direction_counter.blocked(direction=bias):
-                    _blk = "DIRECTION_ENTRY_CAP"
+                    _blk = _gate("DIRECTION_ENTRY_CAP")
                 # [A7] GEX dealer-positioning gate (same module as live; opt-in).
                 if _blk is None and _GEX_REGIME_GATE:
                     _gex_blk = _gex_wall_block(
@@ -744,33 +761,33 @@ class SurgicalReplay:
                         and day_peak_net >= _DAY_GIVEBACK_FLOOR_FRAC * session_open
                         and (day_peak_net - (equity - session_open))
                             >= _DAY_GIVEBACK_LOCK * day_peak_net):
-                    _blk = "DAY_GIVEBACK_LOCK"
+                    _blk = _gate("DAY_GIVEBACK_LOCK")
                 if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
-                    _blk = "CHOP_REENTRY_LOCKOUT"
+                    _blk = _gate("CHOP_REENTRY_LOCKOUT")
                 if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up
-                    _blk = "WARM_START_LOCKOUT"
+                    _blk = _gate("WARM_START_LOCKOUT")
                 if _blk is None:                                               # [A2] contradiction
                     _contra = _contradicts_bias(emitted, bias)
                     if _contra is not None:
                         last_contradiction_bar = bar_idx   # arm the cooldown
-                        _blk = f"CONTEXT_CONTRADICTION({_contra})"
+                        _blk = _gate(f"CONTEXT_CONTRADICTION({_contra})")
                 if _blk is None:                                               # [A3] contra cooldown
                     _cd_blocked, _ = _contradiction_cooldown_active(
                         bar_idx, last_contradiction_bar, _CONTEXT_CONTRADICTION_COOLDOWN_BARS)
                     if _cd_blocked:
-                        _blk = "CONTEXT_COOLDOWN"
+                        _blk = _gate("CONTEXT_COOLDOWN")
                 _bars_since_stop = bar_idx - last_stop_bar
                 if _blk is None and _bars_since_stop < _SAME_UNDERLYING_STOP_COOLDOWN_BARS:   # [B1]
-                    _blk = "STOP_COOLDOWN_underlying"
+                    _blk = _gate("STOP_COOLDOWN_underlying")
                 if (_blk is None and best.option_symbol == last_stop_contract              # [B2]
                         and _bars_since_stop < _SAME_CONTRACT_STOP_COOLDOWN_BARS):
-                    _blk = "STOP_COOLDOWN_contract"
+                    _blk = _gate("STOP_COOLDOWN_contract")
                 _bars_since_struct = bar_idx - last_struct_exit_bar
                 if _blk is None and _bars_since_struct < _SAME_UNDERLYING_STRUCT_COOLDOWN_BARS:  # [B1s]
-                    _blk = "STRUCT_EXIT_COOLDOWN_underlying"
+                    _blk = _gate("STRUCT_EXIT_COOLDOWN_underlying")
                 if (_blk is None and best.option_symbol == last_struct_exit_contract          # [B2s]
                         and _bars_since_struct < _SAME_CONTRACT_STRUCT_COOLDOWN_BARS):
-                    _blk = "STRUCT_EXIT_COOLDOWN_contract"
+                    _blk = _gate("STRUCT_EXIT_COOLDOWN_contract")
                 if _blk is not None:
                     _block(_blk)
                     continue
@@ -779,7 +796,7 @@ class SurgicalReplay:
                 recs = sel.recommendations if hasattr(sel, "recommendations") else []
                 if len(recs) >= 2:
                     margin = recs[0].composite_score - recs[1].composite_score
-                if margin < self.MIN_SCORE_MARGIN:
+                if margin < self.MIN_SCORE_MARGIN and _gate("SCORE_MARGIN") is not None:
                     continue
                 conv, _ = self._conv.score(
                     composite=best.composite_score, score_margin=margin,
