@@ -1145,6 +1145,14 @@ _conviction_scorer = _ConvictionScorer()
 # in dry-run and real_armed instead of silently diverging. Default 0 = shadow
 # everywhere (conviction is not validated — hard-rule: stays shadow).
 _CONV_LIVE: bool = _os.environ.get("PAPER_CONV_LIVE", "0") == "1"
+
+# Re-entry risk haircut (measured 2026-07-06, replay A/B on 14 day-samples:
+# net −1,354 → +317 with the SAME 28-trade set — pure sizing effect, no
+# selection). 2nd+ same-direction session entry sizes at this fraction of the
+# sizer's lots. Mode-independent (parity). 0 disables.
+_REENTRY_RISK_HAIRCUT: float = float(
+    _os.environ.get("PAPER_REENTRY_RISK_HAIRCUT", "0.5") or 0.5
+)
 _CONV_FLOOR:     float = float(_os.environ.get("PAPER_CONV_FLOOR", "0.40") or 0.40)
 _CONV_NIFTY_MIN: float = float(_os.environ.get("PAPER_CONV_NIFTY_MIN", "0.60") or 0.60)
 
@@ -4360,6 +4368,17 @@ def on_ticks(raw_ticks):
                         )
                         if _sizing.tradable and _sizing.recommended_lots >= 1:
                             _lots = _sizing.recommended_lots
+                            # Re-entry risk haircut (measured 2026-07-06, replay
+                            # batch 14 day-samples: −1,354 → +317 net, same trade
+                            # set): the 2nd+ same-direction entry of the session
+                            # sizes at a fraction of normal lots — setup quality
+                            # decays with each re-entry, size must too (07-06
+                            # live: the day's LARGEST size hit the worst entry).
+                            # PAPER_REENTRY_RISK_HAIRCUT=0 disables.
+                            if (_REENTRY_RISK_HAIRCUT > 0.0
+                                    and _current_state.direction_entry_counter.entries(
+                                        direction=str(_mctx.bias)) >= 1):
+                                _lots = max(int(_lots * _REENTRY_RISK_HAIRCUT), 1)
                             _cost = (
                                 _srec.last_traded_price
                                 * _srec.lot_size

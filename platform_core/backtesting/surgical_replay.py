@@ -174,6 +174,25 @@ _TRAIL_GIVEBACK_FRAC: float = float(os.environ.get("EXIT_TRAIL_GIVEBACK_FRAC", "
 # floor and TP still check every minute. "" = off (live behaviour).
 _EXIT_STRUCT_TF_AFTER_ARM: str = os.environ.get("EXIT_STRUCT_TF_AFTER_ARM", "").strip()
 
+# ── 2026-07-06 live-session knob candidates (all default OFF, A/B only) ──────
+# A. Day giveback lock: once day-peak net P&L ≥ 0.5% of session-open capital,
+#    NEW entries are blocked while day net has given back more than this
+#    fraction of the peak (the 07-06 tape: +2,980 at 12:26 → −71 by 14:08).
+_DAY_GIVEBACK_LOCK: float = float(os.environ.get("REPLAY_DAY_GIVEBACK_LOCK", "0") or 0)
+_DAY_GIVEBACK_FLOOR_FRAC: float = 0.005
+# B. Re-entry risk haircut: 2nd+ same-direction session entry sizes at this
+#    fraction of normal lots (07-06: the day's LARGEST size landed on the
+#    lowest-quality re-entry). 0 = off.
+_REENTRY_RISK_HAIRCUT: float = float(os.environ.get("REPLAY_REENTRY_RISK_HAIRCUT", "0") or 0)
+# C. Fast-fail exit: an UNARMED position exits the minute spot closes back
+#    INSIDE the opening range — breakout thesis dead (from the Fable-day
+#    exercise: cut traps in 5-20 min vs structure exits' 26-81 bars).
+_FASTFAIL_INSIDE_OR: bool = os.environ.get("REPLAY_FASTFAIL_INSIDE_OR", "0") == "1"
+# D. Trend-day add-on: an ARMED winner adds half its lots ONCE when spot makes
+#    a new session extreme in the trade direction (aggression only after being
+#    proven right — the 06-24 monster-day mechanism).
+_TREND_ADDON: bool = os.environ.get("REPLAY_TREND_ADDON", "0") == "1"
+
 _IST = timezone(timedelta(hours=5, minutes=30))
 # Map MultiTimeframeBuilder OUTPUT keys → MCB timeframe slots. The builder emits
 # MIN_5/MIN_15/HOUR_1/HOUR_4 (NOT "15m"/"1h"/"4h"), so this MUST key on those raw
@@ -505,6 +524,8 @@ class SurgicalReplay:
         peak_equity = self._capital
         session_open = self._capital
         open_premium_cost = 0.0
+        day_peak_net = 0.0                  # [knob A] day's realised net P&L peak
+        sess_hi, sess_lo = float("-inf"), float("inf")   # [knob D] session extremes
 
         def _block(reason_key: str) -> None:
             res.blocks[reason_key] = res.blocks.get(reason_key, 0) + 1
@@ -528,6 +549,8 @@ class SurgicalReplay:
                 if _tfb is not None:
                     exit_tf_events = self._feed_exit_structure(_tfb)
             spot = bar.close_price
+            prev_hi, prev_lo = sess_hi, sess_lo          # extremes BEFORE this bar
+            sess_hi, sess_lo = max(sess_hi, spot), min(sess_lo, spot)
             minute_iso = bar.start_timestamp.astimezone(timezone.utc).isoformat()
             ctx = self._ctx.build(valuation_timestamp=bar.start_timestamp)
             bias = str(ctx.bias)
@@ -560,6 +583,11 @@ class SurgicalReplay:
                         reason = _structure_exit_reason(emitted, pos.direction)
                     if reason is None and pct <= self.STOP_PCT:
                         reason = f"STOP_LOSS ({1.0 - pct:.0%} loss)"
+                    # [knob C] fast-fail: unarmed + spot back inside the OR.
+                    if (reason is None and _FASTFAIL_INSIDE_OR and not _armed
+                            and or_engine.ready
+                            and or_engine.current_range.position(spot) == "INSIDE_OR"):
+                        reason = "FAST_FAIL (spot back inside OR)"
                     # Profit protection (same precedence as live once promoted):
                     # breakeven ratchet, then peak-giveback trail, then TP.
                     if reason is None and _armed and cur <= pos.entry_prem:
@@ -571,6 +599,20 @@ class SurgicalReplay:
                             pos.peak_prem / pos.entry_prem - 1.0, _TRAIL_GIVEBACK_FRAC)
                     if reason is None and pct >= self.TAKE_PROFIT_PCT:
                         reason = f"TAKE_PROFIT ({pct:.0%} of entry)"
+                    # [knob D] trend add-on: armed winner + NEW session extreme
+                    # in the trade direction → add half the lots, once. Entry
+                    # premium becomes the weighted average (gross P&L formula
+                    # stays exact; brokerage undercounts one order ≈ ₹24).
+                    if (reason is None and _TREND_ADDON and _armed
+                            and not getattr(pos, "addon_done", False)
+                            and ((pos.direction == "LONG" and spot >= prev_hi)
+                                 or (pos.direction == "SHORT" and spot <= prev_lo))):
+                        _add = max(pos.lots // 2, 1)
+                        _tot = pos.lots + _add
+                        pos.entry_prem = (pos.entry_prem * pos.lots + cur * _add) / _tot
+                        pos.lots = _tot
+                        pos.addon_done = True
+                        open_premium_cost += cur * pos.lot_size * _add
                     if reason:
                         pos.exit_ts, pos.exit_prem = minute_iso, cur
                         pos.pnl = (cur - pos.entry_prem) * pos.lot_size * pos.lots
@@ -603,6 +645,7 @@ class SurgicalReplay:
                         # (drawdown/heat evolve like live). Freed premium → heat 0.
                         equity += pos.pnl
                         peak_equity = max(peak_equity, equity)
+                        day_peak_net = max(day_peak_net, equity - session_open)  # [knob A]
                         open_premium_cost = 0.0
                         res.trades.append(pos); pos = None
                 continue
@@ -689,6 +732,14 @@ class SurgicalReplay:
                         block_long_gamma=_GEX_REGIME_VETO)
                     if _gex_blk:
                         _blk = _gex_blk.split()[0]
+                # [knob A] day giveback lock: protect a banked day. Active only
+                # after day-peak net ≥ 0.5% of capital; blocks NEW entries while
+                # the giveback from peak exceeds the lock fraction.
+                if (_blk is None and _DAY_GIVEBACK_LOCK > 0
+                        and day_peak_net >= _DAY_GIVEBACK_FLOOR_FRAC * session_open
+                        and (day_peak_net - (equity - session_open))
+                            >= _DAY_GIVEBACK_LOCK * day_peak_net):
+                    _blk = "DAY_GIVEBACK_LOCK"
                 if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
                     _blk = "CHOP_REENTRY_LOCKOUT"
                 if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up
@@ -744,6 +795,12 @@ class SurgicalReplay:
                 if lots < 1:
                     _block("SIZING_ZERO_LOTS")
                     continue
+                # [knob B] re-entry risk haircut: the 2nd+ same-direction entry
+                # of the session sizes at a fraction of normal lots (quality
+                # decays with each re-entry; size should too).
+                if (_REENTRY_RISK_HAIRCUT > 0
+                        and direction_counter.entries(direction=bias) >= 1):
+                    lots = max(int(lots * _REENTRY_RISK_HAIRCUT), 1)
                 _or_ext = 0.0
                 if or_engine.ready:
                     _r = or_engine.current_range
