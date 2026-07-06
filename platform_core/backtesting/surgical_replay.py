@@ -198,6 +198,15 @@ _FASTFAIL_INSIDE_OR: bool = os.environ.get("REPLAY_FASTFAIL_INSIDE_OR", "0") == 
 #    proven right — the 06-24 monster-day mechanism).
 _TREND_ADDON: bool = os.environ.get("REPLAY_TREND_ADDON", "0") == "1"
 
+# OPEN-DRIVE window (gate forensics 2026-07-06: the WARM_START/SESSION_PHASE
+# blocked set ran 72% WR / +21,788 net over 12 days — the open's momentum is
+# the strongest window of the day and the model is blind to it; the warm-up
+# existed for the blind-MCB era, but warm-start now seeds bias before the
+# open). REPLAY_OPEN_DRIVE=1 lets entries through the SESSION_PHASE and
+# WARM_START gates ONLY before 09:36 IST; every other gate stays armed and
+# the 15:00+ CLOSING block is untouched.
+_OPEN_DRIVE: bool = os.environ.get("REPLAY_OPEN_DRIVE", "0") == "1"
+
 # Gate ablation (attribution studies): comma-separated gate-family prefixes to
 # DISABLE, e.g. REPLAY_DISABLE_GATES="OR_FILTER,SCORE_MARGIN". A disabled gate
 # is evaluated (side effects like cooldown arming preserved) but never blocks;
@@ -208,7 +217,7 @@ _DISABLED_GATES: frozenset = frozenset(
     os.environ.get("REPLAY_DISABLE_GATES", "").split(",") if g.strip())
 
 
-def _gate(name: str) -> str | None:
+def _gate_module(name: str) -> str | None:
     """Return the block reason, or None when this gate family is disabled."""
     up = name.upper()
     if any(up.startswith(d) for d in _DISABLED_GATES):
@@ -289,6 +298,8 @@ class ReplayTrade:
                                # direction, in OR-width units (trend-day signature)
     peak_prem: float = 0.0     # max favorable premium seen while open (MFE)
     costs: float = 0.0         # round-trip toll already deducted (pnl is NET)
+    would_block: str = ""      # gate-forensics: gates that WOULD have blocked
+                               # this entry (populated when gates are disabled)
 
 
 @dataclass
@@ -552,6 +563,17 @@ class SurgicalReplay:
         def _block(reason_key: str) -> None:
             res.blocks[reason_key] = res.blocks.get(reason_key, 0) + 1
 
+        # Gate forensics: when families are disabled (ablation), record which
+        # gates WOULD have fired for the entry actually taken this minute, so
+        # an ungated run yields per-gate confusion matrices over ALL trades.
+        _would_fire: list[str] = []
+
+        def _gate(name: str, _module_gate=_gate_module) -> str | None:
+            verdict = _module_gate(name)
+            if verdict is None:
+                _would_fire.append(name)
+            return verdict
+
         def ltp_of(contract: str, minute_iso: str):
             for c in chain_by_min.get(minute_iso, []):
                 if c["tradingsymbol"] == contract and c.get("ltp"):
@@ -720,6 +742,12 @@ class SurgicalReplay:
                 # are the gates that suppress the same-strike re-entry churn the
                 # v1 replay (no gates) exhibited. Quality gate (margin) is below,
                 # after these — matching live (contradiction precedes margin).
+                _would_fire.clear()
+                # Open-drive pass: before 09:36 IST the session/warm-up blocks
+                # are lifted (bias is warm-start-seeded; the open IS the edge).
+                _ist_now = bar.start_timestamp.astimezone(_IST)
+                _open_drive_pass = (_OPEN_DRIVE
+                                    and (_ist_now.hour * 60 + _ist_now.minute) < 9 * 60 + 36)
                 _blk: str | None = None
                 if _time_cutoff_blocked(bar.start_timestamp, _ENTRY_CUTOFF_IST_HOUR):
                     _blk = _gate(f"TIME_CUTOFF(>={_ENTRY_CUTOFF_IST_HOUR}IST)")   # afternoon-chop guard
@@ -727,7 +755,8 @@ class SurgicalReplay:
                 # entries (live_structure_pipeline gates on session_ctx.allow_entry).
                 # Fidelity fix: the replay previously allowed 15:00+ entries live
                 # would never take.
-                if _blk is None and not session_engine.classify(bar.start_timestamp).allow_entry:
+                if (_blk is None and not _open_drive_pass
+                        and not session_engine.classify(bar.start_timestamp).allow_entry):
                     _blk = _gate("SESSION_PHASE_NO_ENTRY")
                 # [OR] Opening-range filter (live: zeroes/penalizes effective_conf
                 # below every tier min-conf, so both cases BLOCK). Uses the same
@@ -764,7 +793,8 @@ class SurgicalReplay:
                     _blk = _gate("DAY_GIVEBACK_LOCK")
                 if _blk is None and bar_idx < reentry_lockout_until_bar:        # [A-chop]
                     _blk = _gate("CHOP_REENTRY_LOCKOUT")
-                if _blk is None and bars_seen < _LIVE_BARS_BEFORE_ENTRY:        # [A] warm-up
+                if (_blk is None and not _open_drive_pass
+                        and bars_seen < _LIVE_BARS_BEFORE_ENTRY):               # [A] warm-up
                     _blk = _gate("WARM_START_LOCKOUT")
                 if _blk is None:                                               # [A2] contradiction
                     _contra = _contradicts_bias(emitted, bias)
@@ -834,7 +864,8 @@ class SurgicalReplay:
                                   lots=lots, lot_size=lot_size, conviction=round(conv, 3),
                                   mcb_conf=round(float(ctx.confidence), 3),
                                   trend_score=round(float(getattr(ctx, "trend_score", 0.0)), 3),
-                                  or_ext=round(_or_ext, 3), peak_prem=entry)
+                                  or_ext=round(_or_ext, 3), peak_prem=entry,
+                                  would_block=",".join(_would_fire))
                 direction_counter.record_entry(direction=bias)
                 open_premium_cost = entry * lot_size * lots
             except Exception:
