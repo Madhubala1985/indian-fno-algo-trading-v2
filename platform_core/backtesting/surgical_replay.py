@@ -202,10 +202,14 @@ _TREND_ADDON: bool = os.environ.get("REPLAY_TREND_ADDON", "0") == "1"
 # blocked set ran 72% WR / +21,788 net over 12 days — the open's momentum is
 # the strongest window of the day and the model is blind to it; the warm-up
 # existed for the blind-MCB era, but warm-start now seeds bias before the
-# open). REPLAY_OPEN_DRIVE=1 lets entries through the SESSION_PHASE and
-# WARM_START gates ONLY before 09:36 IST; every other gate stays armed and
-# the 15:00+ CLOSING block is untouched.
-_OPEN_DRIVE: bool = os.environ.get("REPLAY_OPEN_DRIVE", "0") == "1"
+# open). Entries pass the SESSION_PHASE and WARM_START gates ONLY before
+# 09:36 IST; every other gate stays armed and the 15:00+ CLOSING block is
+# untouched. WIRED LIVE 2026-07-06 (PAPER_OPEN_DRIVE_WINDOW default 1) — the
+# replay mirrors the live env/default for parity; REPLAY_OPEN_DRIVE overrides
+# for A/B (0 = off).
+_OPEN_DRIVE: bool = (os.environ.get(
+    "REPLAY_OPEN_DRIVE",
+    os.environ.get("PAPER_OPEN_DRIVE_WINDOW", "1") or "1") == "1")
 
 # Gate ablation (attribution studies): comma-separated gate-family prefixes to
 # DISABLE, e.g. REPLAY_DISABLE_GATES="OR_FILTER,SCORE_MARGIN". A disabled gate

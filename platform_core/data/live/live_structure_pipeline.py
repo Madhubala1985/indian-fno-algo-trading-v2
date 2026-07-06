@@ -1146,6 +1146,28 @@ _conviction_scorer = _ConvictionScorer()
 # everywhere (conviction is not validated — hard-rule: stays shadow).
 _CONV_LIVE: bool = _os.environ.get("PAPER_CONV_LIVE", "0") == "1"
 
+# Open-drive window (gate forensics 2026-07-06: the warm-up/session-phase
+# blocked set ran 72% WR / +₹21,788 over 12 days; batch A/B +317 → +17,972 —
+# in-sample; this week's dry-runs are the zero-risk OOS test). Entries are
+# allowed through the session-phase and warm-up gates ONLY while ALL hold:
+#   (a) knob on, (b) warm-start verified seeded 4h+1d (NEVER on a blind
+#   start — the original reason those blocks existed), (c) IST clock inside
+#   09:15–09:35. Morning-only by construction: the 15:00+ CLOSING block is
+#   unreachable. Every other gate (OR, margin, caps, cooldowns, halts, stop/
+#   ratchet management) stays fully armed. Mode-independent (parity).
+_OPEN_DRIVE_WINDOW: bool = (
+    _os.environ.get("PAPER_OPEN_DRIVE_WINDOW", "1") == "1"
+)
+
+
+def _open_drive_pass_now() -> bool:
+    """True while the seeded opening-drive entry window is active."""
+    if not (_OPEN_DRIVE_WINDOW and _WARMSTART_SEEDED_OK):
+        return False
+    _n = datetime.now(_IST)
+    return (_n.hour, _n.minute) >= (9, 15) and (_n.hour, _n.minute) < (9, 36)
+
+
 # Re-entry risk haircut (measured 2026-07-06, replay A/B on 14 day-samples:
 # net −1,354 → +317 with the SAME 28-trade set — pure sizing effect, no
 # selection). 2nd+ same-direction session entry sizes at this fraction of the
@@ -2089,7 +2111,11 @@ _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates c
 # model won't trade blind — bias stays NEUTRAL — but the operator MUST know to
 # refresh the warm-start data. Loud, unmissable CRITICAL alert; must be clean
 # before arming real funds.
+_WARMSTART_SEEDED_OK: bool = False   # set by _verify_warmstart_not_blind()
+
+
 def _verify_warmstart_not_blind() -> None:
+    global _WARMSTART_SEEDED_OK
     _blind: list[tuple[str, list[str]]] = []
     for _k, _st in _runtime_by_underlying.items():
         if not is_option_target_enabled(_k):
@@ -2118,6 +2144,7 @@ def _verify_warmstart_not_blind() -> None:
         except Exception:
             pass
     else:
+        _WARMSTART_SEEDED_OK = True
         print("[MCB WARMSTART] READINESS OK — all enabled underlyings have 4h+1d "
               "seeded (not starting blind).")
 
@@ -3975,9 +4002,12 @@ def on_ticks(raw_ticks):
                     _fvg_quality_reason = f"stored low FVG quality={_current_state.fvg_quality:.2f}"
             _effective_conf *= _fvg_quality_for_entry
 
-            if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_ctx.allow_entry:
+            # Open-drive window: session-phase (and warm-up) blocks are lifted
+            # during the seeded 09:15–09:35 IST window — see _open_drive_pass_now.
+            _session_entry_ok = _session_ctx.allow_entry or _open_drive_pass_now()
+            if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_entry_ok:
                 _filter_parts = []
-                if not _session_ctx.allow_entry:
+                if not _session_entry_ok:
                     _filter_parts.append(f"session={_session_ctx.phase}")
                 if _pdl_reason:
                     _filter_parts.append(_pdl_reason)
@@ -3998,7 +4028,7 @@ def on_ticks(raw_ticks):
                 _srec is not None
                 and not _current_state.option_trader.has_open_position()
                 and not _trading_halted
-                and _session_ctx.allow_entry
+                and _session_entry_ok
                 and not _fvg_quality_reason
             ):
                 # Soft halt overrides tier selection: forces tier 0 (sizer_soft)
@@ -4115,8 +4145,11 @@ def on_ticks(raw_ticks):
                             f"capital=₹{_session_opening_equity:,.0f}"
                         )
 
-                    # [A] Live bar warmup gate
-                    if _pre_entry_block is None and _current_state.live_bars_seen < _LIVE_BARS_BEFORE_ENTRY:
+                    # [A] Live bar warmup gate (lifted during the seeded
+                    # open-drive window — bias comes from the warm-start).
+                    if (_pre_entry_block is None
+                            and _current_state.live_bars_seen < _LIVE_BARS_BEFORE_ENTRY
+                            and not _open_drive_pass_now()):
                         _pre_entry_block = (
                             f"WARM_START_LOCKOUT "
                             f"live_bars={_current_state.live_bars_seen}/{_LIVE_BARS_BEFORE_ENTRY}"
