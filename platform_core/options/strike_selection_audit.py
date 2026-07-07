@@ -132,8 +132,11 @@ class StrikeAuditLogger:
 
         recs = result.recommendations
         score_margin: float | None = None
+        score_margin_raw: float | None = None   # pre-DTE-multiplier (DTE-invariant)
         if len(recs) >= 2:
             score_margin = recs[0].composite_score - recs[1].composite_score
+            score_margin_raw = (recs[0].breakdown.weighted_raw
+                                - recs[1].breakdown.weighted_raw)
             if score_margin < _SCORE_MARGIN_THRESHOLD:
                 flags.append("SCORE_MARGIN_LOW")
 
@@ -225,6 +228,8 @@ class StrikeAuditLogger:
             "lot_size":         best.lot_size,
             "composite_score":  best.composite_score,
             "score_margin":     score_margin,
+            "score_margin_raw": score_margin_raw,
+            "dte_multiplier":   bd.dte_multiplier,
             "atm_dist":         atm_dist,
             "rank2_score":      recs[1].composite_score if len(recs) >= 2 else None,
             "selected_reason":  factor_tops,

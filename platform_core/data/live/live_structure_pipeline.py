@@ -417,6 +417,13 @@ _STATE_FILE_PATH:   str  = "logs/paper_trading_state.json"
 _COMPOUND_CAPITAL:  bool = (os.environ.get("PAPER_COMPOUND_CAPITAL", "1") == "1")
 _EXPLICIT_CAPITAL:  bool = (os.environ.get("PAPER_STARTING_CAPITAL") is not None)
 
+# score_margin on PRE-DTE-multiplier weighted_raw. The DTE multiplier is the
+# same for every candidate in a chain (shared expiry), so it never changes the
+# ranking — but it scales the rank1−rank2 margin (×0.20 at DTE≤2), pushing
+# decisive short-DTE SENSEX selections below a floor calibrated at mult 1.0.
+# Shared env name with surgical_replay. Default OFF = current behaviour.
+_MARGIN_PRE_DTE:    bool = (os.environ.get("STRIKE_MARGIN_PRE_DTE", "0") == "1")
+
 
 def _resolve_initial_equity() -> float:
     """Capital basis for this session.
@@ -3484,10 +3491,16 @@ def on_ticks(raw_ticks):
                                 _current_state.captured_strike_rec = best
                                 _current_state.captured_gex_snapshot = options_ctx.gex_snapshot
                                 _recs = _selection_result.recommendations
-                                _current_state.captured_score_margin = (
-                                    _recs[0].composite_score - _recs[1].composite_score
-                                    if len(_recs) >= 2 else None
-                                )
+                                if len(_recs) >= 2:
+                                    _current_state.captured_score_margin = (
+                                        _recs[0].breakdown.weighted_raw
+                                        - _recs[1].breakdown.weighted_raw
+                                        if _MARGIN_PRE_DTE else
+                                        _recs[0].composite_score
+                                        - _recs[1].composite_score
+                                    )
+                                else:
+                                    _current_state.captured_score_margin = None
                                 print(
                                     f"[STRIKE] {best.option_symbol}  "
                                     f"δ={best.delta:.2f}  "

@@ -90,6 +90,14 @@ _GEX_REGIME_VETO: bool = (os.environ.get("GEX_REGIME_VETO", "1") == "1")
 # zero iv_attractiveness). Default OFF = current committed live behaviour.
 _REPLAY_ROBUST_ATM_IV: bool = (os.environ.get("REPLAY_ROBUST_ATM_IV", "0") == "1")
 
+# score_margin on PRE-DTE-multiplier weighted_raw A/B. The DTE multiplier is
+# identical for every candidate in a chain (they share the expiry), so it can
+# never change the ranking — but it scales the rank1−rank2 margin down with it
+# (×0.20 at DTE≤2), pushing genuinely decisive SENSEX Mon-Wed selections below
+# a floor calibrated at multiplier 1.0. Pre-DTE margin is DTE-invariant.
+# Shared env name with the live pipeline. Default OFF = current live behaviour.
+_MARGIN_PRE_DTE: bool = (os.environ.get("STRIKE_MARGIN_PRE_DTE", "0") == "1")
+
 
 def _robust_atm_iv(octx) -> float:
     """Near-ATM strike's own raw IV, falling back to the surface value then the
@@ -839,7 +847,11 @@ class SurgicalReplay:
                 margin = 0.0
                 recs = sel.recommendations if hasattr(sel, "recommendations") else []
                 if len(recs) >= 2:
-                    margin = recs[0].composite_score - recs[1].composite_score
+                    if _MARGIN_PRE_DTE:
+                        margin = (recs[0].breakdown.weighted_raw
+                                  - recs[1].breakdown.weighted_raw)
+                    else:
+                        margin = recs[0].composite_score - recs[1].composite_score
                 if margin < self.MIN_SCORE_MARGIN and _gate("SCORE_MARGIN") is not None:
                     continue
                 conv, _ = self._conv.score(
