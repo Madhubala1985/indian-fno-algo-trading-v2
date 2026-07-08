@@ -205,6 +205,26 @@ _FASTFAIL_INSIDE_OR: bool = os.environ.get("REPLAY_FASTFAIL_INSIDE_OR", "0") == 
 #    a new session extreme in the trade direction (aggression only after being
 #    proven right — the 06-24 monster-day mechanism).
 _TREND_ADDON: bool = os.environ.get("REPLAY_TREND_ADDON", "0") == "1"
+# E. Strike rotation after loss (2026-07-08 user hypothesis): if the top-ranked
+#    strike is still in its SAME-CONTRACT stop/struct cooldown (it just lost),
+#    rotate to the next-ranked candidate that is NOT cooling down — trade a
+#    different nearby strike instead of blocking on the just-lost one. Default
+#    OFF (A/B only). The [B1] underlying-wide cooldown still applies to all.
+_STRIKE_ROTATE_AFTER_LOSS: bool = os.environ.get("STRIKE_ROTATE_AFTER_LOSS", "0") == "1"
+# F. Bias-staleness FLIP (2026-07-08): the MCB bias is dominated by 4h/1d and
+#    goes STALE when the session reverses — it stayed LONG conf 1.0 through a
+#    −1.7% down day. The stand-down already exists (OR_FILTER_CONTRADICTION blocks
+#    a LONG when spot breaks BELOW the OR). This knob adds the FLIP: when spot
+#    breaks the OPPOSITE OR side by >= _BIAS_FLIP_MIN_EXT OR-widths (a decisive
+#    DIRECTIONAL volatility expansion — faster + directional vs the lagging regime
+#    engine, which only flagged EXPANSION at 15:00 today), trade the break
+#    direction (buy the PUT/CALL) instead of sitting flat. The extension threshold
+#    is the selectivity that avoids the net-negative BLIND counter-bias short
+#    (a marginal false poke like today's +5pt open-drive never qualifies). An IST
+#    hour floor skips the noisy open. Default OFF (A/B only).
+_BIAS_FLIP_ON_OR_BREAK: bool = os.environ.get("BIAS_FLIP_ON_OR_BREAK", "0") == "1"
+_BIAS_FLIP_MIN_EXT: float = float(os.environ.get("BIAS_FLIP_MIN_EXT", "0.5") or 0.5)
+_BIAS_FLIP_MIN_IST_HOUR: int = int(os.environ.get("BIAS_FLIP_MIN_IST_HOUR", "0") or 0)
 
 # OPEN-DRIVE window (gate forensics 2026-07-06: the WARM_START/SESSION_PHASE
 # blocked set ran 72% WR / +21,788 net over 12 days — the open's momentum is
@@ -615,6 +635,20 @@ class SurgicalReplay:
             ctx = self._ctx.build(valuation_timestamp=bar.start_timestamp)
             bias = str(ctx.bias)
 
+            # [knob F] Bias-staleness FLIP — see knob decl. A decisive break of the
+            # OPPOSITE OR side (directional vol expansion) flips the stale HTF bias
+            # to the break direction for this entry, rather than standing down flat.
+            if _BIAS_FLIP_ON_OR_BREAK and bias in ("LONG", "SHORT") and or_engine.ready:
+                _rng = or_engine.current_range
+                _orw = max(_rng.or_high - _rng.or_low, 1e-9)
+                _below_ext = (_rng.or_low - spot) / _orw   # >0 → spot below OR
+                _above_ext = (spot - _rng.or_high) / _orw  # >0 → spot above OR
+                if bar.start_timestamp.astimezone(_IST).hour >= _BIAS_FLIP_MIN_IST_HOUR:
+                    if bias == "LONG" and _below_ext >= _BIAS_FLIP_MIN_EXT:
+                        bias = "SHORT"   # stale LONG invalidated by a decisive downside break
+                    elif bias == "SHORT" and _above_ext >= _BIAS_FLIP_MIN_EXT:
+                        bias = "LONG"    # stale SHORT invalidated by a decisive upside break
+
             # ── manage open position ────────────────────────────────────────
             # Exit precedence mirrors live evaluate_and_close EXACTLY:
             #   STRUCTURE_EXIT (force_reason) → STOP_LOSS → TAKE_PROFIT.
@@ -750,6 +784,23 @@ class SurgicalReplay:
                         _block("DIAG_IVFIX_PICK_CHANGED")
                 if best is None:
                     continue
+
+                # [knob E] Strike rotation after loss: if the top pick is a strike
+                # still inside its same-contract stop/struct cooldown, rotate to the
+                # next-ranked candidate that is NOT cooling down (a different nearby
+                # strike) rather than letting [B2]/[B2s] block the entry. The [B1]
+                # underlying-wide cooldown below still gates all strikes.
+                if _STRIKE_ROTATE_AFTER_LOSS:
+                    _bss  = bar_idx - last_stop_bar
+                    _bstr = bar_idx - last_struct_exit_bar
+                    def _cooling(_sym: str) -> bool:
+                        return ((_sym == last_stop_contract and _bss < _SAME_CONTRACT_STOP_COOLDOWN_BARS)
+                                or (_sym == last_struct_exit_contract and _bstr < _SAME_CONTRACT_STRUCT_COOLDOWN_BARS))
+                    if _cooling(best.option_symbol):
+                        for _alt in sel.recommendations:
+                            if not _cooling(_alt.option_symbol):
+                                best = _alt
+                                break
 
                 # ── Live ENTRY gate stack (fidelity v2) ──────────────────────
                 # Same order as live on_ticks pre-entry checks (live_structure_

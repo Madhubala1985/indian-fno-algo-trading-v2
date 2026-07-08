@@ -512,22 +512,29 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         # bet, and an armed (breakeven-ratcheted) winner frees its slot.
         env.setdefault("PAPER_MAX_POSITION_PREMIUM_FRAC", "0.35")
         env.setdefault("PAPER_MAX_HEAT_FRACTION", "0.40")
-        # Halt thresholds kept COHERENT with the aggressive sizing: at 8-10 lots
-        # one stopped trade is ~6-8%, so the old 2%/4% halts would stop after a
-        # single loss. Raised so 8 lots -> halt on 3rd loss, 10 lots -> 2nd, and
-        # the auto-resuming daily halt (15%) fires before the manual-restart
-        # account-DD halt (21%). Stop is reliably ~30% (intrabar-capped) so the
-        # loss-per-trade is predictable. (Applies to real_armed too — parity.)
-        # Soft-halt raised to 0.14 (just below the 0.15 hard stop) ON PURPOSE:
-        # the sizer's SMOOTH drawdown-haircut (size ∝ remaining room to account
-        # DD) already de-risks continuously as the day loses (e.g. 10→6→3→2
-        # lots), which is the coherent mechanism. The soft-halt is a CLIFF that
-        # switches to the 0.7%-risk/1-lot sizer; at 6% it pre-empted the smooth
-        # taper and slammed to 1 lot after a single loss. Kept only as a thin
-        # final buffer before the hard stop so the two de-risk systems don't
-        # overlap/double-count. (Applies to real_armed too — parity.)
+        # Halt thresholds (revised 2026-07-08, user directive; measured on 9 days
+        # of real recorded option data — NIFTY+SENSEX merged, 31 trades):
+        #   - CONSEC halt -> OFF (0). It was the ONLY halt that ever fired (the
+        #     daily floors sat at 14/15%, unreachable at these trade sizes), but
+        #     removing it moved total P&L by just -₹58 over the 9 days — it rarely
+        #     binds and when it did (07-06) it trimmed a ₹58 losing tail. The
+        #     sizer's SMOOTH drawdown-haircut (size ∝ remaining room to account
+        #     DD) is the intended continuous de-risker, not a streak cliff.
+        #     CAVEAT: the one day it bound live (07-08 chop) is NOT in the sample
+        #     — the surgical replay gates all 07-08 entries at the OR filter, so
+        #     the chop-day counterfactual is unmeasured. Revisit with live data.
+        #   - HARD daily 15% -> 6%: a real catastrophe floor (auto-resumes next
+        #     session), tighter than the old effectively-dead 15%, still well
+        #     below the 21% manual-restart account-DD halt.
+        #   - SOFT stays 0.14 and is now INERT by design: it sits ABOVE the 6%
+        #     hard stop, so the hard halt always fires first (14% is never
+        #     reached). Intentional — no soft cliff; pure smooth sizer taper down
+        #     to the 6% stop. Low soft-halt (6%) was measured harmful earlier
+        #     (slammed to 1 lot after one loss), so we do NOT lower it.
+        # (Applies to real_armed too — parity.)
+        env.setdefault("PAPER_HARD_HALT_CONSEC_LOSSES", "0")
         env.setdefault("PAPER_SOFT_HALT_DAILY_LOSS", "0.14")
-        env.setdefault("PAPER_HARD_HALT_DAILY_LOSS", "0.15")
+        env.setdefault("PAPER_HARD_HALT_DAILY_LOSS", "0.06")
         env.setdefault("PAPER_MAX_ACCOUNT_DD", "0.21")
 
     return env

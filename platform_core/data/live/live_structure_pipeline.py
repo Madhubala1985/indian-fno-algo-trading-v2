@@ -953,6 +953,7 @@ _SOFT_HALT_MAX_LOTS:        int   = 1
 _SOFT_HALT_MIN_CONF:        float = 0.65    # higher bar than Tier 1's 0.55
 # Hard halt — no new trades
 _HARD_HALT_DAILY_LOSS_FRAC: float = float(os.environ.get("PAPER_HARD_HALT_DAILY_LOSS", "0.040") or 0.040)
+# 0 = DISABLED (no streak halt; rely on the daily-loss floor + smooth sizer taper).
 _HARD_HALT_CONSEC_LOSSES:   int   = int(os.environ.get("PAPER_HARD_HALT_CONSEC_LOSSES", "3") or 3)
 _MAX_ACCOUNT_DD:            float = float(os.environ.get("PAPER_MAX_ACCOUNT_DD", "0.150") or 0.150)
 
@@ -1115,6 +1116,16 @@ _regime_shadow = (
 from platform_core.data.live.htf_shadow import HTFShadow as _HTFShadow
 _htf_shadow = (
     _HTFShadow() if _os.environ.get("PAPER_HTF_SHADOW", "1") != "0" else None
+)
+# Phase-1 intelligence wiring (2026-07-08): TrapProbabilityModel in SHADOW mode —
+# scores whether the CURRENT opening-range break attempt (UP or DOWN — inferred
+# from the ACTUAL break, direction-agnostic, never assumes a side) is a trap, and
+# logs per break-bar to logs/trap_shadow.jsonl. Never affects the trade path.
+# Accumulates OOS evidence for the trap_prob>0.8 tail-filter lead before any
+# promotion. Disable with PAPER_TRAP_SHADOW=0.
+from platform_core.data.live.trap_shadow import TrapShadow as _TrapShadow
+_trap_shadow = (
+    _TrapShadow() if _os.environ.get("PAPER_TRAP_SHADOW", "1") != "0" else None
 )
 # Phase-2 intelligence wiring: transparent, graded setup-conviction in SHADOW —
 # logs a per-decision conviction score (real inputs, cannot saturate) to
@@ -2108,9 +2119,59 @@ if _TIER2_RISK_FRAC > 0.025:
         f"[WARNING] Paper risk profile '{_PAPER_RISK_PROFILE}' uses "
         f"{_TIER2_RISK_FRAC * 100:.1f}% Tier2 risk — not approved for real funds."
     )
+# Spot index instrument tokens (Kite) — for seeding the OR on a late/crash start.
+_SPOT_INDEX_TOKENS: dict[str, int] = {"NIFTY": 256265, "SENSEX": 265, "BANKNIFTY": 260105}
+
+
+def _seed_opening_ranges_if_missing() -> None:
+    """Fail-safe for a start AFTER the 09:15–09:30 opening-range window.
+
+    The OR engine only builds from LIVE ticks during 09:15–09:30; warm-start CSV
+    bars do NOT feed it, and a same-day OR is only restorable from state if a
+    PRIOR session that day already established it. So a late first start (or a
+    crash-restart before any OR was persisted) leaves every OR guard
+    (inside-block / buffer / extension-chase) silently inactive — the model then
+    trades chop blind. Root cause of 2026-07-08 −₹2,893: the session started
+    10:29 IST, had no OR, and took 4 inside-OR entries a seeded OR would have
+    blocked (each measured at confidence_multiplier=0.0 against the real OR).
+
+    If it is past 09:30 IST and an enabled underlying still has no OR, fetch
+    today's 09:15–09:30 1m bars from Kite (REST — token only, no WS) and
+    restore_range(). Never raises; a fetch failure logs LOUDLY so the operator
+    knows the guards are inactive."""
+    now_ist = datetime.now(_IST)
+    if now_ist.hour * 60 + now_ist.minute < 9 * 60 + 31:
+        return  # still within/at the OR window — live ticks will build it normally
+    today = now_ist.date().isoformat()
+    for _und, _st in _runtime_by_underlying.items():
+        if not is_option_target_enabled(_und) or _st.or_engine.ready:
+            continue  # not traded here, or already restored from a prior session
+        _tok = _SPOT_INDEX_TOKENS.get(_und)
+        if _tok is None:
+            continue
+        try:
+            _candles = adapter.kite.historical_data(
+                instrument_token=_tok, from_date=f"{today} 09:15:00",
+                to_date=f"{today} 09:30:00", interval="minute", continuous=False,
+            )
+            if not _candles:
+                print(f"[OR SEED] {_und}: Kite returned no 09:15–09:30 bars — "
+                      f"OR NOT seeded, chop guards INACTIVE for the session!")
+                continue
+            _hi = max(c["high"] for c in _candles)
+            _lo = min(c["low"] for c in _candles)
+            _st.or_engine.restore_range(or_high=_hi, or_low=_lo, trading_date=today)
+            print(f"[OR SEED] {_und}: late start ({now_ist:%H:%M} IST) — seeded OR "
+                  f"from Kite ({_lo:.0f}–{_hi:.0f}, {len(_candles)} bars) — chop guards ACTIVE")
+        except Exception as _exc:
+            print(f"[OR SEED] {_und}: FAILED to seed OR from Kite ({_exc}) — "
+                  f"chop guards INACTIVE, model would trade chop-blind!")
+
+
 _print_gate_startup()  # print gate profile + per-underlying thresholds at every startup
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
+_seed_opening_ranges_if_missing()  # late-start fail-safe: rebuild OR from Kite so chop guards stay active
 
 # ── Warm-start readiness guard — NEVER start blind ────────────────────────────
 # The 4h + 1d timeframes carry 60% of the MCB bias weight. If they are not seeded
@@ -2408,7 +2469,7 @@ def _check_capital_limits() -> tuple[bool, str]:
             f"DAILY_LOSS {daily_loss_frac:.1%} >= {_HARD_HALT_DAILY_LOSS_FRAC:.1%} "
             f"— resumes next session"
         )
-    if _consecutive_losses >= _HARD_HALT_CONSEC_LOSSES:
+    if _HARD_HALT_CONSEC_LOSSES > 0 and _consecutive_losses >= _HARD_HALT_CONSEC_LOSSES:
         return True, (
             f"CONSECUTIVE_LOSSES {_consecutive_losses} >= {_HARD_HALT_CONSEC_LOSSES} "
             f"— resumes next session"
@@ -3304,6 +3365,23 @@ def on_ticks(raw_ticks):
                 close=completed_bar.close_price,
             )
 
+        # Phase-1 SHADOW: score the current OR break attempt for trap-ness
+        # (direction inferred from the actual break — symmetric, no fixed side).
+        if _trap_shadow is not None and _current_state is not None:
+            _or_now = (_current_state.or_engine.current_range
+                       if _current_state.or_engine.ready else None)
+            _trap_shadow.observe(
+                underlying=_current_state.option_underlying,
+                timestamp=completed_bar.start_timestamp,
+                open_=getattr(completed_bar, "open_price", completed_bar.close_price),
+                high=completed_bar.high_price,
+                low=completed_bar.low_price,
+                close=completed_bar.close_price,
+                volume=float(getattr(completed_bar, "volume", 0.0) or 0.0),
+                or_low=(_or_now.or_low if _or_now else None),
+                or_high=(_or_now.or_high if _or_now else None),
+            )
+
         if _TERMINAL_COMPACT:
             print(
                 f"[BAR] {completed_bar.symbol} "
@@ -3976,6 +4054,17 @@ def on_ticks(raw_ticks):
                 _or_mult, _or_reason = _current_state.or_engine.current_range.confidence_multiplier(
                     spot=completed_bar.close_price,
                     bias=str(_mctx.bias),
+                )
+            elif (not _current_state.or_engine.ready and str(_mctx.bias) != "NEUTRAL"
+                    and (datetime.now(_IST).hour * 60 + datetime.now(_IST).minute) >= 9 * 60 + 31):
+                # FAIL-CLOSED: past 09:30 IST with no opening range means every OR
+                # guard is inactive and the model would trade chop blind (the
+                # 2026-07-08 −₹2,893 leak). The startup Kite seed
+                # (_seed_opening_ranges_if_missing) normally prevents this; if it
+                # ALSO failed, refuse entries rather than trade unprotected.
+                _or_mult, _or_reason = 0.0, (
+                    "OR_UNAVAILABLE — fail-closed (no opening range past 09:30; "
+                    "Kite seed failed — refusing to trade chop-blind)"
                 )
             _effective_conf *= _or_mult
 
