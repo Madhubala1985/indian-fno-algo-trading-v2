@@ -21,3 +21,7 @@ data/recordings/
 .vscode/
 
 .DS_Store
+
+# deployment secrets (never commit real values)
+deploy/secrets.env
+/etc/trading/secrets.env

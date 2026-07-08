@@ -1,0 +1,7 @@
+[Unit]
+Description=Stop trading model at 15:35 IST on weekdays
+[Timer]
+OnCalendar=Mon-Fri *-*-* 15:35:00
+Persistent=false
+[Install]
+WantedBy=timers.target

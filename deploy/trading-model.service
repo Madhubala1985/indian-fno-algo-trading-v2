@@ -1,0 +1,19 @@
+[Unit]
+Description=Institutional trading model (real_dry_run)
+After=network-online.target trading-token.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/institutional_trading_system_v2
+EnvironmentFile=/etc/trading/secrets.env
+Environment=PYTHONPATH=/home/ubuntu/institutional_trading_system_v2 PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/institutional_trading_system_v2/venv/bin/python scripts/run_supervised_live_session.py --execution-mode real_dry_run
+Restart=on-failure
+RestartSec=5
+# clean EOD/self-exit (exit 0) must NOT trigger a restart:
+SuccessExitStatus=0
+
+[Install]
+WantedBy=multi-user.target

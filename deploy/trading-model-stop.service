@@ -1,0 +1,5 @@
+[Unit]
+Description=Stop trading model after market close
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl stop trading-model.service

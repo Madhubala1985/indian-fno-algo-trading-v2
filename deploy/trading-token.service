@@ -1,0 +1,12 @@
+[Unit]
+Description=Kite headless TOTP token refresh (pre-market)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/institutional_trading_system_v2
+EnvironmentFile=/etc/trading/secrets.env
+Environment=PYTHONPATH=/home/ubuntu/institutional_trading_system_v2
+ExecStart=/home/ubuntu/institutional_trading_system_v2/venv/bin/python deploy/kite_token_totp.py

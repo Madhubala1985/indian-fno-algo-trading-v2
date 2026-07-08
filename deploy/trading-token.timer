@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh Kite token at 08:45 IST on trading weekdays
+[Timer]
+OnCalendar=Mon-Fri *-*-* 08:45:00
+Persistent=false
+[Install]
+WantedBy=timers.target
