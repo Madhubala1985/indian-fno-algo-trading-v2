@@ -195,24 +195,41 @@ multi_timeframe_builder = (
 
 # ── Options pipeline ──────────────────────────────────────────────────────────
 # _PRIMARY_OPTION_TARGET    — canonical reference underlying (BANKNIFTY).
-# _OPTION_TARGETS_ENABLED   — underlyings that EXECUTE trades. BANKNIFTY is now
-#                             confirmation-only (2026-06-15): its MCB bias is
-#                             still computed (it remains in _AVAILABLE, so its
-#                             runtime state + market-context builder run and its
-#                             bias is available as a market-view double-check),
-#                             but no BANKNIFTY entries are taken. NIFTY trades on
-#                             NFO; SENSEX on BFO.
+# _OPTION_TARGETS_ENABLED   — underlyings that EXECUTE trades. BANKNIFTY
+#                             re-enabled 2026-07-15 (user directive: full-breadth
+#                             unlock — all subscribed indices trade, options +
+#                             futures sleeve; it was confirmation-only since
+#                             2026-06-15). Enabling it also makes the futures
+#                             sleeve's on_direction_signal path reachable for it
+#                             (the call sits inside the enabled-targets block —
+#                             night-explorer 07-14 §3 gap, closed here without
+#                             moving the call site). NIFTY/BANKNIFTY trade on
+#                             NFO; SENSEX on BFO. Env-overridable for a clean
+#                             per-underlying rollback, e.g.
+#                             OPTION_TARGETS_ENABLED=NIFTY,SENSEX reverts this.
 # _OPTION_TARGETS_SHADOW    — empty; shadow infrastructure retained for future use.
 # _OPTION_TARGETS_AVAILABLE — all underlyings with complete option-chain config
 #                             (drives _runtime_by_underlying / MCB for all three).
 
 _PRIMARY_OPTION_TARGET:    str       = "BANKNIFTY"
-# BANKNIFTY intentionally excluded from ENABLED — confirmation signal only.
-_OPTION_TARGETS_ENABLED:   frozenset = frozenset({"NIFTY", "SENSEX"})
+_OPTION_TARGETS_ENABLED:   frozenset = frozenset(
+    s.strip().upper()
+    for s in (
+        os.environ.get("OPTION_TARGETS_ENABLED") or "BANKNIFTY,NIFTY,SENSEX"
+    ).split(",")
+    if s.strip()
+)
 _OPTION_TARGETS_SHADOW:    frozenset = frozenset()  # no active shadow targets
 _OPTION_TARGETS_AVAILABLE: frozenset = frozenset({"BANKNIFTY", "NIFTY", "SENSEX"})
 # Raw index/feed names that must never appear as a contract symbol
 _RAW_INDEX_SYMBOLS:        frozenset = frozenset({"BANKNIFTY", "NIFTY", "NIFTY50", "SENSEX", "FINNIFTY"})
+# Guard: ENABLED must be a subset of AVAILABLE — an env typo (e.g. "NIFTY5O")
+# silently enabling a target with no chain config would crash mid-session.
+_unknown_targets = _OPTION_TARGETS_ENABLED - _OPTION_TARGETS_AVAILABLE
+if _unknown_targets:
+    print(f"[CONFIG WARNING] OPTION_TARGETS_ENABLED contains unknown targets "
+          f"{sorted(_unknown_targets)} — ignored (available: {sorted(_OPTION_TARGETS_AVAILABLE)})")
+    _OPTION_TARGETS_ENABLED = _OPTION_TARGETS_ENABLED & _OPTION_TARGETS_AVAILABLE
 _overlap = _OPTION_TARGETS_ENABLED & _OPTION_TARGETS_SHADOW
 if _overlap:
     print(f"[CONFIG WARNING] Targets in both ENABLED and SHADOW sets: {_overlap} — shadow suppressed for those.")
@@ -1186,7 +1203,9 @@ if _os.environ.get("FUTURES_SLEEVE", "1") != "0" and _FUT_TOKEN_TO_SYMBOL:
     try:
         from platform_core.data.live.futures_sleeve import FuturesSleeve as _FuturesSleeve
         _futures_sleeve = _FuturesSleeve(
-            capital=400000.0,
+            # Same compounding capital basis as the options book (2026-07-15;
+            # was hardcoded 400000 — diverges as equity compounds).
+            capital=_INITIAL_EQUITY,
             contracts={
                 _fs: {"underlying": _fs.replace("_FUT", ""),
                       # lot sizes from the system registry (futures lots == option lots here)

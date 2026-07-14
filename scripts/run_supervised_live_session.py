@@ -490,6 +490,24 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         # option chain each bar to grow the offline validation dataset (safe —
         # no extra Kite calls, never raises; RECORD_OPTION_CHAIN=0 to disable).
         env.setdefault("RECORD_OPTION_CHAIN", "1")
+        # Full-breadth unlock (user directive 2026-07-15): all subscribed indices
+        # trade concurrently — BANKNIFTY re-enabled (OPTION_TARGETS_ENABLED default
+        # in the pipeline), one position slot per index, and no routing thumb on
+        # the scale. The LOSS-bounding rails are untouched and still govern:
+        # per-trade max-loss cap (1.5% equity), 30% premium stop, 6% hard daily
+        # floor, drawdown haircuts, freeze-qty, futures-sleeve margin/halt rails.
+        #   - MAX_OPEN_POSITIONS 2 → 3: one at-risk slot per index. Worst case
+        #     3 × 1.5% = 4.5% of equity, still under the 6% daily floor.
+        #   - SENSEX_PRIMARY_ROUTING off: NIFTY no longer defers to SENSEX nor
+        #     needs a 0.95-conf bar ("evaluate, don't ban" — NIFTY's real leak is
+        #     the LONG bleed, now handled by the flow-evidence NIFTY_LONG_GATE).
+        #   - CORRELATED_HEAT_FRACTION 0.20 → 0.40: with 3 concurrent indices the
+        #     20% same-direction premium rail would silently shrink the 2nd/3rd
+        #     position; at 0.40 the total heat cap + per-trade loss cap govern.
+        # Each reverts independently via its env knob.
+        env.setdefault("MAX_OPEN_POSITIONS", "3")
+        env.setdefault("SENSEX_PRIMARY_ROUTING", "0")
+        env.setdefault("CORRELATED_HEAT_FRACTION", "0.40")
         env.setdefault("PAPER_TIER2_RISK_FRAC", "0.08")
         env.setdefault("PAPER_TIER3_RISK_FRAC", "0.08")
         env.setdefault("PAPER_MAX_SINGLE_TRADE_RISK_FRAC", "0.08")

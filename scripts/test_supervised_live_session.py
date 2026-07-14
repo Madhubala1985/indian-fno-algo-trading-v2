@@ -234,9 +234,10 @@ check("same day = 0", _td_since(_fri, _fri) == 0,
       f"got {_td_since(_fri, _fri)}")
 
 
-# ── Test 9: Stale threshold is 3 ─────────────────────────────────────────────
-print("\n[Test 9] _STALE_THRESHOLD is 3 trading days")
-check("_STALE_THRESHOLD == 3", _STALE == 3, f"got {_STALE}")
+# ── Test 9: Stale threshold is 1 (tightened from 3 — warm-start refreshes when
+# more than one trading day old; the 4h/1d MCB weights degrade fast) ──────────
+print("\n[Test 9] _STALE_THRESHOLD is 1 trading day")
+check("_STALE_THRESHOLD == 1", _STALE == 1, f"got {_STALE}")
 
 
 # ── Test 10: post_market graceful missing script ──────────────────────────────
