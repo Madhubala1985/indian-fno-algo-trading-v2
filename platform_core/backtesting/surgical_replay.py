@@ -567,6 +567,51 @@ class SurgicalReplay:
         for b in warm_bars:
             self._feed_bar(b)
 
+    @staticmethod
+    def _bar_from_state_dict(d: dict) -> LiveBar:
+        """Reconstruct a LiveBar from a live-state bar dict (mirrors the live pipeline's
+        _dict_to_bar exactly, so replay rehydrates from the SAME serialised bars)."""
+        ts = datetime.fromisoformat(d["start"])
+        te = datetime.fromisoformat(d["end"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if te.tzinfo is None:
+            te = te.replace(tzinfo=timezone.utc)
+        return LiveBar(symbol=d["symbol"], timeframe=d["timeframe"],
+                       start_timestamp=ts, end_timestamp=te,
+                       open_price=float(d["open"]), high_price=float(d["high"]),
+                       low_price=float(d["low"]), close_price=float(d["close"]),
+                       volume=float(d.get("volume") or 0))
+
+    def warm_start_from_state(self, snapshot_path, underlying: str,
+                              feed_symbol: str | None = None) -> int:
+        """Warm-start the MCB from a live warm-start STATE snapshot instead of CSV bars.
+
+        Fixes the parity root cause (replay CSV warm-start ≠ live persisted higher-TF state,
+        which flipped the day's bias). Feeds the snapshot's pre-aggregated bars (15m/1h/4h/1d)
+        straight into the MCB via update(bar, timeframe=tf) — the SAME call the live pipeline
+        uses to rehydrate. Returns the number of bars fed. Only makes a replay faithful for days
+        whose boot snapshot was captured (see _snapshot_mcb_warmstart_state in the live pipeline).
+        """
+        import json
+        from pathlib import Path
+        self._daily = DailyBarAccumulator(symbol=feed_symbol or underlying)
+        data = json.loads(Path(snapshot_path).read_text())
+        hist = data.get(underlying)
+        if hist is None and feed_symbol:
+            hist = data.get(feed_symbol)
+        hist = hist or {}
+        fed = 0
+        # ascending timeframe key order matches the live rehydrate loop (sorted tfs)
+        for tf in sorted(hist.keys()):
+            for bd in hist[tf]:
+                try:
+                    self._ctx.update(bar=self._bar_from_state_dict(bd), timeframe=tf)
+                    fed += 1
+                except Exception:
+                    pass
+        return fed
+
     def run_day(self, *, underlying: str, feed_symbol: str, exchange: str, expiry: date,
                 lot_size: int, strike_step: float, day: date,
                 session_bars: list[LiveBar], chain_by_min: dict, fetcher) -> ReplayResult:

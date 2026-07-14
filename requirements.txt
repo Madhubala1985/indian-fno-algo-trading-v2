@@ -1,0 +1,3 @@
+# Runtime deps are provisioned on the host/venv (kiteconnect etc.).
+# crossasset_shadow macro feeds are Kite-native (GLOBAL:US500 / NSEIX:GIFT NIFTY /
+# MCX CRUDEOIL) — no third-party market-data package required. yfinance removed.

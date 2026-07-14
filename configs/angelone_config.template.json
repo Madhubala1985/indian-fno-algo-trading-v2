@@ -1,0 +1,9 @@
+{
+  "_README": "Copy to configs/angelone_config.json and fill in. This is what I need to build+run the parallel AI dry-run trader on Angel One SmartAPI. All fields required. Never commit the filled file.",
+  "api_key": "YOUR_SMARTAPI_API_KEY",
+  "client_code": "YOUR_ANGEL_CLIENT_CODE",
+  "mpin_or_password": "YOUR_MPIN_OR_PASSWORD",
+  "totp_secret": "YOUR_TOTP_BASE32_SECRET (the seed behind the authenticator QR, NOT a 6-digit code)",
+  "capital": 400000,
+  "mode": "dry_run"
+}

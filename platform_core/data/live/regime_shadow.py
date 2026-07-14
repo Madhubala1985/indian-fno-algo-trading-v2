@@ -35,6 +35,7 @@ class RegimeShadow:
         self._ranges: dict[str, deque] = {}
         self._out = Path(out_path)
         self.records = 0
+        self.last_regime: dict[str, str] = {}   # underlying -> latest directional_regime
 
     def observe(
         self,
@@ -57,6 +58,9 @@ class RegimeShadow:
             if avg <= 0.0:
                 return
             regime = self._engine.classify(bar_range=rng, average_range=avg)
+            # Expose the latest regime per underlying so the entry-gate regime
+            # de-size can read it (no trade effect from the shadow itself).
+            self.last_regime[underlying] = regime.directional_regime
             try:
                 ts = timestamp.astimezone(timezone.utc).isoformat()
             except Exception:

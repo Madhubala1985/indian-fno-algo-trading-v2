@@ -1,0 +1,4 @@
+50 8 * * 1-5 cd /home/ubuntu/institutional_trading_system_v2 && PYTHONPATH=. venv/bin/python scripts/kite_source_pull.py >> logs/kite_source_pull_cron.log 2>&1
+40 9 * * 1-5 cd /home/ubuntu/institutional_trading_system_v2 && PYTHONPATH=. venv/bin/python scripts/morning_health_check.py >> logs/morning_health_cron.log 2>&1
+*/5 9-15 * * 1-5 /home/ubuntu/institutional_trading_system_v2/deploy/run_sentinel.sh >> /home/ubuntu/institutional_trading_system_v2/logs/sentinel_cron.log 2>&1
+30 19 * * 1-5 /home/ubuntu/institutional_trading_system_v2/deploy/run_night_explorer.sh >> /home/ubuntu/institutional_trading_system_v2/logs/night_explorer_cron.log 2>&1

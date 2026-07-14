@@ -64,6 +64,9 @@ def main() -> int:
     ap.add_argument("--risk-frac", type=float, default=0.020,
                     help="per-trade risk fraction of capital (live: 0.02 conservative / 0.04 balanced)")
     ap.add_argument("--max-lots", type=int, default=4, help="Tier-2 lot ceiling")
+    ap.add_argument("--warmstart-from-state", type=str, default=None,
+                    help="path to a logs/mcb_snapshots/<date>.json — warm-start the MCB from the "
+                         "TRUE live boot state (parity fix) instead of CSV bars")
     args = ap.parse_args()
 
     cfg = _CFG[args.underlying]
@@ -96,7 +99,11 @@ def main() -> int:
     rep = SurgicalReplay(underlying_symbol=args.underlying, feed_symbol=cfg["feed"],
                          conviction_floor=args.conv_floor, capital=args.capital,
                          risk_frac=args.risk_frac, max_lots=args.max_lots)
-    rep.warm_start(warm, cfg["feed"])
+    if args.warmstart_from_state:
+        _fed = rep.warm_start_from_state(args.warmstart_from_state, args.underlying, feed_symbol=cfg["feed"])
+        print(f"[replay] warm-started MCB from state snapshot {args.warmstart_from_state} ({_fed} bars)")
+    else:
+        rep.warm_start(warm, cfg["feed"])
     res = rep.run_day(underlying=args.underlying, feed_symbol=cfg["feed"], exchange=cfg["exch"],
                       expiry=expiry, lot_size=cfg["lot"], strike_step=cfg["step"], day=day,
                       session_bars=session, chain_by_min=chain_by_min, fetcher=fetcher)

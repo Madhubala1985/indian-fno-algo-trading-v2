@@ -369,6 +369,16 @@ class UnderlyingRuntimeState:
     fvg_quality:      float = 1.0
     fvg_quality_bar:  int   = 0                 # set to -FVG_QUALITY_STALENESS_BARS-1
     sizers:           dict  = field(default_factory=dict)  # {0..3: PositionSizer}
+    # Entry-gate inputs stashed each bar (2026-07-10). Defaults are permissive so
+    # a gate never fires before real data sets these (backward-compatible w/ saved state).
+    last_is_aligned:  bool  = True              # legacy 3-of-4 alignment (shadow-logged only)
+    last_dir_regime:  str   = "UNKNOWN"         # regime de-size gate input (inert until set)
+    # HTF OPPOSITION (2026-07-14 gate redesign): the gate now blocks only when the HTF
+    # ACTIVELY OPPOSES the trade direction (≥2 of h4/h1/m15 against). NEUTRAL never blocks —
+    # the old is_aligned needed 3-of-4 agreeing with daily hardcoded NEUTRAL, i.e. it was a
+    # de-facto blanket long ban (cost the whole +0.8% 07-13 session). Defaults permissive.
+    last_htf_opposed_long:  bool = False        # ≥2 of h4/h1/m15 BEARISH → oppose LONG
+    last_htf_opposed_short: bool = False        # ≥2 of h4/h1/m15 BULLISH → oppose SHORT
 
     # ── Per-bar captures — reset to None each bar ──────────────────────────
     captured_market_ctx:   object | None = None
@@ -538,6 +548,14 @@ _PAPER_MAX_SINGLE_TRADE_RISK_FRAC: float = (
     if os.environ.get("PAPER_MAX_SINGLE_TRADE_RISK_FRAC")
     else _TIER2_RISK_FRAC
 )
+
+# ── Per-trade hard MAX-LOSS cap (batch-4 §1a) — safety, default ON all modes ──
+# Caps lots so a single trade's EX-ANTE worst-case loss cannot exceed this fraction of equity.
+# Unlike the premium cap (bounds outlay), this bounds LOSS = outlay × adverse_frac. The −₹15,972
+# trade (3.8% of equity) is exactly what this prevents. Set frac=0 to disable.
+_PER_TRADE_MAX_LOSS_FRAC: float = float(os.environ.get("PER_TRADE_MAX_LOSS_FRAC", "0.015") or 0.015)
+_PER_TRADE_ADVERSE_FRAC:  float = float(os.environ.get("PER_TRADE_ADVERSE_FRAC", "0.40") or 0.40)
+from platform_core.risk.per_trade_loss_cap import max_loss_capped_lots as _max_loss_capped_lots
 _TIER1_MAX_LOTS:  int   = 1
 # Conviction-scaled lot ceilings (2026-06-15). Raised so high-conviction setups
 # can use their FULL existing risk budget instead of being clipped by a low
@@ -634,6 +652,22 @@ _GEX_GATE_SHADOW:        bool  = (os.environ.get("GEX_GATE_SHADOW", "1") == "1")
 # Widened 2026-06-23: at 0.25% the wall veto never triggered (0 blocks over two
 # 06-19 sessions). 0.5% makes "near a wall" actually meaningful.
 _GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
+
+# ── Edge gates (2026-07-10, dry-run test — UNVALIDATED, env-reversible) ────────
+# Evidence (66 trades): the LONG book bleeds −₹36k @34% WR while SHORT makes +₹50k
+# @57% WR — the model over-trades the losing direction (bias-staleness). These two
+# gates target that. Both default ON for the dry-run experiment; set to 0 to revert.
+#   LONG_ALIGNMENT_GATE: block LONG entries when HTF structure is NOT aligned
+#     (is_aligned=False) — the misaligned longs are the losers. SHORT untouched.
+#   REGIME_DESIZE_MULT:  size multiplier applied when dir_regime is BALANCED (the
+#     regime that lost 5/7 days this week). 1.0 disables; 0.5 halves size.
+_LONG_ALIGNMENT_GATE: bool  = (os.environ.get("LONG_ALIGNMENT_GATE", "1") != "0")
+_REGIME_DESIZE_MULT:  float = float(os.environ.get("REGIME_DESIZE_MULT", "0.5") or 0.5)
+# NIFTY-long gate (2026-07-10, dry-run test): NIFTY-LONG is the single worst bucket
+# (−₹21.8k @29% WR over 27 trades) while NIFTY-SHORT makes money (+₹13.7k @40%).
+# Block NIFTY longs, keep NIFTY shorts. SENSEX untouched. NIFTY_LONG_GATE=0 reverts.
+_NIFTY_LONG_GATE:     bool  = (os.environ.get("NIFTY_LONG_GATE", "1") != "0")
+_override_printed: dict = {}   # (underlying, dir) -> printed flag (throttle: log state changes only)
 # LONG_GAMMA regime veto — the bigger lever: when the GEX gate is enabled, also
 # skip momentum chase-entries in a mean-reverting/pinning (long-gamma) regime.
 # On by default whenever GEX_REGIME_GATE=1; set GEX_REGIME_VETO=0 to test wall-only.
@@ -1110,6 +1144,61 @@ from platform_core.data.live.regime_shadow import RegimeShadow as _RegimeShadow
 _regime_shadow = (
     _RegimeShadow() if _os.environ.get("PAPER_REGIME_SHADOW", "1") != "0" else None
 )
+# Order-flow shadow (batch-4 §4.1) — DEFAULT ON. 2026-07-14 FIX: order flow comes from INDEX
+# FUTURES, not spot — a spot index is a computed number with no traded volume and no book
+# (07-13 collected all-zero CVD/null depth from spot; a wasted day of data). Front-month
+# futures tokens are resolved dynamically at boot (they change every expiry) and subscribed
+# alongside the spot feeds; their ticks feed ONLY this shadow, never the bar/structure path.
+from platform_core.data.live.orderflow_shadow import OrderFlowShadow as _OrderFlowShadow
+_orderflow_shadow = (
+    _OrderFlowShadow() if _os.environ.get("ORDERFLOW_SHADOW", "1") != "0" else None
+)
+
+_FUT_TOKEN_TO_SYMBOL: dict[int, str] = {}   # ws token -> "NIFTY_FUT" etc.
+_FEED_TO_FUT_SYMBOL = {"NIFTY50": "NIFTY_FUT", "SENSEX": "SENSEX_FUT",
+                       "BANKNIFTY": "BANKNIFTY_FUT"}
+if _orderflow_shadow is not None:
+    try:
+        from datetime import date as _date_of
+        for _exch, _name, _fsym in (("NFO", "NIFTY", "NIFTY_FUT"),
+                                    ("NFO", "BANKNIFTY", "BANKNIFTY_FUT"),
+                                    ("BFO", "SENSEX", "SENSEX_FUT")):
+            _futs = [i for i in adapter._get_instruments(_exch)
+                     if i.get("name") == _name and i.get("instrument_type") == "FUT"
+                     and i.get("expiry") and i["expiry"] >= _date_of.today()]
+            if _futs:
+                _front = min(_futs, key=lambda i: i["expiry"])
+                _FUT_TOKEN_TO_SYMBOL[int(_front["instrument_token"])] = _fsym
+                print(f"[ORDERFLOW] {_fsym} = {_front['tradingsymbol']} "
+                      f"(exp {_front['expiry']}, token {_front['instrument_token']})")
+        if not _FUT_TOKEN_TO_SYMBOL:
+            print("[ORDERFLOW] WARNING: no futures tokens resolved — order flow will be empty")
+    except Exception as _fut_exc:
+        print(f"[ORDERFLOW] futures resolution failed ({_fut_exc}) — order flow will be empty")
+
+# ── FUTURES DRY-RUN SLEEVE (2026-07-14) — paper index-futures book alongside options ──────────
+# MIRROR entries (same signal, linear expression, no theta) + TURN entries (constituent-flow
+# turn events the options path can't take). Marked to the real futures ticks above. Pure paper:
+# no orders anywhere; fully self-contained; failures never disturb the options path.
+# Disable with FUTURES_SLEEVE=0.
+_futures_sleeve = None
+if _os.environ.get("FUTURES_SLEEVE", "1") != "0" and _FUT_TOKEN_TO_SYMBOL:
+    try:
+        from platform_core.data.live.futures_sleeve import FuturesSleeve as _FuturesSleeve
+        _futures_sleeve = _FuturesSleeve(
+            capital=400000.0,
+            contracts={
+                _fs: {"underlying": _fs.replace("_FUT", ""),
+                      # lot sizes from the system registry (futures lots == option lots here)
+                      "lot_size": (OPTION_CHAIN_CONFIG[_fs.replace("_FUT", "")].lot_size
+                                   if _fs.replace("_FUT", "") in OPTION_CHAIN_CONFIG else 0)}
+                for _fs in _FUT_TOKEN_TO_SYMBOL.values()
+            },
+        )
+        print(f"[FUTURES SLEEVE] dry-run active: {sorted(_FUT_TOKEN_TO_SYMBOL.values())} "
+              f"(mirror + turn entries, paper only)")
+    except Exception as _fsl_exc:
+        print(f"[FUTURES SLEEVE] not started ({_fsl_exc})")
 # Phase-1 intelligence wiring: HTF-bias alignment in SHADOW mode — logs how the
 # execution bias aligns with the (already-computed) daily/h4/h1/m15 HTF biases to
 # logs/htf_shadow.jsonl, never affects the trade path. Disable with PAPER_HTF_SHADOW=0.
@@ -1135,6 +1224,40 @@ from platform_core.data.live.conviction_shadow import ConvictionShadow as _Convi
 from platform_core.data.live.conviction_shadow import ConvictionScorer as _ConvictionScorer
 _conviction_shadow = (
     _ConvictionShadow() if _os.environ.get("PAPER_CONV_SHADOW", "1") != "0" else None
+)
+# Phase-3 intelligence wiring (2026-07-10): the 4 options-analytics engines
+# (GEX / OI / DealerHedging / PremiumBehavior) are ALREADY computed every bar
+# inside OptionsContext but their results are discarded. SHADOW mode logs each
+# engine's summary per option-context build to logs/options_analytics_shadow.jsonl,
+# never affecting the trade path — to test whether any separates winners from
+# losers before it ever gates a trade. Disable with PAPER_OPT_ANALYTICS_SHADOW=0.
+from platform_core.data.live.options_analytics_shadow import (
+    OptionsAnalyticsShadow as _OptionsAnalyticsShadow,
+)
+_opt_analytics_shadow = (
+    _OptionsAnalyticsShadow()
+    if _os.environ.get("PAPER_OPT_ANALYTICS_SHADOW", "1") != "0" else None
+)
+# Phase-3 intelligence wiring (2026-07-10): ContinuationClassifier in SHADOW —
+# assembles the 22-field observation from 1m bar history + Dealer/OI/Premium
+# snapshots + ATM IV, runs the classifier, logs continuation_probability per bar
+# to logs/continuation_shadow.jsonl. Never affects trades. Tests whether the
+# continuation signal separates real breakouts from fakes (the momentum-vs-chop
+# question behind strike-rotation). Disable with PAPER_CONTINUATION_SHADOW=0.
+from platform_core.data.live.continuation_shadow import ContinuationShadow as _ContinuationShadow
+_continuation_shadow = (
+    _ContinuationShadow()
+    if _os.environ.get("PAPER_CONTINUATION_SHADOW", "1") != "0" else None
+)
+# Phase-3 intelligence wiring (2026-07-10): ReversalClassifier in SHADOW — the
+# near-twin of the continuation shadow (reuses shadow_feature_kit). Logs a
+# reversal_probability per bar to logs/reversal_shadow.jsonl. Never affects
+# trades. Pairs with continuation to characterise breakout follow-through vs
+# exhaustion. Disable with PAPER_REVERSAL_SHADOW=0.
+from platform_core.data.live.reversal_shadow import ReversalShadow as _ReversalShadow
+_reversal_shadow = (
+    _ReversalShadow()
+    if _os.environ.get("PAPER_REVERSAL_SHADOW", "1") != "0" else None
 )
 
 # ── Phase-2 LIVE conviction wiring (paper / real_dry_run ONLY) ────────────────
@@ -2232,6 +2355,40 @@ try:
 except Exception:
     pass
 
+# ── Structural replay-parity fix: snapshot the TRUE MCB warm-start state per session ──
+# The replay's CSV warm-start diverges from the live persisted higher-TF state (4h/1d carry
+# 60% of MCB bias weight), which inverted historical replay DIRECTION (parity 1/11 vs live).
+# Persist a dated snapshot of the exact boot bar_history so future replays can
+# SurgicalReplay.warm_start_from_state(...) and stay faithful. Fire-and-forget; never trades.
+try:
+    from pathlib import Path as _SnapPath
+    _snap_dir = _SnapPath("logs/mcb_snapshots")
+    _snap_dir.mkdir(parents=True, exist_ok=True)
+    _snap = {
+        _u: _st.bar_history
+        for _u, _st in _runtime_by_underlying.items()
+        if is_option_target_enabled(_u) and _st.bar_history
+    }
+    if _snap:
+        _snap_path = _snap_dir / f"{datetime.now(timezone.utc).date().isoformat()}.json"
+        _snap_path.write_text(json.dumps(_snap))
+        print(f"[MCB SNAPSHOT] wrote warm-start state → {_snap_path.name} "
+              + ", ".join(f"{_u}:{sum(len(_v) for _v in _h.values())}bars" for _u, _h in _snap.items()))
+except Exception as _snap_exc:
+    print(f"[MCB SNAPSHOT] skipped ({_snap_exc})")
+
+# ── Cross-asset shadow (§4.2) — logs-only, daemon thread, NEVER touches the trade path ──
+# pre_open risk-state/directional read + intraday constituent flow, all network I/O confined
+# to its own thread. Tests whether cross-asset beats the stale HTF bias for the open-drive window.
+try:
+    from platform_core.data.live.crossasset_shadow import spawn_session_logger as _spawn_xa
+    _xa_unds = [_u for _u in _runtime_by_underlying if is_option_target_enabled(_u)]
+    if _xa_unds:
+        _spawn_xa(adapter, _xa_unds)
+        print(f"[CROSSASSET SHADOW] session logger started for {_xa_unds} (logs-only)")
+except Exception as _xa_exc:
+    print(f"[CROSSASSET SHADOW] not started ({_xa_exc})")
+
 # Execution router — mode is paper by default; real_dry_run and real_armed are
 # opt-in via EXECUTION_MODE env var.  Router is always created; paper mode is a no-op.
 # Pass the Kite client so real_armed can place orders + query positions/margin.
@@ -2662,8 +2819,20 @@ def _size_live_position(
             )
             max_lots = min(max_lots, max(int(_corr_budget // (entry_premium * rec.lot_size)), 0))
 
+    # ── Per-trade hard MAX-LOSS cap (batch-4 §1a) — bound ex-ante loss, don't trust the stop.
+    # Conservative equity basis (min of current and session-opening), matching the sizer.
+    _loss_cap_bound = False
+    if _PER_TRADE_MAX_LOSS_FRAC > 0.0 and entry_premium > 0.0 and rec.lot_size > 0:
+        _loss_cap_equity = max(min(_equity, _session_opening_equity), 1.0)
+        _loss_cap_lots = _max_loss_capped_lots(
+            equity=_loss_cap_equity, entry_premium=entry_premium, lot_size=rec.lot_size,
+            max_loss_frac=_PER_TRADE_MAX_LOSS_FRAC, adverse_frac=_PER_TRADE_ADVERSE_FRAC)
+        if _loss_cap_lots is not None and _loss_cap_lots < max_lots:
+            _loss_cap_bound = True
+            max_lots = _loss_cap_lots
+
     if max_lots < 1:
-        # One lot already exceeds a hard %-rail (premium cap / correlated heat):
+        # One lot already exceeds a hard %-rail (premium cap / correlated heat / max-loss cap):
         # REJECT explicitly. Must not fall through to the sizer
         # (maximum_lot_count=0 raises, and the exception fallback below returns
         # a tradable 1-lot result — which would silently defeat the cap).
@@ -2678,9 +2847,13 @@ def _size_live_position(
             estimated_round_trip_cost=0.0,
             tradable=False,
             rejection_reason=(
-                f"PREMIUM_RAIL_CAP one lot (₹{entry_premium * rec.lot_size:,.0f}) exceeds "
-                f"the remaining %-rail budget (position cap {_MAX_POSITION_PREMIUM_FRAC:.0%}"
-                f" / correlated same-direction cap {_CORRELATED_HEAT_FRACTION:.0%})"
+                (f"PER_TRADE_MAX_LOSS_CAP one lot's worst-case loss "
+                 f"(₹{entry_premium * rec.lot_size * _PER_TRADE_ADVERSE_FRAC:,.0f}) exceeds "
+                 f"{_PER_TRADE_MAX_LOSS_FRAC:.1%} of equity")
+                if _loss_cap_bound else
+                (f"PREMIUM_RAIL_CAP one lot (₹{entry_premium * rec.lot_size:,.0f}) exceeds "
+                 f"the remaining %-rail budget (position cap {_MAX_POSITION_PREMIUM_FRAC:.0%}"
+                 f" / correlated same-direction cap {_CORRELATED_HEAT_FRACTION:.0%})")
             ),
             breakdown=PositionSizingBreakdown(
                 base_risk_budget=0.0, confidence_scale=1.0,
@@ -3313,6 +3486,22 @@ def on_ticks(raw_ticks):
 
     for raw_tick in raw_ticks:
 
+        # FUTURES ticks (07-14): feed ONLY the order-flow shadow — real volume/CVD/depth —
+        # then skip. They must never enter the bar/structure/trade path.
+        if _FUT_TOKEN_TO_SYMBOL:
+            _ft = (raw_tick.get("instrument_token") if isinstance(raw_tick, dict)
+                   else getattr(raw_tick, "instrument_token", None))
+            _fsym = _FUT_TOKEN_TO_SYMBOL.get(_ft)
+            if _fsym is not None:
+                if _orderflow_shadow is not None:
+                    _orderflow_shadow.observe(_fsym, raw_tick)
+                if _futures_sleeve is not None:
+                    _fltp = (raw_tick.get("last_price") if isinstance(raw_tick, dict)
+                             else getattr(raw_tick, "last_price", None))
+                    if _fltp:
+                        _futures_sleeve.on_tick(_fsym, float(_fltp))
+                continue
+
         tick = mapper.map_tick(raw_tick)
 
         completed_bar = (
@@ -3355,6 +3544,13 @@ def on_ticks(raw_ticks):
         # Resolve state for this bar's feed symbol (None = unknown feed)
         _current_state = _state_by_feed.get(completed_bar.symbol)
 
+        # Order-flow shadow (§4.1): flush the FUTURES accumulator for this feed's index on the
+        # spot bar close (keeps flow bars minute-aligned with the structure bars).
+        if _orderflow_shadow is not None:
+            _fut_sym = _FEED_TO_FUT_SYMBOL.get(completed_bar.symbol)
+            if _fut_sym:
+                _orderflow_shadow.on_bar_close(_fut_sym, completed_bar.start_timestamp)
+
         # Phase-1 SHADOW: log the volatility regime for this bar (no trade effect).
         if _regime_shadow is not None:
             _regime_shadow.observe(
@@ -3364,6 +3560,14 @@ def on_ticks(raw_ticks):
                 low=completed_bar.low_price,
                 close=completed_bar.close_price,
             )
+            # Stash latest regime on state for the entry-gate REGIME_DESIZE_MULT.
+            if _current_state is not None:
+                try:
+                    _current_state.last_dir_regime = _regime_shadow.last_regime.get(
+                        _current_state.option_underlying, "UNKNOWN"
+                    )
+                except Exception:
+                    pass
 
         # Phase-1 SHADOW: score the current OR break attempt for trap-ness
         # (direction inferred from the actual break — symmetric, no fixed side).
@@ -3483,20 +3687,10 @@ def on_ticks(raw_ticks):
                 valuation_timestamp=datetime.now(timezone.utc)
             )
 
-            # Phase-1 SHADOW: record HTF-bias alignment for this bar (no trade effect).
-            if _htf_shadow is not None:
-                _htf_shadow.observe(
-                    underlying=_current_state.option_underlying,
-                    timestamp=completed_bar.start_timestamp,
-                    exec_bias=str(getattr(market_ctx, "bias", "")),
-                    exec_conf=getattr(market_ctx, "confidence", None),
-                    daily_bias=getattr(market_ctx, "daily_bias", None),
-                    h4_bias=getattr(market_ctx, "h4_bias", None),
-                    h1_bias=getattr(market_ctx, "h1_bias", None),
-                    m15_bias=getattr(market_ctx, "m15_bias", None),
-                    is_aligned=getattr(market_ctx, "is_aligned", None),
-                    htf_confidence=getattr(market_ctx, "confidence_score", None),
-                )
+            # Phase-1 SHADOW note: HTF-bias alignment is recorded AFTER the full HTF
+            # market_context is built below. This MCB `market_ctx` lacks per-timeframe
+            # biases (daily/h4/h1/m15/is_aligned), so reading it here logged nulls.
+            # See the _htf_shadow.observe() call just after the [DIAG HTF] block.
 
             # ── Chain fetch + strike selection — enabled targets (full execution) ──
             if is_option_target_enabled(_current_state.option_underlying):
@@ -3553,6 +3747,61 @@ def on_ticks(raw_ticks):
                         _robust_iv = _robust_atm_iv(options_ctx)
                         if options_ctx.atm_iv:
                             _current_state.last_atm_iv = _robust_iv
+
+                        # Phase-3 SHADOW: log the 4 options-analytics engine
+                        # summaries (GEX/OI/Dealer/Premium) already computed inside
+                        # options_ctx. Logs-only, wrapped — never disturbs trades.
+                        if _opt_analytics_shadow is not None:
+                            try:
+                                _opt_analytics_shadow.observe(
+                                    underlying=_current_state.option_underlying,
+                                    timestamp=completed_bar.start_timestamp,
+                                    spot=spot,
+                                    exec_bias=getattr(market_ctx, "bias", None),
+                                    options_ctx=options_ctx,
+                                )
+                            except Exception:
+                                pass
+
+                        # Phase-3 SHADOW: ContinuationClassifier (logs-only).
+                        if _continuation_shadow is not None:
+                            try:
+                                _or_rng = (_current_state.or_engine.current_range
+                                           if _current_state.or_engine.ready else None)
+                                _continuation_shadow.observe(
+                                    underlying=_current_state.option_underlying,
+                                    timestamp=completed_bar.start_timestamp,
+                                    exec_bias=getattr(market_ctx, "bias", None),
+                                    bars=_current_state.bar_history.get("1m"),
+                                    or_high=(_or_rng.or_high if _or_rng else None),
+                                    or_low=(_or_rng.or_low if _or_rng else None),
+                                    dealer=getattr(options_ctx, "dealer_hedging_snapshot", None),
+                                    premium=getattr(options_ctx, "premium_behavior_snapshot", None),
+                                    oi=getattr(options_ctx, "oi_snapshot", None),
+                                    atm_iv=_robust_iv,
+                                )
+                            except Exception:
+                                pass
+
+                        # Phase-3 SHADOW: ReversalClassifier (logs-only).
+                        if _reversal_shadow is not None:
+                            try:
+                                _or_rng2 = (_current_state.or_engine.current_range
+                                            if _current_state.or_engine.ready else None)
+                                _reversal_shadow.observe(
+                                    underlying=_current_state.option_underlying,
+                                    timestamp=completed_bar.start_timestamp,
+                                    exec_bias=getattr(market_ctx, "bias", None),
+                                    bars=_current_state.bar_history.get("1m"),
+                                    or_high=(_or_rng2.or_high if _or_rng2 else None),
+                                    or_low=(_or_rng2.or_low if _or_rng2 else None),
+                                    dealer=getattr(options_ctx, "dealer_hedging_snapshot", None),
+                                    premium=getattr(options_ctx, "premium_behavior_snapshot", None),
+                                    oi=getattr(options_ctx, "oi_snapshot", None),
+                                    atm_iv=_robust_iv,
+                                )
+                            except Exception:
+                                pass
 
                         if options_ctx.strike_candidates:
                             _candidates_list = list(options_ctx.strike_candidates)
@@ -3688,6 +3937,42 @@ def on_ticks(raw_ticks):
             )
 
             print(market_context)
+
+        # Stash HTF alignment + OPPOSITION on state for the entry gates
+        # (independent of whether the shadow logger is enabled).
+        if _current_state is not None:
+            try:
+                _current_state.last_is_aligned = bool(getattr(market_context, "is_aligned", True))
+                # Opposition (07-14 redesign): count only ACTIVE disagreement across the
+                # real intraday TFs (daily is hardcoded NEUTRAL upstream, so exclude it).
+                _tf_b = [str(getattr(market_context, k, "NEUTRAL"))
+                         for k in ("h4_bias", "h1_bias", "m15_bias")]
+                _current_state.last_htf_opposed_long  = sum(b == "BEARISH" for b in _tf_b) >= 2
+                _current_state.last_htf_opposed_short = sum(b == "BULLISH" for b in _tf_b) >= 2
+            except Exception:
+                pass
+
+        # Phase-1 SHADOW: record HTF-bias alignment now that the FULL HTF context
+        # (daily/h4/h1/m15/is_aligned/confidence_score) exists. exec_bias/exec_conf
+        # come from the MCB execution context; the per-timeframe biases from
+        # market_context. Guarded on _current_state so market_ctx is always defined.
+        if _htf_shadow is not None and _current_state is not None:
+            try:
+                _htf_shadow.observe(
+                    underlying=_current_state.option_underlying,
+                    timestamp=completed_bar.start_timestamp,
+                    exec_bias=str(getattr(market_ctx, "bias", "")),
+                    exec_conf=getattr(market_ctx, "confidence", None),
+                    daily_bias=getattr(market_context, "daily_bias", None),
+                    h4_bias=getattr(market_context, "h4_bias", None),
+                    h1_bias=getattr(market_context, "h1_bias", None),
+                    m15_bias=getattr(market_context, "m15_bias", None),
+                    is_aligned=getattr(market_context, "is_aligned", None),
+                    htf_confidence=getattr(market_context, "confidence_score", None),
+                )
+            except Exception:
+                # SHADOW path must NEVER disturb the live trade handler.
+                pass
 
         
 
@@ -4104,10 +4389,74 @@ def on_ticks(raw_ticks):
                     _fvg_quality_reason = f"stored low FVG quality={_current_state.fvg_quality:.2f}"
             _effective_conf *= _fvg_quality_for_entry
 
+            # HTF OPPOSITION gate (2026-07-14 redesign — replaces the misalignment block).
+            # OLD: block LONG when is_aligned=False. With daily hardcoded NEUTRAL, alignment
+            # needed h4+h1+m15 ALL agreeing → a de-facto blanket long ban (blocked the entire
+            # +0.8% 07-13 recovery the MCB had RIGHT). NEW: evaluate, don't ban —
+            #   block only when the HTF ACTIVELY OPPOSES the direction (≥2 of h4/h1/m15
+            #   against). NEUTRAL never blocks. SYMMETRIC (shorts evaluated the same way).
+            # ADAPTIVE OVERRIDE: live constituent flow (crossasset LAST_FLOW, <5 min fresh)
+            # agreeing with the trade direction overrides an opposed HTF — flow flipped LONG
+            # at the 07-13 low while structure lagged; the market's own turn outranks a
+            # stale structure read. Lock-free dict read; any failure = no override.
+            _align_reason = ""
+            _dir = str(_mctx.bias)
+            _opposed = (getattr(_current_state, "last_htf_opposed_long", False) if _dir == "LONG"
+                        else getattr(_current_state, "last_htf_opposed_short", False) if _dir == "SHORT"
+                        else False)
+            if _LONG_ALIGNMENT_GATE and _opposed:
+                _flow = None
+                try:
+                    from platform_core.data.live.crossasset_shadow import get_fresh_flow as _gff
+                    _flow = _gff(_current_state.option_underlying)
+                except Exception:
+                    _flow = None
+                # agree = level agrees AND a FRESH push (momentum) in the trade direction —
+                # the from-open level alone is sticky and made the override quasi-permanent
+                # (323 fires on 07-14). Early session (mom None) falls back to level-only.
+                _mom = (_flow or {}).get("mom")
+                _mom_ok = (_mom is None or (_mom >= 0.02 if _dir == "LONG" else _mom <= -0.02))
+                _flow_agrees = (_flow is not None and _flow.get("flow_bias") == _dir
+                                and abs(_flow.get("avg_flow_pct") or 0.0) >= 0.10 and _mom_ok)
+                if _flow_agrees:
+                    if not _override_printed.get((_current_state.option_underlying, _dir)):
+                        _override_printed[(_current_state.option_underlying, _dir)] = True
+                        print(f"[ADAPTIVE OVERRIDE] {_current_state.option_underlying} {_dir}: "
+                              f"HTF opposed but constituent flow {_dir} "
+                              f"({_flow['avg_flow_pct']:+.2f}%, mom={_mom}) — fresh turn outranks stale structure")
+                else:
+                    _override_printed[(_current_state.option_underlying, _dir)] = False
+                    _effective_conf *= 0.0
+                    _align_reason = (f"HTF_OPPOSED — ≥2 of h4/h1/m15 actively against {_dir}"
+                                     f" (flow={'none' if _flow is None else _flow.get('flow_bias')})")
+
+            # NIFTY-long gate (2026-07-14 redesign): the blanket ban (proven −₹21.8k bleed
+            # bucket) becomes an EVIDENCE requirement — a NIFTY long now needs live
+            # constituent-flow support; with fresh agreeing flow it trades, without it stays
+            # blocked (conservative default preserves the measured protection).
+            _nifty_reason = ""
+            if (_NIFTY_LONG_GATE and _dir == "LONG"
+                    and _current_state.option_underlying in ("NIFTY", "NIFTY50")):
+                _nflow = None
+                try:
+                    from platform_core.data.live.crossasset_shadow import get_fresh_flow as _gff2
+                    _nflow = _gff2("NIFTY")
+                except Exception:
+                    _nflow = None
+                if (_nflow is not None and _nflow.get("flow_bias") == "LONG"
+                        and (_nflow.get("avg_flow_pct") or 0.0) >= 0.10):
+                    print(f"[ADAPTIVE OVERRIDE] NIFTY LONG: flow support "
+                          f"{_nflow['avg_flow_pct']:+.2f}% — evidence requirement met")
+                else:
+                    _effective_conf *= 0.0
+                    _nifty_reason = ("NIFTY_LONG_GATE — needs live flow support "
+                                     f"(flow={'none' if _nflow is None else _nflow.get('flow_bias')})")
+
             # Open-drive window: session-phase (and warm-up) blocks are lifted
             # during the seeded 09:15–09:35 IST window — see _open_drive_pass_now.
             _session_entry_ok = _session_ctx.allow_entry or _open_drive_pass_now()
-            if _pdl_reason or _or_reason or _fvg_quality_reason or not _session_entry_ok:
+            if (_pdl_reason or _or_reason or _fvg_quality_reason or _align_reason
+                    or _nifty_reason or not _session_entry_ok):
                 _filter_parts = []
                 if not _session_entry_ok:
                     _filter_parts.append(f"session={_session_ctx.phase}")
@@ -4117,12 +4466,30 @@ def on_ticks(raw_ticks):
                     _filter_parts.append(_or_reason)
                 if _fvg_quality_reason:
                     _filter_parts.append(_fvg_quality_reason)
+                if _align_reason:
+                    _filter_parts.append(_align_reason)
+                if _nifty_reason:
+                    _filter_parts.append(_nifty_reason)
                 print_warning_block(
                     "ENTRY FILTER",
                     bar_index=_bar_count,
                     conf=f"{_mctx.confidence:.2f}→{_effective_conf:.2f}",
                     reason="  |  ".join(_filter_parts),
                 )
+
+            # FUTURES SLEEVE direction signal (07-14 fix): futures need DIRECTION, not a
+            # strike. Hooked UPSTREAM of strike selection so options-only gates
+            # (SCORE_MARGIN_LOW / premium rails) cannot veto a futures trade — that veto
+            # left the sleeve starved on 07-14 while every directional gate was green.
+            # All DIRECTIONAL gates still bind (OR/session/opposition/flow/halts/conf).
+            if (_futures_sleeve is not None
+                    and str(_mctx.bias) in ("LONG", "SHORT")
+                    and not (_pdl_reason or _or_reason or _fvg_quality_reason
+                             or _align_reason or _nifty_reason)
+                    and _session_entry_ok and not _trading_halted and not _soft_halted
+                    and _effective_conf >= 0.55):
+                _futures_sleeve.on_direction_signal(
+                    _current_state.option_underlying, str(_mctx.bias))
 
             # ── Entry gate: fresh strike, no open position for THIS underlying, not hard-halted ─
             _srec = _current_state.captured_strike_rec
@@ -4514,6 +4881,13 @@ def on_ticks(raw_ticks):
                                     and _current_state.direction_entry_counter.entries(
                                         direction=str(_mctx.bias)) >= 1):
                                 _lots = max(int(_lots * _REENTRY_RISK_HAIRCUT), 1)
+                            # Regime de-size (2026-07-10, env REGIME_DESIZE_MULT,
+                            # dry-run test): the BALANCED directional regime lost
+                            # 5 of 7 days this week — shrink size there. Real lot
+                            # reduction (not a conf haircut). =1.0 disables.
+                            if (_REGIME_DESIZE_MULT < 1.0
+                                    and getattr(_current_state, "last_dir_regime", "UNKNOWN") == "BALANCED"):
+                                _lots = max(int(_lots * _REGIME_DESIZE_MULT), 1)
                             _cost = (
                                 _srec.last_traded_price
                                 * _srec.lot_size
@@ -4856,6 +5230,11 @@ def on_ticks(raw_ticks):
                                                 _current_state.direction_entry_counter.record_entry(
                                                     direction=str(_mctx.bias),
                                                 )
+                                                # FUTURES SLEEVE mirror (paper): same signal,
+                                                # linear expression — never affects this path.
+                                                if _futures_sleeve is not None:
+                                                    _futures_sleeve.on_option_entry(
+                                                        _srec.underlying_symbol, str(_mctx.bias))
                                                 if _EXECUTION_MODE == "real_armed":
                                                     print(
                                                         f"[REAL FILL] ENTRY {_srec.option_symbol} "
@@ -5091,8 +5470,11 @@ def _on_ticks_guarded(raw_ticks):
 adapter.add_tick_callback(_on_ticks_guarded)
 
 adapter.connect(
-    instrument_tokens=list(
-        INSTRUMENTS.values()
+    instrument_tokens=(
+        list(INSTRUMENTS.values())
+        # index FUTURES for order flow (07-14): real volume/depth; ticks are intercepted
+        # in on_ticks and never reach the bar/structure path.
+        + list(_FUT_TOKEN_TO_SYMBOL.keys())
     )
 )
 

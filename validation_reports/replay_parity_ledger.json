@@ -1,0 +1,200 @@
+{
+  "parity_score": "1/11",
+  "live_total": 13294.200722372128,
+  "replay_total": 14401.9638560175,
+  "days": [
+    {
+      "underlying": "SENSEX",
+      "day": "2026-06-29",
+      "verdict": "SIGN FLIP",
+      "live_n": 3,
+      "replay_n": 1,
+      "live_pnl": 44102.39092351714,
+      "replay_pnl": -2347.5516000000016,
+      "live_dirs": [
+        "SHORT",
+        "SHORT",
+        "SHORT"
+      ],
+      "replay_dirs": [
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-06-30",
+      "verdict": "MISMATCH",
+      "live_n": 1,
+      "replay_n": 0,
+      "live_pnl": -7389.999999999998,
+      "replay_pnl": 0,
+      "live_dirs": [
+        "SHORT"
+      ],
+      "replay_dirs": [],
+      "faithful": false
+    },
+    {
+      "underlying": "NIFTY",
+      "day": "2026-07-01",
+      "verdict": "SIGN FLIP",
+      "live_n": 2,
+      "replay_n": 3,
+      "live_pnl": -1787.5000000000018,
+      "replay_pnl": 13079.743595587495,
+      "live_dirs": [
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-07-01",
+      "verdict": "SIGN FLIP",
+      "live_n": 3,
+      "replay_n": 3,
+      "live_pnl": -325.99999999999454,
+      "replay_pnl": 12683.314818920004,
+      "live_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-07-02",
+      "verdict": "SIGN FLIP",
+      "live_n": 3,
+      "replay_n": 2,
+      "live_pnl": -9754.000000000011,
+      "replay_pnl": 6202.724988000002,
+      "live_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG",
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "NIFTY",
+      "day": "2026-07-06",
+      "verdict": "MISMATCH",
+      "live_n": 2,
+      "replay_n": 3,
+      "live_pnl": -2880.6281587400063,
+      "replay_pnl": -1031.036522549999,
+      "live_dirs": [
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-07-06",
+      "verdict": "SIGN FLIP",
+      "live_n": 3,
+      "replay_n": 3,
+      "live_pnl": 2810.4893058400057,
+      "replay_pnl": -337.2767656800019,
+      "live_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "NIFTY",
+      "day": "2026-07-08",
+      "verdict": "MATCH",
+      "live_n": 1,
+      "replay_n": 1,
+      "live_pnl": -1846.701427685001,
+      "replay_pnl": -7519.899695859998,
+      "live_dirs": [
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG"
+      ],
+      "faithful": true
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-07-08",
+      "verdict": "MISMATCH",
+      "live_n": 3,
+      "replay_n": 1,
+      "live_pnl": -1046.7005783600036,
+      "replay_pnl": -6328.054962399998,
+      "live_dirs": [
+        "LONG",
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [
+        "LONG"
+      ],
+      "faithful": false
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-07-09",
+      "verdict": "MISMATCH",
+      "live_n": 2,
+      "replay_n": 0,
+      "live_pnl": -3419.5341915200042,
+      "replay_pnl": 0,
+      "live_dirs": [
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [],
+      "faithful": false
+    },
+    {
+      "underlying": "SENSEX",
+      "day": "2026-07-10",
+      "verdict": "MISMATCH",
+      "live_n": 2,
+      "replay_n": 0,
+      "live_pnl": -5167.615150679996,
+      "replay_pnl": 0,
+      "live_dirs": [
+        "LONG",
+        "LONG"
+      ],
+      "replay_dirs": [],
+      "faithful": false
+    }
+  ]
+}
