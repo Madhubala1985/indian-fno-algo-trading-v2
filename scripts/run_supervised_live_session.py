@@ -552,7 +552,23 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
         # (Applies to real_armed too — parity.)
         env.setdefault("PAPER_HARD_HALT_CONSEC_LOSSES", "0")
         env.setdefault("PAPER_SOFT_HALT_DAILY_LOSS", "0.14")
-        env.setdefault("PAPER_HARD_HALT_DAILY_LOSS", "0.06")
+        # Rail-widening experiment (user directive 2026-07-15, paper book —
+        # observe the win-rate/P&L effect, then keep or revert). Pre-07-15
+        # values in comments; each knob reverts independently.
+        #   - hard daily floor 6% → 10% (auto-resumes next session)
+        #   - option stop 30% → 45% loss-from-entry: the direct A/B on the
+        #     HARVESTED-EXIT finding (55% of losing exits recovered above our
+        #     entry ≤60 min — exits sat where liquidity gets taken)
+        #   - per-trade max-loss cap 1.5% → 3% of equity; adverse frac 0.40 →
+        #     0.55 so the cap's worst-case math stays honest ABOVE the wider
+        #     45% stop (stop + gap allowance). Net outlay cap ≈ 5.5% of equity.
+        #   - futures sleeve (env read in futures_sleeve.py): stop 0.30% →
+        #     0.50%, margin util 90% → 100%, daily halt 2% → 4%, 45-min
+        #     post-exit re-entry cooldown REMOVED (code defaults, no env needed)
+        env.setdefault("PAPER_HARD_HALT_DAILY_LOSS", "0.10")
+        env.setdefault("PAPER_OPTION_STOP_LOSS_FRAC", "0.45")
+        env.setdefault("PER_TRADE_MAX_LOSS_FRAC", "0.03")
+        env.setdefault("PER_TRADE_ADVERSE_FRAC", "0.55")
         env.setdefault("PAPER_MAX_ACCOUNT_DD", "0.21")
 
     return env

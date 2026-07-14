@@ -723,9 +723,17 @@ _MIN_CONF_SCALE: float = float(os.environ.get("PAPER_MIN_CONF_SCALE", "0.25") or
 _PER_SYMBOL_MAX_LOTS: dict[str, int] = {
     "NIFTY": int(os.environ.get("PAPER_NIFTY_MAX_LOTS", "5") or 5),
 }
-# Stop-loss: max 30% loss from entry premium (premium must remain >= 70% of entry).
-# Tighter than the previous 50%-remaining threshold; still subject to bar-close gap risk.
-_MAX_OPTION_PREMIUM_LOSS_FRACTION: float = 0.30   # stop at 30% loss from entry
+# Stop-loss: max loss from entry premium before a forced exit (premium must remain
+# >= (1 - frac) of entry). History: 50% → 30% (tightened), env-tunable 2026-07-15
+# (user directive — the supervisor live profile widens it to 0.45 to test the
+# HARVESTED-EXIT finding: 55% of losing exits saw premium recover above entry
+# within 60 min, i.e. our exits sit where liquidity gets taken; a wider stop is
+# the direct A/B on that shakeout mechanism). Still subject to bar-close gap risk;
+# the per-trade max-loss cap sizes lots off PER_TRADE_ADVERSE_FRAC, which must be
+# kept >= this stop so the ex-ante loss bound stays honest.
+_MAX_OPTION_PREMIUM_LOSS_FRACTION: float = float(
+    os.environ.get("PAPER_OPTION_STOP_LOSS_FRAC", "0.30") or 0.30
+)
 _STOP_LOSS_PCT:     float = 1.0 - _MAX_OPTION_PREMIUM_LOSS_FRACTION   # 0.70 remaining
 _TAKE_PROFIT_PCT:   float = 2.00
 _MIN_DTE_TO_HOLD:   int   = 2

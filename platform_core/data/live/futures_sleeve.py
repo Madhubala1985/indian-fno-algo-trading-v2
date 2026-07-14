@@ -27,18 +27,35 @@ every event appends to logs/futures_sleeve.jsonl.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 _IST = timezone(timedelta(hours=5, minutes=30))
 
-STOP_PCT = 0.0030          # 0.30% adverse → exit
-RATCHET_ARM_PCT = 0.0030   # +0.30% favorable → breakeven floor armed
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# Rails loosened 2026-07-15 (user directive: widen and observe the win rate —
+# paper book, that's what it's for). Each is env-tunable; the pre-07-15 values
+# are noted so any knob reverts independently.
+STOP_PCT = _envf("FUT_SLEEVE_STOP_PCT", 0.0050)              # was 0.0030
+RATCHET_ARM_PCT = _envf("FUT_SLEEVE_RATCHET_PCT", 0.0030)
 SLIPPAGE_PTS = 0.10        # per side, embedded in fill price
-MARGIN_FRAC = 0.115        # ≈ SPAN+exposure for index futures
-MAX_MARGIN_UTIL = 0.90     # total margin ≤ 90% of capital
-DAILY_LOSS_HALT_FRAC = 0.02
+MARGIN_FRAC = 0.115        # ≈ SPAN+exposure for index futures — REAL exchange
+                           # margin, not a tunable rail; do not loosen.
+MAX_MARGIN_UTIL = _envf("FUT_SLEEVE_MAX_MARGIN_UTIL", 1.00)  # was 0.90; 1.0 =
+                           # full capital as margin. >1.0 would be unfundable
+                           # at the broker — the cap models a real account.
+DAILY_LOSS_HALT_FRAC = _envf("FUT_SLEEVE_DAILY_HALT", 0.04)  # was 0.02
+# Post-exit re-entry cooldown per index (was hardcoded 2700s = 45 min).
+# 0 disables (2026-07-15 user directive: removed).
+REENTRY_COOLDOWN_SEC = _envf("FUT_SLEEVE_REENTRY_COOLDOWN_SEC", 0.0)
 TURN_COOLDOWN_SEC = 1800   # ≥30 min between TURN entries per index
 MAX_TURN_ENTRIES_PER_DAY = 3
 EOD_FLAT_IST = (15, 20)
@@ -103,8 +120,8 @@ class FuturesSleeve:
     def on_direction_signal(self, underlying: str, direction: str, *, now=None) -> None:
         """DIRECTION signal from the live pipeline (all directional gates green) — the futures
         entry path that does NOT depend on option strike selection (07-14 fix). Per-bar caller,
-        so rails here: one position per index (in _enter), ≤2 signal entries/index/day, and a
-        45-min cooldown after ANY exit on that index (no immediate re-entry churn)."""
+        so rails here: one position per index (in _enter), ≤2 signal entries/index/day, and an
+        optional post-exit re-entry cooldown (REENTRY_COOLDOWN_SEC; 0 = off since 2026-07-15)."""
         try:
             self._roll_day()
             fut_sym = self._fut_for(underlying)
@@ -112,7 +129,8 @@ class FuturesSleeve:
                 return
             if self._sig_count.get(fut_sym, 0) >= 2:
                 return
-            if time.time() - self._last_exit_epoch.get(fut_sym, 0.0) < 2700:
+            if (REENTRY_COOLDOWN_SEC > 0
+                    and time.time() - self._last_exit_epoch.get(fut_sym, 0.0) < REENTRY_COOLDOWN_SEC):
                 return
             if self._enter(fut_sym, direction, tag="signal", now=now):
                 self._sig_count[fut_sym] = self._sig_count.get(fut_sym, 0) + 1
