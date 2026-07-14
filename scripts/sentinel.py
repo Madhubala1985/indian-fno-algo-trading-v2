@@ -106,6 +106,9 @@ def invoke_agent(ctx: str):
     prompt = MANDATE.format(ctx_path=ctx_path)
     out = sh(f"cd {ROOT} && [ -f $HOME/.claude_token ] && export CLAUDE_CODE_OAUTH_TOKEN=$(cat $HOME/.claude_token); "
              f"PATH=$HOME/.local/bin:$PATH claude -p {json.dumps(prompt)} "
+             # Fable 5 pinned (operator directive 2026-07-15): live-fault
+             # diagnosis/fixes are exactly the work that warrants the top model.
+             f"--model claude-fable-5 "
              f"--dangerously-skip-permissions --max-turns 50 2>&1 | tail -30", timeout=1200)
     with REPORT.open("a") as fh:
         fh.write(f"\n## sentinel run {ts}\n```\n{out[-3000:]}\n```\n"
