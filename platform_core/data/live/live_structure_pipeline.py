@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from platform_core.intelligence.market_context_builder import (
+    MarketBias,
     MarketContextBuilder,
 )
 from platform_core.options.options_context import (
@@ -1169,6 +1170,36 @@ from platform_core.data.live.regime_shadow import RegimeShadow as _RegimeShadow
 _regime_shadow = (
     _RegimeShadow() if _os.environ.get("PAPER_REGIME_SHADOW", "1") != "0" else None
 )
+# ── BIAS INVALIDATION ENGINE (2026-07-15) — the Fable adaptivity model ────────
+# Evidence-weighted intraday override of the MCB execution bias. The MCB's
+# 4h/1d weights (~60%) mean a start-of-day bias can NEVER flip intraday —
+# 2026-07-13 shorted the low of a +0.8% trend day and then logged 231
+# consecutive OR-contradiction blocks, frozen SHORT all day. This engine
+# treats the prior as a hypothesis: sustained contradiction (price beyond the
+# opposite OR extreme, opposite BOS/CHOCH, opposing constituent flow) first
+# NEUTRALIZES the bias (stand aside), then FLIPS it at humble confidence.
+# Validated on real recorded days (scripts/validate_bias_invalidation_days.py,
+# 15/15: flips 07-13 LONG@10:00 +87pts-to-close, flips 07-08 SHORT@12:42
+# pre-waterfall +294pts, ZERO false flips on the 07-14 chop day).
+# Applied UPSTREAM of strike selection so CE/PE side, gates, sizing and the
+# futures sleeve all see ONE consistent effective bias. BIAS_INVALIDATION=0
+# kills it dead. Transitions print loudly + log to bias_invalidation.jsonl.
+from platform_core.data.live.bias_invalidation import (
+    BiasInvalidationEngine as _BiasInvalidationEngine,
+)
+_bias_inval = _BiasInvalidationEngine()
+_BIAS_INVAL_LOG_PATH = Path("logs/bias_invalidation.jsonl")
+
+
+def _bias_inval_log(rec: dict) -> None:
+    """Append one JSONL record; never raises into the tick path."""
+    try:
+        with _BIAS_INVAL_LOG_PATH.open("a") as _f:
+            _f.write(json.dumps(rec, default=str) + "\n")
+    except Exception:
+        pass
+
+
 # Order-flow shadow (batch-4 §4.1) — DEFAULT ON. 2026-07-14 FIX: order flow comes from INDEX
 # FUTURES, not spot — a spot index is a computed number with no traded volume and no book
 # (07-13 collected all-zero CVD/null depth from spot; a wasted day of data). Front-month
@@ -3721,6 +3752,72 @@ def on_ticks(raw_ticks):
 
             # ── Chain fetch + strike selection — enabled targets (full execution) ──
             if is_option_target_enabled(_current_state.option_underlying):
+                # ── BIAS INVALIDATION (2026-07-15): evidence-weighted override,
+                # UPSTREAM of the print/capture/strike-selection so every
+                # downstream consumer sees the effective bias. Fail-open.
+                if _bias_inval.enabled:
+                    try:
+                        _bi_raw = str(market_ctx.bias)
+                        _bi_opp_side = "bearish" if _bi_raw == "LONG" else "bullish"
+                        _bi_opp = _bi_same = 0
+                        for _bev in (result.emitted_events or []):
+                            _bet = (_bev.event_type.value
+                                    if hasattr(_bev.event_type, "value")
+                                    else str(_bev.event_type))
+                            if _bet not in ("BOS", "CHOCH"):
+                                continue
+                            _bes = (_bev.side.value
+                                    if hasattr(_bev.side, "value")
+                                    else str(_bev.side)).lower()
+                            if _bes == _bi_opp_side:
+                                _bi_opp += 1
+                            elif _bes in ("bullish", "bearish"):
+                                _bi_same += 1
+                        try:
+                            from platform_core.data.live.crossasset_shadow import (
+                                get_fresh_flow as _bi_gff,
+                            )
+                            _bi_flow = _bi_gff(_current_state.option_underlying)
+                        except Exception:
+                            _bi_flow = None
+                        _bi_range = _current_state.or_engine.current_range
+                        _bi_eff, _bi_cap, _bi_info = _bias_inval.evaluate(
+                            underlying=_current_state.option_underlying,
+                            day=datetime.now(_IST).date().isoformat(),
+                            bar_index=_bar_count,
+                            raw_bias=_bi_raw,
+                            close=completed_bar.close_price,
+                            bar_open=completed_bar.open_price,
+                            or_high=(_bi_range.or_high if _bi_range else None),
+                            or_low=(_bi_range.or_low if _bi_range else None),
+                            or_ready=bool(_current_state.or_engine.ready),
+                            opposite_breaks=_bi_opp,
+                            same_breaks=_bi_same,
+                            flow=_bi_flow,
+                        )
+                        if "transition" in _bi_info:
+                            _bi_tr = _bi_info["transition"]
+                            print(f"[BIAS INVALIDATION] "
+                                  f"{_current_state.option_underlying}: "
+                                  f"→ {_bi_tr['to']}  ({_bi_tr['reason']})")
+                        if _bi_info.get("stage") != "CONFIRM" or "transition" in _bi_info:
+                            _bias_inval_log({
+                                "ts": datetime.now(timezone.utc).isoformat(),
+                                "underlying": _current_state.option_underlying,
+                                "bar": _bar_count, **_bi_info,
+                            })
+                        if _bi_eff != _bi_raw:
+                            from dataclasses import replace as _dc_replace
+                            _bi_conf = (market_ctx.confidence if _bi_cap is None
+                                        else min(market_ctx.confidence, _bi_cap))
+                            market_ctx = _dc_replace(
+                                market_ctx,
+                                bias=MarketBias(_bi_eff),
+                                confidence=_bi_conf,
+                            )
+                    except Exception as _bi_exc:
+                        print(f"[BIAS INVALIDATION] error (fail-open): {_bi_exc}")
+
                 print(
                     f"\n[OPTIONS] bias={market_ctx.bias}  "
                     f"conf={market_ctx.confidence:.2f}"
@@ -4084,6 +4181,25 @@ def on_ticks(raw_ticks):
             # Exit evaluation runs on every bar while a position is open
             if _current_state.option_trader.has_open_position():
                 _exit_sig = _option_exit_signal(result.emitted_events, _current_state.option_trader)
+                # THESIS_INVALIDATED (2026-07-15, roadmap #4): exit on thesis
+                # death, not only on structure/%-levels. When the invalidation
+                # engine stands NEUTRALIZED or FLIPPED against this position's
+                # direction, its reason to exist is gone — the mining data says
+                # our visible %-exits sit where liquidity gets taken; this one
+                # is invisible (evidence-level). Fail-open: any error → no
+                # forced exit, the normal paths still run.
+                if _exit_sig is None and _bias_inval.enabled:
+                    try:
+                        _ti_pos = getattr(_current_state.option_trader, "_position", None)
+                        _ti_dir = str(getattr(_ti_pos, "direction", "") or "").upper()
+                        if _ti_dir and _bias_inval.position_direction_invalidated(
+                                _current_state.option_underlying, _ti_dir):
+                            _exit_sig = "THESIS_INVALIDATED"
+                            print(f"[BIAS INVALIDATION] "
+                                  f"{_current_state.option_underlying}: forcing exit "
+                                  f"— thesis behind {_ti_dir} position is dead")
+                    except Exception:
+                        pass
                 # Mark to the REAL option LTP (live paper/dry-run); BSM only if the
                 # quote is unavailable. Fixes fictional model-priced exits.
                 _live_ltp = _held_option_ltp(_current_state)
@@ -4431,7 +4547,16 @@ def on_ticks(raw_ticks):
             _opposed = (getattr(_current_state, "last_htf_opposed_long", False) if _dir == "LONG"
                         else getattr(_current_state, "last_htf_opposed_short", False) if _dir == "SHORT"
                         else False)
-            if _LONG_ALIGNMENT_GATE and _opposed:
+            # Invalidation-flip exemption (2026-07-15): a FLIPPED effective bias
+            # already carried sustained contradiction + a structural/flow
+            # confirmer against the stale HTF view — the opposition gate and the
+            # NIFTY flow-evidence gate encode exactly that stale view, so they
+            # must not re-block the flip (they'd neuter it every time).
+            _bi_flip = _bias_inval.flip_active(_current_state.option_underlying, _dir)
+            if _bi_flip and _opposed:
+                print(f"[BIAS INVALIDATION] {_current_state.option_underlying} {_dir}: "
+                      f"HTF-opposition gate waived — flip outranks the stale prior")
+            if _LONG_ALIGNMENT_GATE and _opposed and not _bi_flip:
                 _flow = None
                 try:
                     from platform_core.data.live.crossasset_shadow import get_fresh_flow as _gff
@@ -4462,7 +4587,7 @@ def on_ticks(raw_ticks):
             # constituent-flow support; with fresh agreeing flow it trades, without it stays
             # blocked (conservative default preserves the measured protection).
             _nifty_reason = ""
-            if (_NIFTY_LONG_GATE and _dir == "LONG"
+            if (_NIFTY_LONG_GATE and _dir == "LONG" and not _bi_flip
                     and _current_state.option_underlying in ("NIFTY", "NIFTY50")):
                 _nflow = None
                 try:

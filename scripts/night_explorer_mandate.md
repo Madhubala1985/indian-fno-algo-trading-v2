@@ -10,7 +10,14 @@ TONIGHT'S LOOP (repeat until you run out of turns — prioritize by expected val
    (real futures CVD), logs/crossasset_shadow.jsonl (flow + turns + fii_stance),
    logs/htf_shadow.jsonl, data/source/ (45d futures 1m, participant OI, VIX).
 2. GRADE every live mechanism against what the market actually did: the opposition gate's blocks,
-   adaptive overrides, futures sleeve entries/exits, turn signals. Was each decision right?
+   adaptive overrides, futures sleeve entries/exits, turn signals, and the BIAS-INVALIDATION
+   engine (logs/bias_invalidation.jsonl — every NEUTRALIZE/FLIP transition: was it right, was it
+   timely, did a flip get whipsawed?). Was each decision right?
+   FACTUAL QA (mandatory): when you state a day's move, derive it CHRONOLOGICALLY — open→close
+   with the TIMES of the high and low. A low→high range quoted as a rally when the high printed
+   FIRST is a direction error (this exact mistake shipped in the 2026-07-14 report: BANKNIFTY
+   "+0.93%" was actually a decline from an 09:26 high). Verify direction from the bar sequence
+   before writing any directional claim.
 3. TEST at least two NEW hypotheses on the data (examples, don't limit yourself: CVD-turn signals
    across the 45-day futures backfill; strike-level writer-OI walls; re-entry-after-shakeout on
    today's exits; FII-regime tilt scoring; time-of-day/expiry microstructure). Pre-register the

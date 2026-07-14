@@ -41,6 +41,10 @@ _INSTRUMENTS: dict[str, int] = {
     "BANKNIFTY": 260105,
     "NIFTY":     256265,
     "SENSEX":    265,
+    # Breadth-expansion candidates (2026-07-15): fetchable for research /
+    # warm-start prep, NOT in the default --symbols (cron behavior unchanged).
+    "FINNIFTY":   257801,   # NSE:NIFTY FIN SERVICE
+    "MIDCPNIFTY": 288009,   # NSE:NIFTY MID SELECT
 }
 
 _IST = timezone(timedelta(hours=5, minutes=30))
