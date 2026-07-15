@@ -34,3 +34,25 @@ Numbers only from real data — if a study needs data that doesn't exist, say so
 OUTPUT: write logs/night_explorer_<YYYY-MM-DD>.md — findings as MECHANISMS with sample sizes
 (never identity narratives), graded decisions, hypothesis results, proposals for the human, and
 what tomorrow's session should watch. End with a one-paragraph executive summary.
+
+TONIGHT 2026-07-15 (operator addendum — supersedes conflicting older lines):
+7 bugs were found and fixed TODAY, deployed as commits 62b6529/8b9c039/c77cdb0 (laptop-side; the
+VM files are already rsynced to match — do NOT revert or "improve" them tonight): (1) bias-
+invalidation UnboundLocalError, (2) MCB warm-start never flushed the CSV's last day → 1d vote a
+full day stale → frozen LONG 1.00, (3) flow-TURN detector mathematically unfireable → replaced
+with hysteresis, (4) one crossed quote killed the whole chain fetch, (5) invalidation evidence
+wiped on NEUTRAL flicker, (6) pt_decisions dark since 07-10 → FILTERED rows now written,
+(7) warm-start refresh now deterministic (cron 08:52, --days 45 — NEVER lower the day count).
+PRIORITIES TONIGHT (in order):
+A. VALIDATE the MCB flush fix across all recorded days: replay each day's warm-start with and
+   without the final-day flush; report bias-at-open diffs and which trades/blocks would change.
+B. GRADE the hysteresis turn detector on the 45d futures/flow corpus: fires/day, lead vs price
+   turns, would-be sleeve TURN P&L after costs (₹457/lot RT), ex-best-day. Pre-register thresholds
+   (±0.05 band, 5-sample mean) BEFORE measuring; propose recalibration only with evidence.
+C. Dry-run the 08:52 refresh path once (venv/bin/python scripts/refresh_mcb_warmstart_data.py
+   --days 45) so tomorrow's first cron run is not its maiden run; verify file end-date advances
+   to 2026-07-15 and file size sane; report, do not loop it.
+D. Continue the standing mining loop (invalidation-exit/re-entry-after-shakeout, strike-level OI).
+Do NOT touch: platform_core/data/live/{bias_invalidation,crossasset_shadow,kite_adapter,
+live_structure_pipeline}.py and platform_core/intelligence/market_context_builder.py — tonight
+they must reach 09:10 exactly as deployed. Proposals only.
