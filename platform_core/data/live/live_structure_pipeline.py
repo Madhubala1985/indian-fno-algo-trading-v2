@@ -1190,6 +1190,11 @@ from platform_core.data.live.bias_invalidation import (
 _bias_inval = _BiasInvalidationEngine()
 _BIAS_INVAL_LOG_PATH = Path("logs/bias_invalidation.jsonl")
 
+# Structure events of the LAST finalized bar, per symbol. The invalidation
+# block runs before this bar's structure engine, so it must read the previous
+# bar's BOS/CHOCH — causal, one-bar lag, never this bar's (not yet computed).
+_LAST_STRUCT_EVENTS: dict = {}
+
 
 def _bias_inval_log(rec: dict) -> None:
     """Append one JSONL record; never raises into the tick path."""
@@ -3760,7 +3765,7 @@ def on_ticks(raw_ticks):
                         _bi_raw = str(market_ctx.bias)
                         _bi_opp_side = "bearish" if _bi_raw == "LONG" else "bullish"
                         _bi_opp = _bi_same = 0
-                        for _bev in (result.emitted_events or []):
+                        for _bev in (_LAST_STRUCT_EVENTS.get(completed_bar.symbol) or []):
                             _bet = (_bev.event_type.value
                                     if hasattr(_bev.event_type, "value")
                                     else str(_bev.event_type))
@@ -4160,6 +4165,8 @@ def on_ticks(raw_ticks):
                 ),
             )
         )
+        # Stash for next bar's bias-invalidation read (see _LAST_STRUCT_EVENTS).
+        _LAST_STRUCT_EVENTS[completed_bar.symbol] = list(result.emitted_events or [])
 
         # ── Persist structure events (fire-and-forget) ───────────────────────
         if result.emitted_events:
