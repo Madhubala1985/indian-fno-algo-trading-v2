@@ -91,7 +91,12 @@ class FuturesSleeve:
         self._turn_count: dict = {}     # underlying -> TURN entries today
         self._sig_count: dict = {}      # fut_sym -> direction-signal entries today
         self._last_exit_epoch: dict = {}  # fut_sym -> epoch of last exit (re-entry cooldown)
+        self._sig_logged: set = set()   # (day, underlying, direction) already logged
         self._load_state()
+        # Proof-of-life: futures_sleeve.jsonl had NEVER been created through
+        # 07-15 and "wired but starved" was indistinguishable from "not wired".
+        self._log({"event": "BOOT", "capital": round(self._capital),
+                   "contracts": sorted(self._contracts.keys())})
 
     # ── integration points ────────────────────────────────────────────────────
     def on_tick(self, fut_sym: str, ltp: float, *, now=None) -> None:
@@ -124,6 +129,13 @@ class FuturesSleeve:
         optional post-exit re-entry cooldown (REENTRY_COOLDOWN_SEC; 0 = off since 2026-07-15)."""
         try:
             self._roll_day()
+            # First signal per (day, underlying, direction) is logged so the
+            # trail shows the sleeve RECEIVING signals even when rails reject.
+            _sk = (self._day, underlying, direction)
+            if _sk not in self._sig_logged:
+                self._sig_logged.add(_sk)
+                self._log({"event": "signal_seen", "underlying": underlying,
+                           "dir": direction})
             fut_sym = self._fut_for(underlying)
             if not fut_sym or fut_sym in self._pos:
                 return
