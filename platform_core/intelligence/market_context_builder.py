@@ -264,9 +264,18 @@ class MarketContextBuilder:
         # Recent volume deque for liquidity estimation (from 1m bars)
         self._recent_volumes: Deque[float] = deque(maxlen=60)
 
-    def update(self, *, bar: LiveBar, timeframe: str) -> None:
+        # Bars the classifier rejected (stale/duplicate timestamp, validation),
+        # per timeframe. A silently-frozen classifier looks identical to a live
+        # one from the outside — this counter is the only tell.
+        self._rejected_counts: dict[str, int] = {tf: 0 for tf in SUPPORTED_TIMEFRAMES}
+
+    def update(self, *, bar: LiveBar, timeframe: str) -> bool:
         """
         Feed a finalized bar into the appropriate timeframe classifier.
+
+        Returns True when the bar was accepted by the classifier, False when
+        it was rejected (unsupported timeframe, stale/non-increasing timestamp,
+        or validation failure).
 
         Parameters
         ----------
@@ -277,18 +286,22 @@ class MarketContextBuilder:
         """
         tf = _normalise_tf(timeframe)
         if tf not in SUPPORTED_TIMEFRAMES:
-            return  # silently ignore unsupported timeframes
+            return False  # silently ignore unsupported timeframes
 
         finalized = _live_to_finalized(bar, self._underlying)
+        accepted = True
         try:
             classification = self._classifiers[tf].update(bar=finalized)
             self._latest[tf] = classification
             self._bar_counts[tf] = self._bar_counts.get(tf, 0) + 1
         except Exception:
-            pass  # stale timestamp or validation failure — skip silently
+            # stale timestamp or validation failure — skip, but count it
+            self._rejected_counts[tf] = self._rejected_counts.get(tf, 0) + 1
+            accepted = False
 
         if tf == "1m" and bar.volume >= 0.0:
             self._recent_volumes.append(bar.volume)
+        return accepted
 
     def reset(self, timeframe: str | None = None) -> None:
         """Reset one or all timeframe classifiers."""
@@ -298,6 +311,7 @@ class MarketContextBuilder:
                 self._classifiers[tf].reset()
                 self._latest.pop(tf, None)
                 self._bar_counts[tf] = 0
+                self._rejected_counts[tf] = 0
 
     def build(
         self,
@@ -371,6 +385,7 @@ class MarketContextBuilder:
             metadata={
                 "underlying": self._underlying,
                 "bar_counts": {tf: self._bar_counts.get(tf, 0) for tf in SUPPORTED_TIMEFRAMES},
+                "bar_rejections": {tf: n for tf, n in self._rejected_counts.items() if n},
                 "timeframes_active": len(tf_map),
                 "timeframes_with_history": len(tfs_with_history),
                 "long_threshold": _LONG_THRESHOLD,

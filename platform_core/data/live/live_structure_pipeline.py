@@ -2238,12 +2238,24 @@ def _warm_start_mcb_from_csv() -> None:
                 und_state.market_ctx_builder.update(bar=daily_bar, timeframe="1d")
                 counts["1d"] += 1
 
+        # Flush the CSV's final day into the 1d classifier. The accumulator only
+        # emits day N when day N+1 arrives, so without this the most recent daily
+        # bar never lands and the 0.35-weight 1d classification trades a full day
+        # staler than the data (2026-07-15: frozen at Fri 07-11 BULLISH → LONG
+        # conf=1.00 all day through a breakdown). BacktestRunner flushes; parity.
+        _final_daily = warmup_daily.flush()
+        if _final_daily is not None:
+            und_state.market_ctx_builder.update(bar=_final_daily, timeframe="1d")
+            counts["1d"] += 1
+
         # Re-feed intraday state bars (newer timestamps accepted on top of CSV).
+        # update() returns False on rejection (e.g. older-than-CSV timestamps),
+        # so _refed counts bars the classifiers actually took.
         _refed = 0
         for _stf, _sbar in _state_bars_to_replay:
             try:
-                und_state.market_ctx_builder.update(bar=_sbar, timeframe=_stf)
-                _refed += 1
+                if und_state.market_ctx_builder.update(bar=_sbar, timeframe=_stf):
+                    _refed += 1
             except Exception:
                 pass
 
@@ -3823,9 +3835,12 @@ def on_ticks(raw_ticks):
                     except Exception as _bi_exc:
                         print(f"[BIAS INVALIDATION] error (fail-open): {_bi_exc}")
 
+                # trend_score is the raw fused signal; conf saturates at 1.0 for
+                # any |trend| >= 0.18, so conf alone cannot show bias decay.
                 print(
                     f"\n[OPTIONS] bias={market_ctx.bias}  "
-                    f"conf={market_ctx.confidence:.2f}"
+                    f"conf={market_ctx.confidence:.2f}  "
+                    f"trend={market_ctx.trend_score:+.3f}"
                 )
                 _current_state.captured_market_ctx = market_ctx
 
