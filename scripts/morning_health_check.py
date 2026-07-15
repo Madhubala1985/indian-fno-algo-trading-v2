@@ -128,7 +128,32 @@ def main():
         line("PASS" if depth is not None else "WARN",
              f"orderflow_shadow: {n} recs, depth_imbalance={depth}, source={(last or {}).get('source')}")
 
-    # 7. how is the model doing today
+    # 7. dead-component detector: a repeated fail-open/error print means a
+    #    component is silently DEAD while the model keeps trading without it
+    #    (2026-07-15: bias-invalidation crashed on EVERY bar ×478 and the only
+    #    symptom was a one-line fail-open print — the check said ALL HEALTHY).
+    try:
+        import glob, collections
+        logs_today = sorted(glob.glob(f"logs/live_run_{TODAY.replace('-','')}_*.log"))
+        sig = collections.Counter()
+        for lp in logs_today:
+            with open(lp, errors="replace") as fh:
+                for ln in fh:
+                    if ("fail-open" in ln or "Pipeline error" in ln
+                            or "error (fail-open)" in ln or "Traceback" in ln):
+                        sig[ln.strip()[:110]] += 1
+        repeated = {s: n for s, n in sig.items() if n >= 10}
+        if repeated:
+            for s, n in sorted(repeated.items(), key=lambda kv: -kv[1])[:5]:
+                line("FAIL", f"component DEAD? x{n}: {s}")
+        elif sig:
+            line("INFO", f"{sum(sig.values())} transient error line(s) in live log (below dead-component threshold)")
+        else:
+            line("PASS", "no fail-open/error signatures in today's live log")
+    except Exception as e:
+        line("WARN", f"dead-component scan failed: {e}")
+
+    # 8. how is the model doing today
     try:
         c = sqlite3.connect("logs/trades.db")
         row = c.execute("select count(*), coalesce(sum(pnl),0) from pt_trades where date(entry_ts)=?",

@@ -29,6 +29,7 @@ _logging.getLogger("kiteconnect.ticker").addFilter(_SuppressNullKiteClose())
 
 from platform_core.data.option_chain_ingestion import (
     OptionChainSnapshot,
+    OptionChainValidationError,
     OptionContractSnapshot,
 )
 
@@ -394,6 +395,13 @@ class KiteAdapter:
             ask_raw = sell_levels[0].get("price") if sell_levels else None
             bid_qty = int(buy_levels[0]["quantity"]) if buy_levels and buy_levels[0].get("quantity") else None
             ask_qty = int(sell_levels[0]["quantity"]) if sell_levels and sell_levels[0].get("quantity") else None
+            # Crossed book (ask < bid) happens on fast bars / stale depth; the
+            # snapshot dataclass rejects it and one bad strike would kill the
+            # WHOLE chain fetch for this bar (observed 07-14 + 07-15: [OPTIONS]
+            # Pipeline error). Depth is unusable — drop it, keep LTP.
+            if bid_raw is not None and ask_raw is not None and float(ask_raw) < float(bid_raw):
+                bid_raw = ask_raw = None
+                bid_qty = ask_qty = None
 
             ltp_raw = q.get("last_price")
             oi_raw  = q.get("oi")
@@ -401,26 +409,31 @@ class KiteAdapter:
 
             option_side = "CALL" if inst["instrument_type"] == "CE" else "PUT"
 
-            contracts.append(
-                OptionContractSnapshot(
-                    contract_symbol=inst["tradingsymbol"],
-                    underlying_symbol=underlying,
-                    exchange=exchange,
-                    expiry_date=expiry_date,
-                    strike_price=Decimal(str(inst["strike"])),
-                    option_side=option_side,
-                    event_timestamp=now_utc,
-                    received_timestamp=now_utc,
-                    last_traded_price=Decimal(str(ltp_raw)) if ltp_raw is not None else None,
-                    bid_price=Decimal(str(bid_raw)) if bid_raw is not None else None,
-                    ask_price=Decimal(str(ask_raw)) if ask_raw is not None else None,
-                    bid_quantity=bid_qty,
-                    ask_quantity=ask_qty,
-                    traded_volume=int(vol_raw) if vol_raw is not None else None,
-                    open_interest=int(oi_raw) if oi_raw is not None else None,
-                    source="kite_live",
+            try:
+                contracts.append(
+                    OptionContractSnapshot(
+                        contract_symbol=inst["tradingsymbol"],
+                        underlying_symbol=underlying,
+                        exchange=exchange,
+                        expiry_date=expiry_date,
+                        strike_price=Decimal(str(inst["strike"])),
+                        option_side=option_side,
+                        event_timestamp=now_utc,
+                        received_timestamp=now_utc,
+                        last_traded_price=Decimal(str(ltp_raw)) if ltp_raw is not None else None,
+                        bid_price=Decimal(str(bid_raw)) if bid_raw is not None else None,
+                        ask_price=Decimal(str(ask_raw)) if ask_raw is not None else None,
+                        bid_quantity=bid_qty,
+                        ask_quantity=ask_qty,
+                        traded_volume=int(vol_raw) if vol_raw is not None else None,
+                        open_interest=int(oi_raw) if oi_raw is not None else None,
+                        source="kite_live",
+                    )
                 )
-            )
+            except OptionChainValidationError as exc:
+                # One malformed strike must not kill the whole chain for this bar.
+                print(f"[CHAIN] skipping {inst['tradingsymbol']}: {exc}")
+                continue
 
         return OptionChainSnapshot(
             chain_id=f"{underlying}|{expiry_date.isoformat()}|live",

@@ -18,6 +18,21 @@ DRYFLAG=""; [ "${DRY:-0}" = "1" ] && DRYFLAG="-n"
 # BREAKS auth). No --delete: we never remove files the VM has that we don't.
 PATHS=(platform_core scripts requirements.txt deploy validation_reports docs CLAUDE.md)
 
+# Pre-push gate: undefined-name scan of the live path. A NameError-class bug
+# (2026-07-15: bias-invalidation referenced a variable assigned 400 lines
+# later → dead on every bar, fail-open) must never reach the VM again.
+if python3 -m pyflakes --version >/dev/null 2>&1; then
+  _UNDEF=$(python3 -m pyflakes "$LROOT"/platform_core/data/live/*.py "$LROOT"/platform_core/intelligence/*.py 2>/dev/null | grep -c "undefined name" || true)
+  if [ "${_UNDEF:-0}" -gt 0 ]; then
+    echo "[push] ABORT: $_UNDEF undefined-name error(s) in live path — fix before deploying:"
+    python3 -m pyflakes "$LROOT"/platform_core/data/live/*.py "$LROOT"/platform_core/intelligence/*.py 2>/dev/null | grep "undefined name"
+    exit 1
+  fi
+  echo "[push] pyflakes gate: no undefined names in live path"
+else
+  echo "[push] (pyflakes not installed — skipping undefined-name gate)"
+fi
+
 echo "[push] ${DRY:+DRY-RUN }code → $HOST:$RROOT"
 echo "[push] paths: ${PATHS[*]}"
 echo "[push] EXCLUDING: logs/, data/, configs/kite_config.json, venv, __pycache__, *.pyc, .git"

@@ -91,6 +91,7 @@ class InvalidationState:
     day: str = ""
     day_open: float | None = None
     raw_bias: str = "NEUTRAL"
+    hypo_raw: str = ""             # non-NEUTRAL raw bias the evidence refers to
     raw_bias_age: int = 0          # bars since the RAW bias last changed
     score: float = 0.0             # contradiction evidence vs the active hypothesis
     stage: str = "CONFIRM"         # CONFIRM | NEUTRALIZED | FLIPPED
@@ -178,7 +179,10 @@ class BiasInvalidationEngine:
                   same_breaks, flow):
         st = self._st.get(underlying)
         if st is None or st.day != day:
-            st = InvalidationState(day=day, day_open=bar_open, raw_bias=raw_bias)
+            st = InvalidationState(
+                day=day, day_open=bar_open, raw_bias=raw_bias,
+                hypo_raw=raw_bias if str(raw_bias).upper() in ("LONG", "SHORT") else "",
+            )
             self._st[underlying] = st
         if st.day_open is None:
             st.day_open = bar_open
@@ -187,20 +191,35 @@ class BiasInvalidationEngine:
         raw_bias = str(raw_bias).upper()
 
         # Raw-bias change: the MCB moved on its own — the hypothesis changed.
+        # THRESHOLD-FLICKER GUARD (2026-07-15): the MCB confirms at |trend|>=0.18
+        # and hovers around it, so LONG→NEUTRAL→LONG flicker is the SAME
+        # hypothesis losing/regaining confirmation, not a new one. A dip to
+        # NEUTRAL actually AGREES with accumulated contradiction — wiping the
+        # evidence on it (observed post-restart: repeated "evidence reset")
+        # would re-disable the engine on exactly the hovering days it exists
+        # for, and would let a flicker kill an active FLIP. So: NEUTRAL pauses;
+        # returning to the SAME side resumes; only a genuine side change resets.
         if raw_bias != st.raw_bias:
-            if st.stage == "FLIPPED" and raw_bias == st.flipped_dir:
-                self._transition(st, info, bar_index, "CONFIRM",
-                                 "MCB caught up with the flip — engine steps aside")
+            if raw_bias == "NEUTRAL":
+                st.raw_bias = raw_bias          # pause — keep score/stage/flags
+            elif st.hypo_raw == raw_bias:
+                st.raw_bias = raw_bias          # resume the same hypothesis
+                st.raw_bias_age += 1
             else:
-                self._transition(st, info, bar_index, "CONFIRM",
-                                 f"raw bias changed {st.raw_bias}→{raw_bias} — evidence reset")
-            st.stage = "CONFIRM"
-            st.raw_bias = raw_bias
-            st.raw_bias_age = 0
-            st.score = 0.0
-            st.bars_in_stage = 0
-            st.flipped_dir = ""
-            st.saw_opposite_break = st.saw_opposite_flow = False
+                if st.stage == "FLIPPED" and raw_bias == st.flipped_dir:
+                    self._transition(st, info, bar_index, "CONFIRM",
+                                     "MCB caught up with the flip — engine steps aside")
+                else:
+                    self._transition(st, info, bar_index, "CONFIRM",
+                                     f"raw bias changed {st.raw_bias or 'NEUTRAL'}→{raw_bias} — evidence reset")
+                st.stage = "CONFIRM"
+                st.raw_bias = raw_bias
+                st.hypo_raw = raw_bias
+                st.raw_bias_age = 0
+                st.score = 0.0
+                st.bars_in_stage = 0
+                st.flipped_dir = ""
+                st.saw_opposite_break = st.saw_opposite_flow = False
         else:
             st.raw_bias_age += 1
 

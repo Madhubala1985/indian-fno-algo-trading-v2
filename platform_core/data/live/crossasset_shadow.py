@@ -270,6 +270,7 @@ class CrossAssetShadow:
         self._open_ref: dict[str, dict[str, float]] = {}   # underlying -> {constituent: open_ltp}
         self._flow_buf: dict[str, list] = {}               # underlying -> last 5 avg_flow_pct
         self._flow_roll: dict[str, float] = {}             # underlying -> prev rolling mean
+        self._flow_state: dict[str, str] = {}              # underlying -> last confirmed side (hysteresis)
         self.records = 0
 
     # ── pre-open directional / risk-state snapshot ───────────────────────────
@@ -343,16 +344,27 @@ class CrossAssetShadow:
                                          "flow_bias": bias,
                                          "mom": (round(mom, 3) if mom is not None else None)}
                 roll = sum(buf[-5:]) / min(len(buf), 5)
-                prev = self._flow_roll.get(underlying)
                 self._flow_roll[underlying] = roll
-                if prev is not None and len(buf) >= 5:
-                    if (prev <= -0.05 and roll >= 0.05) or (prev >= 0.05 and roll <= -0.05):
-                        _to = "LONG" if roll > 0 else "SHORT"
-                        LAST_TURN[underlying] = {"epoch": _time.time(), "to": _to,
+                # Hysteresis state machine: side = LONG when roll >= +0.05, SHORT
+                # when <= -0.05, RETAINED through the neutral band. A turn fires on
+                # side CHANGE. The old prev-vs-current single-step comparison could
+                # only fire on a >=0.5%-per-sample jerk (mean moves (new-old)/5 per
+                # step) — a gradual real reversal crosses the band over minutes and
+                # never satisfied it: 0 turn events ever recorded, incl. the
+                # 2026-07-15 12:56 IST breakdown this detector exists to catch.
+                if len(buf) >= 5:
+                    _side = ("LONG" if roll >= 0.05
+                             else "SHORT" if roll <= -0.05
+                             else self._flow_state.get(underlying))
+                    _prev_side = self._flow_state.get(underlying)
+                    if _side is not None:
+                        self._flow_state[underlying] = _side
+                    if _prev_side is not None and _side is not None and _side != _prev_side:
+                        LAST_TURN[underlying] = {"epoch": _time.time(), "to": _side,
                                                  "rolling": round(roll, 3)}
                         self._write({"kind": "turn", "underlying": underlying, "ts": rec.get("ts"),
-                                     "from": "SHORT" if prev < 0 else "LONG",
-                                     "to": _to, "rolling_flow_pct": round(roll, 3)})
+                                     "from": _prev_side,
+                                     "to": _side, "rolling_flow_pct": round(roll, 3)})
         except Exception:
             pass
         return rec

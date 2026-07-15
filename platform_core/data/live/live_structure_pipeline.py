@@ -686,6 +686,7 @@ _REGIME_DESIZE_MULT:  float = float(os.environ.get("REGIME_DESIZE_MULT", "0.5") 
 # Block NIFTY longs, keep NIFTY shorts. SENSEX untouched. NIFTY_LONG_GATE=0 reverts.
 _NIFTY_LONG_GATE:     bool  = (os.environ.get("NIFTY_LONG_GATE", "1") != "0")
 _override_printed: dict = {}   # (underlying, dir) -> printed flag (throttle: log state changes only)
+_last_filter_reason: dict = {}  # underlying -> last ENTRY FILTER reason written to pt_decisions
 # LONG_GAMMA regime veto — the bigger lever: when the GEX gate is enabled, also
 # skip momentum chase-entries in a mean-reverting/pinning (long-gamma) regime.
 # On by default whenever GEX_REGIME_GATE=1; set GEX_REGIME_VETO=0 to test wall-only.
@@ -4644,12 +4645,34 @@ def on_ticks(raw_ticks):
                     _filter_parts.append(_align_reason)
                 if _nifty_reason:
                     _filter_parts.append(_nifty_reason)
+                _filter_reason_str = "  |  ".join(_filter_parts)
                 print_warning_block(
                     "ENTRY FILTER",
                     bar_index=_bar_count,
                     conf=f"{_mctx.confidence:.2f}→{_effective_conf:.2f}",
-                    reason="  |  ".join(_filter_parts),
+                    reason=_filter_reason_str,
                 )
+                # Audit trail: since the 07-14 gate redesign these filters zero
+                # confidence UPSTREAM of every write_decision site, so pt_decisions
+                # recorded NOTHING for 3 sessions. Record on state-change per
+                # underlying (not per bar) to keep the table readable.
+                if _last_filter_reason.get(_current_state.option_underlying) != _filter_reason_str:
+                    _last_filter_reason[_current_state.option_underlying] = _filter_reason_str
+                    try:
+                        _db.write_decision(
+                            bar_index=_bar_count,
+                            bar_ts=datetime.now(timezone.utc).isoformat(),
+                            underlying=_current_state.option_underlying,
+                            bias=str(_mctx.bias),
+                            conf_raw=_mctx.confidence,
+                            conf_eff=_effective_conf,
+                            outcome="FILTERED",
+                            filter_reason=_filter_reason_str,
+                            equity=_equity,
+                            drawdown=max(0.0, (_peak_equity - _equity) / max(_peak_equity, 1.0)),
+                        )
+                    except Exception:
+                        pass
 
             # FUTURES SLEEVE direction signal (07-14 fix): futures need DIRECTION, not a
             # strike. Hooked UPSTREAM of strike selection so options-only gates
