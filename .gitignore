@@ -25,3 +25,6 @@ data/recordings/
 # deployment secrets (never commit real values)
 deploy/secrets.env
 /etc/trading/secrets.env
+
+# broker credentials — never commit
+configs/angelone_config.json
