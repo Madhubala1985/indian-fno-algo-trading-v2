@@ -70,6 +70,16 @@ def detect():
     if health.exists() and "[FAIL" in health.read_text():
         fails = [l.strip() for l in health.read_text().splitlines() if "[FAIL" in l]
         problems.append("HEALTH_" + fails[0][:60])
+    # Fail-open storm: a component printing fail-open/Pipeline-error every bar is
+    # DEAD while the model trades without it (2026-07-15: bias-invalidation crashed
+    # x478 with only a one-line print). The 09:40 health check catches morning
+    # corpses; this catches mid-session deaths within ~6 minutes.
+    if in_session:
+        _storm = sum(j.count(s) for s in ("fail-open", "Pipeline error"))
+        if _storm >= 5:
+            _ln = next((l.strip()[:60] for l in j.splitlines()
+                        if "fail-open" in l or "Pipeline error" in l), "unknown")
+            problems.append(f"FAILOPEN_STORM_x{_storm}_" + _ln)
     if not problems:
         return None, None
     sig = hashlib.md5("|".join(sorted(problems)).encode()).hexdigest()[:10]
