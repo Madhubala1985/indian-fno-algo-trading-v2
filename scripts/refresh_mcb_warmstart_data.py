@@ -160,17 +160,42 @@ def main() -> int:
         from_str = f"{start_date} 09:15:00"
         to_str   = f"{end_date} 15:30:00"
 
-        print(f"[FETCH] {sym} (token={token})  {from_str} → {to_str} ...", end=" ", flush=True)
-        try:
-            candles = kite.historical_data(
-                instrument_token=token,
-                from_date=from_str,
-                to_date=to_str,
-                interval="minute",
-                continuous=False,
-            )
-        except Exception as exc:
-            print(f"FAILED: {exc}")
+        # Kite's minute endpoint caps a single call at 60 CALENDAR days.
+        # 45 trading days spans ~62-64 calendar days, so fetch in <=55-day
+        # chunks and concatenate (found 2026-07-16: the un-chunked call
+        # failed with "interval exceeds max limit: 60 days").
+        _CHUNK_DAYS = 55
+        chunks: list[tuple[date, date]] = []
+        c_start = start_date
+        while c_start <= end_date:
+            c_end = min(c_start + timedelta(days=_CHUNK_DAYS - 1), end_date)
+            chunks.append((c_start, c_end))
+            c_start = c_end + timedelta(days=1)
+
+        print(f"[FETCH] {sym} (token={token})  {from_str} → {to_str} "
+              f"({len(chunks)} chunk{'s' if len(chunks) > 1 else ''}) ...", end=" ", flush=True)
+        candles: list[dict] = []
+        fetch_failed = False
+        seen_ts: set = set()
+        for c_start, c_end in chunks:
+            try:
+                part = kite.historical_data(
+                    instrument_token=token,
+                    from_date=f"{c_start} 09:15:00",
+                    to_date=f"{c_end} 15:30:00",
+                    interval="minute",
+                    continuous=False,
+                )
+            except Exception as exc:
+                print(f"FAILED ({c_start}→{c_end}): {exc}")
+                fetch_failed = True
+                break
+            for c in part:
+                ts = _ts_str(c)
+                if ts not in seen_ts:
+                    seen_ts.add(ts)
+                    candles.append(c)
+        if fetch_failed:
             any_error = True
             continue
 
