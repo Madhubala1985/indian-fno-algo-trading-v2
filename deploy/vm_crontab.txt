@@ -5,7 +5,9 @@
 52 8 * * 1-5 cd /home/ubuntu/institutional_trading_system_v2 && PYTHONPATH=. venv/bin/python scripts/refresh_mcb_warmstart_data.py --days 45 >> logs/warmstart_refresh_cron.log 2>&1
 40 9 * * 1-5 cd /home/ubuntu/institutional_trading_system_v2 && PYTHONPATH=. venv/bin/python scripts/morning_health_check.py >> logs/morning_health_cron.log 2>&1
 */5 9-15 * * 1-5 /home/ubuntu/institutional_trading_system_v2/deploy/run_sentinel.sh >> /home/ubuntu/institutional_trading_system_v2/logs/sentinel_cron.log 2>&1
-30 19 * * 1-5 /home/ubuntu/institutional_trading_system_v2/deploy/run_night_explorer.sh >> /home/ubuntu/institutional_trading_system_v2/logs/night_explorer_cron.log 2>&1
+# Guard added 2026-07-16: the agent can be operator-triggered early (e.g. 18:00 IST) —
+# never start a second one on top of a running session.
+30 19 * * 1-5 ! pgrep -f 'claude -p' >/dev/null && /home/ubuntu/institutional_trading_system_v2/deploy/run_night_explorer.sh >> /home/ubuntu/institutional_trading_system_v2/logs/night_explorer_cron.log 2>&1
 # Catch-up: the 19:30 run can die on the shared Claude session limit (2026-07-15: dead
 # after 10 min, night idle). Re-run at 03:30 IST ONLY if last evening's report is missing
 # and no agent is already running.
