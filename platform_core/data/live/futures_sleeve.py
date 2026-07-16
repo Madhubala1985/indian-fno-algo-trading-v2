@@ -15,9 +15,10 @@ Entries (each tagged, so the two hypotheses are separable at evaluation):
     (fires when structure/MCB still lags). Cooldown + daily caps below.
 
 Exits: hard stop −0.30% adverse; breakeven ratchet arms at +0.30% (winner can't become loser);
-opposite flow-turn (adaptive exit); EOD flat 15:20 IST. Risk: ≈₹5-8k/lot at the stop ≈ 1.3-2%
-of ₹4L — consistent with the options max-loss cap. Margin model: 11.5% of notional per lot,
-total ≤ 90% capital, one position per index. Sleeve daily-loss halt at −2% of capital.
+opposite flow-turn (adaptive exit); EOD flat 15:20 IST. Sizing: risk-based lot count
+(RISK_FRAC × capital / stop-risk-per-lot, min 1 lot — grows with compounded capital;
+2026-07-16). Margin model: 11.5% of notional, capped by MAX_MARGIN_UTIL × capital,
+one position per index. Sleeve daily-loss halt at DAILY_LOSS_HALT_FRAC of capital.
 
 Costs (futures, per round trip): brokerage ₹20/side + STT 0.02% (sell) + exch txn 0.00173%
 (both) + 18% GST on brokerage+txn + stamp 0.002% (buy). Slippage: 0.1 index pts per side
@@ -56,6 +57,12 @@ DAILY_LOSS_HALT_FRAC = _envf("FUT_SLEEVE_DAILY_HALT", 0.04)  # was 0.02
 # Post-exit re-entry cooldown per index (was hardcoded 2700s = 45 min).
 # 0 disables (2026-07-15 user directive: removed).
 REENTRY_COOLDOWN_SEC = _envf("FUT_SLEEVE_REENTRY_COOLDOWN_SEC", 0.0)
+# Risk-based lot count (2026-07-16 user directive: size by capital, not fixed 1 lot).
+# lots = floor(RISK_FRAC × capital / per-lot stop risk), floored at 1 so the paper
+# sleeve never stops accruing evidence. At 0.02 and today's ₹4.16L this is exactly
+# 1 lot (per-lot stop risk ≈ 2% of capital at the 0.50% stop); a second lot arrives
+# organically when capital ≈ doubles. Margin rail still applies on top.
+RISK_FRAC = _envf("FUT_SLEEVE_RISK_FRAC", 0.02)
 TURN_COOLDOWN_SEC = 1800   # ≥30 min between TURN entries per index
 MAX_TURN_ENTRIES_PER_DAY = 3
 EOD_FLAT_IST = (15, 20)
@@ -188,8 +195,12 @@ class FuturesSleeve:
         lot = int(meta.get("lot_size") or 0)
         if lot <= 0:
             return False
+        # risk-based lot count: budget RISK_FRAC × capital vs stop-distance risk/lot
+        per_lot_risk = STOP_PCT * ltp * lot
+        n_lots = max(1, int((RISK_FRAC * self._capital) / per_lot_risk)) if per_lot_risk > 0 else 1
+        qty = lot * n_lots
         # margin rail
-        margin = MARGIN_FRAC * ltp * lot
+        margin = MARGIN_FRAC * ltp * qty
         used = sum(MARGIN_FRAC * p["entry"] * p["lot_size"] for p in self._pos.values())
         if used + margin > MAX_MARGIN_UTIL * self._capital:
             self._log({"event": "entry_rejected", "fut_sym": fut_sym, "tag": tag,
@@ -198,11 +209,12 @@ class FuturesSleeve:
         px = ltp + SLIPPAGE_PTS if direction == "LONG" else ltp - SLIPPAGE_PTS
         self._pos[fut_sym] = {
             "underlying": meta.get("underlying", fut_sym), "direction": direction,
-            "entry": px, "lot_size": lot, "tag": tag, "armed": False,
+            "entry": px, "lot_size": qty, "n_lots": n_lots, "tag": tag, "armed": False,
             "entry_ts": datetime.now(timezone.utc).isoformat(),
         }
         self._log({"event": "ENTRY", "fut_sym": fut_sym, "dir": direction, "tag": tag,
-                   "px": round(px, 2), "lot_size": lot, "margin": round(margin)})
+                   "px": round(px, 2), "lot_size": lot, "n_lots": n_lots, "qty": qty,
+                   "margin": round(margin)})
         self._save_state()
         return True
 
