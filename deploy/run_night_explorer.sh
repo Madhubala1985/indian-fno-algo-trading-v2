@@ -6,4 +6,6 @@ export PATH="$HOME/.local/bin:$PATH"
 # flock replaces the crontab pgrep guards (2026-07-17): `pgrep -f 'claude -p'` matched the
 # cron job's own sh -c cmdline, so the guarded launches NEVER fired. The lock is held for
 # claude's whole lifetime and vanishes with the process — no self-match, no stale state.
-exec flock -n /home/ubuntu/.night_explorer.lock claude -p "$(cat scripts/night_explorer_mandate.md)" --model claude-fable-5 --dangerously-skip-permissions --max-turns 120
+# nice/ionice (2026-07-17): research must never starve sshd or the live pipeline —
+# the Thu 07-16 wedge happened while an agent run was the only workload.
+exec flock -n /home/ubuntu/.night_explorer.lock nice -n 10 ionice -c3 claude -p "$(cat scripts/night_explorer_mandate.md)" --model claude-fable-5 --dangerously-skip-permissions --max-turns 120

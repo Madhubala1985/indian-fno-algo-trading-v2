@@ -4,6 +4,8 @@
 # a shorter fresh file would WIN end-date selection and silently un-seed the 1d vote.
 52 8 * * 1-5 cd /home/ubuntu/institutional_trading_system_v2 && PYTHONPATH=. venv/bin/python scripts/refresh_mcb_warmstart_data.py --days 45 >> logs/warmstart_refresh_cron.log 2>&1
 40 9 * * 1-5 cd /home/ubuntu/institutional_trading_system_v2 && PYTHONPATH=. venv/bin/python scripts/morning_health_check.py >> logs/morning_health_cron.log 2>&1
+# Disk janitor (2026-07-17): compress old live logs, clear caches, alert at >=85% disk.
+0 7 * * * /home/ubuntu/institutional_trading_system_v2/deploy/disk_janitor.sh >> /home/ubuntu/institutional_trading_system_v2/logs/disk_janitor.log 2>&1
 */5 9-15 * * 1-5 /home/ubuntu/institutional_trading_system_v2/deploy/run_sentinel.sh >> /home/ubuntu/institutional_trading_system_v2/logs/sentinel_cron.log 2>&1
 # Single-instance guard lives INSIDE run_night_explorer.sh (flock, 2026-07-17). The old
 # `! pgrep -f 'claude -p'` guards matched the cron job's own sh -c cmdline → never launched.
