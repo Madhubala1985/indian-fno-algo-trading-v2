@@ -35,39 +35,43 @@ OUTPUT: write logs/night_explorer_<YYYY-MM-DD>.md — findings as MECHANISMS wit
 (never identity narratives), graded decisions, hypothesis results, proposals for the human, and
 what tomorrow's session should watch. End with a one-paragraph executive summary.
 
-TONIGHT 2026-07-16 (operator addendum — supersedes conflicting older lines; EARLY START —
-the operator triggered you at ~17:00 IST to use remaining session tokens, so budget turns
-accordingly and write the report even if interrupted):
-Today's session context: chop day (BANKNIFTY range 0.71%, SENSEX 0.62%, drift-down closes),
-options book correctly 0 trades (MCB NEUTRAL all day; late CLOSING-window SHORT conf 1.00 on
-BANKNIFTY was blocked by SCORE_MARGIN_LOW + session gate). The 07-15 flush fix is VERIFIED
-live (NEUTRAL boot off fresh 45d warm start). The futures sleeve had its FIRST live day:
-3 TURN trades — BANKNIFTY LONG −2,679 and SENSEX LONG −3,036 (both whipsawed, exactly the
-lag mechanism your 07-15 study predicted), then NIFTY SHORT +5,232 (ratchet-armed, EOD flat)
-= day −₹483. New commit 69a69d5 (deployed tonight): sleeve lot count is now risk-based
-(FUT_SLEEVE_RISK_FRAC=0.02 × capital / stop-risk-per-lot, min 1 lot; unchanged =1 lot at
-current capital). Do NOT revert or "improve" it — verify-only.
-PRIORITIES TONIGHT (in order):
-A. pt_decisions REGRESSION TRACE (yesterday's watch-item #3 half-fired): logs/pt_decisions.jsonl
-   still does not exist after an active close — yet today a bias went SHORT conf 1.00 and strike
-   selection + entry filter demonstrably ran (live log ~line 5372, 15:0x IST). Trace whether the
-   FILTERED write sits above or below the session-window/CLOSING gate and whether the fix-#6 code
-   path is actually deployed/reached. It is a logging path: fix it if the bug is clear, commit,
-   and prove it with a synthetic bar; otherwise write the proposal.
-B. GRADE futures sleeve day 1 against the 07-15 FAIL study, on REAL flow (this is real-flow
-   evidence day 1 of the ≥15 the study demanded): fire times vs actual pivots, whether the two
-   whipsaws were the predicted lag mechanism, whether the NIFTY catch fits the trend-day-catch
-   profile, exit quality (FLOW_TURN_AGAINST twice, EOD once). Start/extend a running real-flow
-   TURN scorecard file so the 15-day judgment is mechanical, not vibes.
-C. GEX WALL BUG (your own 07-15 exploratory flag): inspect gex_call_wall/gex_put_wall derivation
-   in the GammaExposure shadow — several days print call wall == put wall at one strike
-   (07-15 BANKNIFTY both 59,000, ≈2.3% above spot, degenerate). Shadow-path: fix if clear,
-   with a unit check on a recorded chain; report what changes on the recorded days.
-D. VERIFY sleeve sizing commit 69a69d5 cold-boots cleanly on the VM (import + a synthetic
-   entry at current capital must give n_lots=1) and that tonight's state file loads. Then
-   continue the standing mining loop (invalidation-exit/re-entry-after-shakeout, strike-level
-   OI) + ≥2 NEW pre-registered hypotheses per the standing loop.
+TONIGHT 2026-07-17→18 WEEKEND RUN (operator addendum — supersedes conflicting older lines).
+You are covering TWO ungraded sessions: Thursday 07-16 and Friday 07-17. Context: your
+Thursday-evening run died 14 min in on the shared session limit, then the VM was unreachable
+19:00→00:32 IST (cause unestablished — sshd answered "Exceeded MaxStartups", disk was NOT
+full, RAM fine; a low-priority postmortem item below). Friday ran clean end-to-end.
+Write your report as logs/night_explorer_2026-07-17.md (covering both days) so the catch-up
+cron sees it. It is the weekend — no market until Monday 07-20; budget turns generously.
+SESSION FACTS (verify, don't re-derive from scratch):
+- 07-16: chop day (BN range 0.71%), options 0 trades (NEUTRAL all day, correct); sleeve day 1:
+  3 TURN trades = −₹483 (2 predicted lag-whipsaws + NIFTY short catch +5,232).
+- 07-17: trend-up day; options book 5 trades (NIFTY 3, SENSEX 2) = −₹1,451, BANKNIFTY options
+  NEVER opened; futures sleeve's first SIGNAL-path trades: BANKNIFTY LONG +12,995 and SENSEX
+  LONG +3,754, both EOD_FLAT = +₹16,749. Same upstream signals, opposite outcomes — the
+  BANKNIFTY option entry was strike-gate-blocked while the sleeve's upstream hook took it.
+- Sleeve risk-based sizing (commit 69a69d5) verified live 07-17: ENTRY events carry
+  n_lots=1/qty. NIFTY 3rd-position entries again margin-rejected (2-position cap at ₹4.15L).
+PRIORITIES (in order):
+A. pt_decisions is now DEFINITIVELY broken: still no logs/pt_decisions.jsonl after Friday —
+   a session with non-neutral bias, 5 executed trades, and 477 shadow records. Fix #6's
+   FILTERED write is unreachable or the path is wrong. Trace it, fix it (logging path — you
+   may commit), prove with a synthetic bar AND explain why Friday wrote nothing.
+B. HEAD-TO-HEAD AUTOPSY of 07-17: why did the options book lose −₹1,451 on a trend day the
+   sleeve monetized? Per-trade: which strikes/gates/exits; was BANKNIFTY's block (the +13k
+   miss in options) SCORE_MARGIN_LOW again, and is the DTE-crush mechanism (Thu/Fri) the
+   driver? This is the theta-vs-linear evidence the 07-14 mining predicted — quantify it.
+C. SLEEVE SCORECARD: extend the real-flow scorecard with days 1-2 (TURN −483, SIGNAL +16,749,
+   tag-separated — they are different hypotheses; keep them separable). Grade exits: the two
+   Friday EOD_FLAT winners — how much was left on table vs ratchet/trailing alternatives?
+   Logs-only analysis, no rail changes.
+D. GEX WALL BUG (your own 07-15 flag): call wall == put wall degenerate at one strike
+   (07-15 BANKNIFTY both 59,000). Shadow-path: fix if clear with a unit check on a recorded
+   chain; report what changes on recorded days.
+E. Standing mining loop + ≥2 NEW pre-registered hypotheses. LOW PRIORITY: Thursday-wedge
+   postmortem — journalctl/syslog 2026-07-16 13:00-19:30 UTC for what starved sshd
+   (MaxStartups, no OOM lines found so far); propose a guard if you find the mechanism.
+Shadows options_analytics/continuation/reversal going 0 on 07-16 was RESOLVED benign
+(bias-gated writers — silent on all-NEUTRAL days, 477 records on 07-17). Not a bug.
 Do NOT touch: platform_core/data/live/{bias_invalidation,crossasset_shadow,kite_adapter,
-live_structure_pipeline}.py and platform_core/intelligence/market_context_builder.py — they
-must reach tomorrow's 09:10 boot exactly as deployed. futures_sleeve.py: verify-only (A/D above).
-Proposals for anything on the live trade path.
+live_structure_pipeline}.py, platform_core/intelligence/market_context_builder.py, and
+futures_sleeve.py (verify-only). Proposals for anything on the live trade path.
