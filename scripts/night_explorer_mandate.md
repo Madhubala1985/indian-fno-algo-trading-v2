@@ -35,6 +35,41 @@ OUTPUT: write logs/night_explorer_<YYYY-MM-DD>.md — findings as MECHANISMS wit
 (never identity narratives), graded decisions, hypothesis results, proposals for the human, and
 what tomorrow's session should watch. End with a one-paragraph executive summary.
 
+BURST MODE 2026-07-18, 24 HOURS (operator addendum — SUPERSEDES everything below it in
+this section; the weekend addendum below is kept only as context, its priorities are DONE
+— see logs/night_explorer_2026-07-17.md):
+You are relaunched every 5 hours (≈00:15/05:15/10:15/15:15/20:15 IST) until ~01:15 IST
+Sun 07-19. If the shared session limit is active you die in minutes — fine, the next slot
+lands after the reset. TOKEN EFFICIENCY IS A GRADED CONSTRAINT this window: (1) FIRST read
+logs/night_explorer_2026-07-17.md and logs/night_explorer_2026-07-18_burst.md (if present)
+— never re-derive established results, never re-chase resolved items (pt_decisions is a
+TABLE in trades.db and healthy; the Thu outage was sshd preauth DoS, closed); (2) go
+straight at the highest item in the queue below not yet marked DONE; (3) commit early and
+often; (4) append findings to logs/night_explorer_2026-07-18_burst.md under "## Run
+<UTC-timestamp>" — short, mechanisms + numbers only.
+PRIORITY QUEUE (work down; mark DONE in the burst report so later runs skip):
+1. P1 REPLAY A/B (highest ₹-value): strike score-margin tie-break, per 07-17 report §3a/§7.
+   Implement behind knob STRIKE_TIEBREAK default OFF; A/B across all recorded replay days:
+   (i) near-tie → higher-delta candidate, (ii) cap oi_support contribution when the
+   runner-up IS the dominant OI wall. Report net/ex-best-day per variant vs base.
+2. P2 REPLAY A/B: same-contract 30-min cooldown instead of full-session block when the
+   prior exit was ratchet/BOS near breakeven AND bias+flow still agree. Knob default OFF.
+3. P3: switch gex_wall_block (shadow-only consumer) to the spot-side wall fields; verify
+   on recorded days. The strike-selection gex_proximity switch needs its own replay A/B.
+4. BUG HUNT, ₹-efficiency-ranked: prefer bugs with direct P&L or blocked-trade cost.
+   Include a SIZING AUDIT: document with numbers the exact binding constraint that made
+   each Friday options trade 1 lot (per-trade max-loss cap vs premium cap vs heat); if the
+   cap mis-measures premium-at-risk vs stop-at-risk, write a proposal (no live change).
+5. EDGE RESEARCH, both books (pre-register; n and ex-best-day mandatory): options — does
+   entering on bias-CONFIRM with WIDER structure exits beat current tight-exit behavior on
+   the recorded corpus? futures — signal-path variants (entry at bias-flip minute; what
+   the NIFTY 3rd position is worth under a smarter margin allocation).
+KNOWN-BY-DESIGN (do not "fix"): simultaneous multi-index entries (Friday 12:10 NIFTY+
+SENSEX) — MAX_OPEN_POSITIONS=3 with correlated-heat 0.40 is intentional breadth.
+All standing HARD RULES apply unchanged (below): live trade path only via knob-default-OFF
++ replay evidence + proposal; safety rails untouched; py_compile/pyflakes everything.
+
+PREVIOUS ADDENDUM (context only, priorities completed):
 TONIGHT 2026-07-17→18 WEEKEND RUN (operator addendum — supersedes conflicting older lines).
 You are covering TWO ungraded sessions: Thursday 07-16 and Friday 07-17. Context: your
 Thursday-evening run died 14 min in on the shared session limit, then the VM was unreachable
