@@ -212,6 +212,15 @@ class GammaExposureSnapshot:
     call_wall_levels: tuple[GammaWallLevel, ...]
     put_wall_levels: tuple[GammaWallLevel, ...]
     metadata: dict[str, JsonValue]
+    # Spot-side-constrained walls (additive, 2026-07-17). call_wall_strike /
+    # put_wall_strike rank by |gamma OI| with NO side constraint, so one
+    # dominant round strike frequently tops BOTH sides (call==put wall) and a
+    # "put wall" can sit above spot — degenerate as support/resistance. These
+    # fields apply the conventional definition: call wall only among strikes
+    # at/above spot (resistance), put wall only at/below spot (support).
+    # Existing consumers are unchanged; new consumers should prefer these.
+    call_wall_above_strike: float | None = None
+    put_wall_below_strike: float | None = None
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
@@ -233,6 +242,8 @@ class GammaExposureSnapshot:
             "net_gamma_regime": self.net_gamma_regime,
             "call_wall_levels": [level.to_dict() for level in self.call_wall_levels],
             "put_wall_levels": [level.to_dict() for level in self.put_wall_levels],
+            "call_wall_above_strike": self.call_wall_above_strike,
+            "put_wall_below_strike": self.put_wall_below_strike,
             "metadata": self.metadata,
         }
 
@@ -313,6 +324,10 @@ class GammaExposureEngine:
         put_gamma_exposure_per_1pct_move = sum(level.gamma_exposure_per_1pct_move for level in put_levels)
         call_wall_levels = self._extract_wall_levels(levels=call_levels, option_type="CALL")
         put_wall_levels = self._extract_wall_levels(levels=put_levels, option_type="PUT")
+        call_wall_above_strike = self._max_gamma_strike_on_side(
+            levels=call_levels, spot_price=spot_price, side="ABOVE")
+        put_wall_below_strike = self._max_gamma_strike_on_side(
+            levels=put_levels, spot_price=spot_price, side="BELOW")
         snapshot_timestamp = _ensure_utc(valuation_timestamp) if valuation_timestamp else self._infer_snapshot_timestamp(points=filtered_points)
         snapshot = GammaExposureSnapshot(
             underlying_symbol=underlying_symbol,
@@ -333,6 +348,8 @@ class GammaExposureEngine:
             net_gamma_regime=self._gamma_regime(total_gamma_exposure=total_gamma_exposure),
             call_wall_levels=tuple(call_wall_levels),
             put_wall_levels=tuple(put_wall_levels),
+            call_wall_above_strike=call_wall_above_strike,
+            put_wall_below_strike=put_wall_below_strike,
             metadata={
                 "raw_point_count": len(points),
                 "filtered_point_count": len(filtered_points),
@@ -424,6 +441,23 @@ class GammaExposureEngine:
         if weight > self._config.change_in_oi_weight_cap:
             weight = self._config.change_in_oi_weight_cap
         return weight
+
+    @staticmethod
+    def _max_gamma_strike_on_side(
+        *,
+        levels: list[GammaExposureLevel],
+        spot_price: float,
+        side: str,
+    ) -> float | None:
+        """Strike with the largest |gamma exposure| at/above (ABOVE) or
+        at/below (BELOW) spot. None when no strike exists on that side."""
+        if side == "ABOVE":
+            eligible = [lv for lv in levels if lv.strike_price >= spot_price]
+        else:
+            eligible = [lv for lv in levels if lv.strike_price <= spot_price]
+        if not eligible:
+            return None
+        return max(eligible, key=lambda lv: fabs(lv.gamma_exposure)).strike_price
 
     def _extract_wall_levels(self, *, levels: list[GammaExposureLevel], option_type: str) -> list[GammaWallLevel]:
         if option_type not in {"CALL", "PUT"}:
