@@ -47,6 +47,12 @@ TABLE in trades.db and healthy; the Thu outage was sshd preauth DoS, closed); (2
 straight at the highest item in the queue below not yet marked DONE; (3) commit early and
 often; (4) append findings to logs/night_explorer_2026-07-18_burst.md under "## Run
 <UTC-timestamp>" — short, mechanisms + numbers only.
+YOUR VERY FIRST ACTION every run — before reading anything else — append one line to
+logs/night_explorer_2026-07-18_burst.md: "## Run <UTC-ts> START — resuming at: <queue
+item>". If you die on the limit mid-run, that line is the only record of what you were
+doing — without it the operator sees burned tokens and zero trace (this happened; it is
+why this rule exists). Likewise commit partial work as soon as it compiles rather than
+batching at the end.
 PRIORITY QUEUE (work down; mark DONE in the burst report so later runs skip):
 1. P1 REPLAY A/B (highest ₹-value): strike score-margin tie-break, per 07-17 report §3a/§7.
    Implement behind knob STRIKE_TIEBREAK default OFF; A/B across all recorded replay days:
