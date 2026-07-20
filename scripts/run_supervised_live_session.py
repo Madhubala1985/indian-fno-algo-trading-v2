@@ -472,6 +472,37 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     if "PAPER_SENSEX_SCORE_MARGIN_MIN" not in env:
         env["PAPER_SENSEX_SCORE_MARGIN_MIN"] = "0.015"
 
+    # ── Strike-adoption composite (operator directive 2026-07-20) ────────────
+    # Night 2026-07-19 H1 "delta05" — the only PASS of that run. On 30
+    # (underlying,day) replay pairs at per-symbol live floors, costs included:
+    #   delta05+gexspot+wide04  +41,928 net / +23,454 ex-best-day (56t, 61% win)
+    #   base                     +9,455 net /    +737 ex-best-day (49t)
+    # Gain spread over 9 days (7 positive); survives dropping the best changed
+    # day. H6 shows the 0.04 exit threshold sits on a 0.02-0.05 plateau.
+    #
+    # STRIKE_TIEBREAK_MIN_FLOOR=0.05 IS LOAD-BEARING, NOT DEFENSIVE. The same
+    # tie-break measured a LOSS at SENSEX's loose 0.015 floor (set immediately
+    # above), where it unlocks junk near-ties. It admits NIFTY/BANKNIFTY (0.05)
+    # and excludes SENSEX. Never ship delta without it.
+    #
+    # HONEST STATUS: this is REPLAY evidence with ZERO out-of-sample days. The
+    # 07-20 session traded zero times, so its intended first OOS test never
+    # happened. setdefault() so any explicit env wins; STRIKE_TIEBREAK="" kills it.
+    env.setdefault("STRIKE_TIEBREAK", "delta")
+    env.setdefault("STRIKE_TIEBREAK_MIN_FLOOR", "0.05")
+    env.setdefault("STRIKE_GEX_SPOTSIDE", "1")
+    env.setdefault("EXIT_BOS_MIN_PEAK_PCT", "0.04")
+    # Fail-closed interlock: an unguarded delta tie-break reaches SENSEX, where
+    # it is measured-negative. Refuse to launch rather than trade the losing arm.
+    if (env.get("STRIKE_TIEBREAK") == "delta"
+            and float(env.get("STRIKE_TIEBREAK_MIN_FLOOR", "0") or 0) <= 0.0):
+        raise SystemExit(
+            "REFUSING TO LAUNCH: STRIKE_TIEBREAK=delta with "
+            "STRIKE_TIEBREAK_MIN_FLOOR=0 lets the delta tie-break reach SENSEX "
+            "at its 0.015 floor, where it measured a LOSS. Set "
+            "STRIKE_TIEBREAK_MIN_FLOOR=0.05, or STRIKE_TIEBREAK= to disable."
+        )
+
     # Aggressive conviction-scaled sizing — ALL live modes incl. real_armed
     # (user directive 2026-07-05: real_armed must run the EXACT profile the
     # paper/dry-run sessions validated — parity is the point; a derated armed
