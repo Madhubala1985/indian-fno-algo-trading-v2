@@ -4041,6 +4041,7 @@ def on_ticks(raw_ticks):
                                 _tb_pick, _tb_fired = _delta_tiebreak_pick(
                                     _recs, _tb_floor, _STRIKE_TIEBREAK,
                                     _STRIKE_TIEBREAK_MIN_FLOOR, _tb_margin,
+                                    underlying=_current_state.option_underlying,
                                 )
                                 if _tb_fired:
                                     _changed = _tb_pick.option_symbol != best.option_symbol

@@ -55,10 +55,50 @@ def test_floor_005_symbols_are_admitted(sym):
 
 
 def test_unguarded_config_would_reach_sensex():
-    """Documents WHY the guard is mandatory: min_floor=0 lets delta hit SENSEX."""
+    """Documents WHY the guard is mandatory: min_floor=0 lets delta hit SENSEX
+    when the symbol is not supplied (floor proxy alone)."""
     _, fired = _delta_tiebreak_pick(
         _pair(0.30, 0.55), FLOOR["SENSEX"], "delta", 0.0, margin=0.001)
     assert fired is True
+
+
+# ── 1b. the env-independent symbol guard (07-20 night-agent finding) ────────
+# The SENSEX floor is 0.015 only because the launcher forces
+# PAPER_SENSEX_SCORE_MARGIN_MIN=0.015. Without the launcher SENSEX falls back to
+# the profile default 0.050, which PASSES the floor test — silently enabling
+# delta on the one symbol where it measured a LOSS. The symbol check must hold
+# where the floor proxy fails.
+
+def test_sensex_refused_even_when_its_floor_is_005():
+    """The exact hole: SENSEX at profile-default 0.050 must STILL be refused."""
+    pick, fired = _delta_tiebreak_pick(
+        _pair(0.30, 0.55), 0.05, "delta", ADOPTION_MIN_FLOOR,
+        margin=0.001, underlying="SENSEX")
+    assert (pick, fired) == (None, False)
+
+
+def test_sensex_refused_even_with_min_floor_zero():
+    """Belt and braces: symbol check is independent of the floor knob entirely."""
+    _, fired = _delta_tiebreak_pick(
+        _pair(0.30, 0.55), 0.05, "delta", 0.0, margin=0.001, underlying="SENSEX")
+    assert fired is False
+
+
+@pytest.mark.parametrize("sym", ["NIFTY", "BANKNIFTY", "banknifty", " NiFtY "])
+def test_validated_symbols_still_fire(sym):
+    """Case/whitespace tolerant, and the measured symbols still work."""
+    _, fired = _delta_tiebreak_pick(
+        _pair(0.30, 0.55), 0.05, "delta", ADOPTION_MIN_FLOOR,
+        margin=0.001, underlying=sym)
+    assert fired is True
+
+
+def test_unknown_symbol_is_refused():
+    """A symbol never measured (e.g. FINNIFTY) must not inherit the result."""
+    _, fired = _delta_tiebreak_pick(
+        _pair(0.30, 0.55), 0.05, "delta", ADOPTION_MIN_FLOOR,
+        margin=0.001, underlying="FINNIFTY")
+    assert fired is False
 
 
 # ── 2. only near-ties, and only when the gate would have blocked ─────────────
