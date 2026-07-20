@@ -2312,6 +2312,9 @@ print(
     f"  correlated_same_dir_cap={_CORRELATED_HEAT_FRACTION:.0%}"
     f"  heat_cap={_MAX_HEAT_FRACTION:.0%}"
     f"  freeze_qty=N:{_FREEZE_QTY_BY_SYM['NIFTY']} B:{_FREEZE_QTY_BY_SYM['BANKNIFTY']} S:{_FREEZE_QTY_BY_SYM['SENSEX']}"
+    f"  per_trade_max_loss={_PER_TRADE_MAX_LOSS_FRAC:.1%}×adverse{_PER_TRADE_ADVERSE_FRAC:.2f}"
+    f"  regime_desize_mult={_REGIME_DESIZE_MULT:g}"
+    f"  reentry_haircut={_REENTRY_RISK_HAIRCUT:g}"
 )
 if _TIER2_RISK_FRAC > 0.025:
     print(

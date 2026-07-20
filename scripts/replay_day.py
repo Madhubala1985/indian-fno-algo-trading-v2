@@ -117,6 +117,10 @@ def main() -> int:
         print(f"  {t.entry_ts[11:16]}→{t.exit_ts[11:16]}  {t.contract:20} {t.direction:5} "
               f"lots={t.lots} conv={t.conviction:.2f}  entry={t.entry_prem:.1f} exit={t.exit_prem:.1f} "
               f"pnl=₹{t.pnl:>+8.0f}  {t.reason}")
+    if res.bias_inval:
+        print("  bias-invalidation transitions:")
+        for tr in res.bias_inval:
+            print(f"    {tr['ts'][11:16]}  bar={tr['bar']:>3}  → {tr['to']:<11} {tr['reason']}")
     print("-" * 74)
     print(f"  TRADES {len(res.trades)}   TOTAL P&L ₹{res.total_pnl:+,.0f}   (conv_floor={args.conv_floor})")
     if res.blocks:

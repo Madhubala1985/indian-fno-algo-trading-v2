@@ -79,6 +79,9 @@ from platform_core.analytics.structure.session_context import (
 from platform_core.options.gex_gate import gex_wall_block as _gex_wall_block
 # Real round-trip toll (brokerage/STT/txn/GST/stamp + spread) — P&L is NET.
 from platform_core.execution.transaction_costs import apply_costs as _apply_costs
+# Bias-invalidation engine — SAME class as live (batch 2, 2026-07-15): replay
+# now models the evidence-weighted intraday bias override + thesis-death exit.
+from platform_core.data.live.bias_invalidation import BiasInvalidationEngine
 
 _GEX_REGIME_GATE: bool = (os.environ.get("GEX_REGIME_GATE", "0") == "1")
 _GEX_WALL_PROXIMITY_PCT: float = float(os.environ.get("GEX_WALL_PROXIMITY_PCT", "0.005") or 0.005)
@@ -97,6 +100,41 @@ _REPLAY_ROBUST_ATM_IV: bool = (os.environ.get("REPLAY_ROBUST_ATM_IV", "0") == "1
 # a floor calibrated at multiplier 1.0. Pre-DTE margin is DTE-invariant.
 # Shared env name with the live pipeline. Default OFF = current live behaviour.
 _MARGIN_PRE_DTE: bool = (os.environ.get("STRIKE_MARGIN_PRE_DTE", "0") == "1")
+
+# ── P1 A/B (night 2026-07-18): strike score-margin tie-break. The 07-17 live
+# session lost the whole BANKNIFTY trend day to 115 consecutive SCORE_MARGIN
+# blocks: the dominant 59,000 OI wall pumps the OTM candidate's oi_support to
+# 1.00, exactly offsetting its worse delta/theta, and the margin gate reads the
+# resulting near-tie between two structurally different strikes as "no
+# conviction". Two candidate mechanisms, both default OFF (STRIKE_TIEBREAK=""):
+#   "delta": when the top-2 margin is below the gate floor, enter the
+#            higher-|delta| of the two instead of blocking — a score tie
+#            between different strikes is a coin the scorer cannot call, and
+#            delta picks the better *vehicle* for a directional trade.
+#   "oicap": cap the oi_support score of the chain-max-OI strike (1.00 by
+#            construction) at STRIKE_OICAP_MAX before ranking — a wall is a
+#            *destination*, not a vehicle — then re-rank and recompute the
+#            margin on the adjusted scores. The gate itself is unchanged.
+_STRIKE_TIEBREAK: str = os.environ.get("STRIKE_TIEBREAK", "").strip().lower()
+_STRIKE_OICAP_MAX: float = float(os.environ.get("STRIKE_OICAP_MAX", "0.60") or 0.60)
+# Night 07-19 delta05 finding: the "delta" tie-break PASSES only at symbols whose
+# score-margin gate floor is 0.05 (NIFTY/BANKNIFTY) and DAMAGES SENSEX at its
+# loose 0.015 floor (junk near-ties get unlocked). This guard restricts the
+# delta branch to runs whose gate floor is >= the threshold; 0.0 = unrestricted
+# (legacy behavior). The proposed adoption config is STRIKE_TIEBREAK=delta with
+# STRIKE_TIEBREAK_MIN_FLOOR=0.05. oicap is intentionally NOT guarded.
+_STRIKE_TIEBREAK_MIN_FLOOR: float = float(
+    os.environ.get("STRIKE_TIEBREAK_MIN_FLOOR", "0") or 0)
+
+# ── P2 A/B (night 2026-07-18): same-contract SOFT block. On 07-17 the book's
+# right-direction entries were ratchet/BOS-shaken out near breakeven, then the
+# same-contract session block locked the book out of the resumption for the
+# rest of the day (₹5.8k swing on real premiums). Knob: when a LOSING exit was
+# a near-breakeven ratchet/BOS shakeout (gross |pnl| ≤ 10% of premium at
+# risk), do NOT count it toward the session block — instead arm a cooldown of
+# this many minutes on (contract, direction); re-entry after the cooldown also
+# requires recorded flow (when present) to agree with bias. 0 = OFF (live).
+_SOFT_CONTRACT_BLOCK_MIN: int = int(os.environ.get("SAME_CONTRACT_SOFT_BLOCK_MIN", "0") or 0)
 
 
 def _robust_atm_iv(octx) -> float:
@@ -181,6 +219,15 @@ _TRAIL_GIVEBACK_FRAC: float = float(os.environ.get("EXIT_TRAIL_GIVEBACK_FRAC", "
 # promoted from 1m to this timeframe ("MIN_5" / "MIN_15"); stop, breakeven
 # floor and TP still check every minute. "" = off (live behaviour).
 _EXIT_STRUCT_TF_AFTER_ARM: str = os.environ.get("EXIT_STRUCT_TF_AFTER_ARM", "").strip()
+# Wider-structure-exit A/B (night 2026-07-19, queue 5 options): Friday 07-17's
+# losing exits were all PRE-ARM 1m BOS exits, which AFTER_ARM alone cannot touch.
+# FROM_ENTRY: the promoted TF (above) decides structure exits for the WHOLE trade,
+# armed or not — 1m structure exits are ignored entirely. Requires AFTER_ARM set.
+_EXIT_STRUCT_TF_FROM_ENTRY: bool = os.environ.get("EXIT_STRUCT_TF_FROM_ENTRY", "0") == "1"
+# MIN_PEAK: an UNARMED position ignores 1m structure exits until premium has been
+# at least X in its favor (peak ≥ entry×(1+X)); once seen, 1m exits re-arm. The
+# 30% stop, fast-fail and TP still check every minute. 0 = off (live behaviour).
+_EXIT_BOS_MIN_PEAK_PCT: float = float(os.environ.get("EXIT_BOS_MIN_PEAK_PCT", "0") or 0)
 
 # ── 2026-07-06 live-session knob candidates (all default OFF, A/B only) ──────
 # A. Day giveback lock: once day-peak net P&L ≥ 0.5% of session-open capital,
@@ -225,6 +272,77 @@ _STRIKE_ROTATE_AFTER_LOSS: bool = os.environ.get("STRIKE_ROTATE_AFTER_LOSS", "0"
 _BIAS_FLIP_ON_OR_BREAK: bool = os.environ.get("BIAS_FLIP_ON_OR_BREAK", "0") == "1"
 _BIAS_FLIP_MIN_EXT: float = float(os.environ.get("BIAS_FLIP_MIN_EXT", "0.5") or 0.5)
 _BIAS_FLIP_MIN_IST_HOUR: int = int(os.environ.get("BIAS_FLIP_MIN_IST_HOUR", "0") or 0)
+
+# ── BiasInvalidationEngine parity (batch 2, 2026-07-15) ──────────────────────
+# The live pipeline runs the engine on every finalized bar UPSTREAM of strike
+# selection (live_structure_pipeline ~3754) and force-exits thesis-dead
+# positions (~4184). Replays before today did NOT model it → divergence from
+# live as of the engine's first live day. Same evidence inputs here: replay OR
+# (same OpeningRangeEngine), replay BOS/CHOCH (same StructureEngine events),
+# and RECORDED constituent flow from logs/crossasset_shadow.jsonl when the day
+# has it (mom recomputed from the recorded series exactly like the live
+# rolling buffer — the jsonl doesn't persist it). REPLAY_BIAS_INVAL=0 gives
+# the engine-less legacy replay for A/B. BIAS_INVAL_* thresholds stay whatever
+# the env says (FROZEN defaults) — this knob only controls the wiring.
+_REPLAY_BIAS_INVAL: bool = (os.environ.get("REPLAY_BIAS_INVAL", "1") == "1")
+
+
+def load_recorded_flow(underlying: str, day: str,
+                       path: str = "logs/crossasset_shadow.jsonl") -> dict:
+    """Recorded flow for `underlying` on `day` (ISO date, UTC ts prefix) →
+    {minute "YYYY-MM-DDTHH:MM" → {flow_bias, avg_flow_pct, mom}} shaped like
+    live get_fresh_flow(). Empty dict when the day has no records (07-08 era:
+    engine then runs on OR/structure evidence only, flow=None — same as a live
+    day with a dead constituent feed). Never raises."""
+    import json as _json
+    out: dict[str, dict] = {}
+    buf: list[float] = []
+    try:
+        from pathlib import Path as _Path
+        fh = _Path(path)
+        if not fh.exists():
+            return out
+        for line in fh.read_text().splitlines():
+            try:
+                rec = _json.loads(line)
+            except Exception:
+                continue
+            if rec.get("kind") != "flow" or rec.get("underlying") != underlying:
+                continue
+            ts = str(rec.get("ts") or "")
+            if not ts.startswith(day):
+                continue
+            avg = rec.get("avg_flow_pct")
+            if avg is None:
+                continue
+            buf.append(float(avg))
+            if len(buf) > 10:
+                buf.pop(0)
+            mom = (sum(buf[-5:]) / 5 - sum(buf[:5]) / 5) if len(buf) == 10 else None
+            out[ts[:16]] = {
+                "flow_bias": rec.get("flow_bias"),
+                "avg_flow_pct": float(avg),
+                "mom": (round(mom, 3) if mom is not None else None),
+            }
+    except Exception:
+        return out
+    return out
+
+
+def _flow_at(flow_by_min: dict, minute_iso: str, max_lookback_min: int = 5):
+    """Latest recorded flow at-or-before this bar minute, within the same
+    5-minute freshness the live get_fresh_flow() enforces. None if absent."""
+    if not flow_by_min:
+        return None
+    try:
+        t = datetime.fromisoformat(minute_iso)
+        for back in range(max_lookback_min + 1):
+            rec = flow_by_min.get((t - timedelta(minutes=back)).isoformat()[:16])
+            if rec is not None:
+                return rec
+    except Exception:
+        return None
+    return None
 
 # OPEN-DRIVE window (gate forensics 2026-07-06: the WARM_START/SESSION_PHASE
 # blocked set ran 72% WR / +21,788 net over 12 days — the open's momentum is
@@ -344,6 +462,7 @@ class ReplayResult:
     day: str
     trades: list = field(default_factory=list)
     blocks: dict = field(default_factory=dict)   # entry-gate block counts by reason
+    bias_inval: list = field(default_factory=list)  # engine transitions (bar/ts/to/reason)
 
     @property
     def total_pnl(self) -> float:
@@ -422,6 +541,11 @@ class SurgicalReplay:
         self._last_mtf_finalized: dict = {}
         if _EXIT_STRUCT_TF_AFTER_ARM:
             self._build_exit_structure_stack(struct_symbol)
+
+        # Bias-invalidation parity (batch 2): the SAME engine class live runs,
+        # fresh per replayed day like live's per-day in-memory state. None when
+        # the A/B knob turns the wiring off (engine-less legacy replay).
+        self._bias_inval = BiasInvalidationEngine() if _REPLAY_BIAS_INVAL else None
 
     def _build_exit_structure_stack(self, struct_symbol: str) -> None:
         """Second swing→structure stack at _EXIT_STRUCT_TF_AFTER_ARM, fed with
@@ -614,9 +738,15 @@ class SurgicalReplay:
 
     def run_day(self, *, underlying: str, feed_symbol: str, exchange: str, expiry: date,
                 lot_size: int, strike_step: float, day: date,
-                session_bars: list[LiveBar], chain_by_min: dict, fetcher) -> ReplayResult:
+                session_bars: list[LiveBar], chain_by_min: dict, fetcher,
+                flow_by_min: dict | None = None) -> ReplayResult:
         res = ReplayResult(underlying=underlying, day=day.isoformat())
         pos: ReplayTrade | None = None
+
+        # Recorded constituent flow for the engine (batch 2): auto-load from the
+        # shadow log unless the caller injected a series (tests / other paths).
+        if self._bias_inval is not None and flow_by_min is None:
+            flow_by_min = load_recorded_flow(underlying, day.isoformat())
 
         # ── Live ENTRY-gate state (fidelity v2, reset per day — matches live's
         # fresh-each-session state). Names/semantics mirror live UnderlyingState. ─
@@ -629,6 +759,7 @@ class SurgicalReplay:
         reentry_loss_streak = 0             # consecutive losing exits (chop brake)
         reentry_lockout_until_bar = -1      # entries blocked until this bar
         contract_loss_tracker = _SameContractLossTracker()  # same-contract session loss limit
+        soft_cooldown_until: dict[str, int] = {}  # [P2] (contract:direction) → bar_idx
         direction_counter = _DirectionEntryCounter()        # same-direction session entry cap
         or_engine = _OREngine()             # live OR gate (buffer + extension chase)
         session_engine = _SessionEngine()   # live session phases (blocks 15:00+ CLOSING)
@@ -679,6 +810,49 @@ class SurgicalReplay:
             minute_iso = bar.start_timestamp.astimezone(timezone.utc).isoformat()
             ctx = self._ctx.build(valuation_timestamp=bar.start_timestamp)
             bias = str(ctx.bias)
+            conf_eff = float(ctx.confidence)
+
+            # ── BiasInvalidationEngine (batch 2) — SAME wiring as live: evaluate
+            # on EVERY finalized bar (state machine continuity), upstream of both
+            # position management (thesis-death exit) and entry logic, so every
+            # downstream consumer sees ONE consistent effective bias. Evidence =
+            # replay OR + this bar's real BOS/CHOCH + recorded flow (≤5 min old,
+            # like live get_fresh_flow). Mirrors live_structure_pipeline ~3754.
+            if self._bias_inval is not None:
+                _bi_opp_side = "bearish" if bias == "LONG" else "bullish"
+                _bi_opp = _bi_same = 0
+                for _bev in emitted:
+                    _bet = (_bev.event_type.value
+                            if hasattr(_bev.event_type, "value") else str(_bev.event_type))
+                    if _bet not in ("BOS", "CHOCH"):
+                        continue
+                    _bes = (_bev.side.value
+                            if hasattr(_bev.side, "value") else str(_bev.side)).lower()
+                    if _bes == _bi_opp_side:
+                        _bi_opp += 1
+                    elif _bes in ("bullish", "bearish"):
+                        _bi_same += 1
+                _bi_range = or_engine.current_range
+                _bi_eff, _bi_cap, _bi_info = self._bias_inval.evaluate(
+                    underlying=underlying,
+                    day=day.isoformat(),
+                    bar_index=bar_idx,
+                    raw_bias=bias,
+                    close=spot,
+                    bar_open=bar.open_price,
+                    or_high=(_bi_range.or_high if _bi_range else None),
+                    or_low=(_bi_range.or_low if _bi_range else None),
+                    or_ready=bool(or_engine.ready),
+                    opposite_breaks=_bi_opp,
+                    same_breaks=_bi_same,
+                    flow=_flow_at(flow_by_min or {}, minute_iso),
+                )
+                if "transition" in _bi_info:
+                    res.bias_inval.append({"ts": minute_iso, **_bi_info["transition"]})
+                if _bi_eff != bias:
+                    bias = _bi_eff
+                    if _bi_cap is not None:
+                        conf_eff = min(conf_eff, _bi_cap)
 
             # [knob F] Bias-staleness FLIP — see knob decl. A decisive break of the
             # OPPOSITE OR side (directional vol expansion) flips the stale HTF bias
@@ -708,7 +882,7 @@ class SurgicalReplay:
                     pct = cur / max(pos.entry_prem, 0.001)
                     _armed = (_RATCHET_ARM_PCT > 0.0
                               and pos.peak_prem >= pos.entry_prem * (1.0 + _RATCHET_ARM_PCT))
-                    if _EXIT_STRUCT_TF_AFTER_ARM and _armed:
+                    if _EXIT_STRUCT_TF_AFTER_ARM and (_armed or _EXIT_STRUCT_TF_FROM_ENTRY):
                         # Promoted exit: an armed (free-rolling) runner ignores
                         # 1m noise — only a higher-TF BOS/CHOCH against the
                         # position exits it. Stop/breakeven floor/TP still
@@ -720,6 +894,20 @@ class SurgicalReplay:
                                 f"STRUCTURE_EXIT_{_EXIT_STRUCT_TF_AFTER_ARM}")
                     else:
                         reason = _structure_exit_reason(emitted, pos.direction)
+                        # [knob] wide pre-arm berth: suppress 1m structure exits
+                        # until the trade has seen ≥ MIN_PEAK favorable premium.
+                        if (reason is not None and not _armed
+                                and _EXIT_BOS_MIN_PEAK_PCT > 0.0
+                                and pos.peak_prem < pos.entry_prem * (1.0 + _EXIT_BOS_MIN_PEAK_PCT)):
+                            reason = None
+                    # THESIS_INVALIDATED (batch 2, mirrors live ~4184): the
+                    # engine stands NEUTRALIZED/FLIPPED against this position's
+                    # direction — its reason to exist is gone. Same precedence
+                    # as live: after the structure signal, before the stop.
+                    if (reason is None and self._bias_inval is not None
+                            and self._bias_inval.position_direction_invalidated(
+                                underlying, pos.direction)):
+                        reason = "THESIS_INVALIDATED"
                     if reason is None and pct <= self.STOP_PCT:
                         reason = f"STOP_LOSS ({1.0 - pct:.0%} loss)"
                     # [knob C] fast-fail: unarmed + spot back inside the OR.
@@ -768,9 +956,21 @@ class SurgicalReplay:
                             last_struct_exit_bar, last_struct_exit_contract = bar_idx, pos.contract
                         # Guards classify on GROSS (pnl + costs) — the toll must
                         # not turn a breakeven exit into a "loss" (mirrors live).
-                        contract_loss_tracker.record_exit(
-                            contract=pos.contract, direction=pos.direction,
-                            pnl=pos.pnl + pos.costs)
+                        _gross = pos.pnl + pos.costs
+                        # [P2] near-breakeven ratchet/BOS shakeout → soft cooldown
+                        # on the (contract, direction) instead of a session-block
+                        # loss count. Everything else records as before.
+                        if (_SOFT_CONTRACT_BLOCK_MIN > 0 and _gross < 0
+                                and abs(_gross) <= 0.10 * pos.entry_prem * pos.lot_size * pos.lots
+                                and ("BREAKEVEN_RATCHET" in reason
+                                     or "STRUCTURE_EXIT" in reason)):
+                            soft_cooldown_until[f"{pos.contract}:{pos.direction}"] = (
+                                bar_idx + _SOFT_CONTRACT_BLOCK_MIN)
+                            _block("SOFT_COOLDOWN_ARMED")
+                        else:
+                            contract_loss_tracker.record_exit(
+                                contract=pos.contract, direction=pos.direction,
+                                pnl=_gross)
                         # Chop brake: a win resets the streak (trend); consecutive
                         # losing exits lock the underlying out briefly.
                         if pos.pnl + pos.costs > 0:
@@ -829,6 +1029,44 @@ class SurgicalReplay:
                         _block("DIAG_IVFIX_PICK_CHANGED")
                 if best is None:
                     continue
+
+                # ── [P1 A/B] STRIKE_TIEBREAK (see knob decl). Produces the
+                # ranked (composite, weighted_raw, rec) list the margin gate
+                # reads below; identical to sel.recommendations when OFF. ──
+                _ranked = [(r.composite_score, r.breakdown.weighted_raw, r)
+                           for r in sel.recommendations]
+                _tiebreak_pass = False
+                if _STRIKE_TIEBREAK in ("oicap", "both") and _ranked:
+                    _cfg = self._strike.config
+                    _tot_w = (_cfg.delta_fitness_weight + _cfg.oi_support_weight
+                              + _cfg.oi_activity_weight + _cfg.gex_proximity_weight
+                              + _cfg.iv_attractiveness_weight + _cfg.liquidity_weight
+                              + _cfg.max_pain_distance_weight + _cfg.theta_efficiency_weight)
+                    _w_oi = _cfg.oi_support_weight / max(_tot_w, 1e-9)
+                    _adj = []
+                    for _c, _w, _r in _ranked:
+                        _b = _r.breakdown
+                        if _b.oi_support > _STRIKE_OICAP_MAX and _b.oi_support >= 0.999:
+                            _w2 = _w - _w_oi * (_b.oi_support - _STRIKE_OICAP_MAX)
+                            _adj.append((max(min(_w2 * _b.dte_multiplier, 1.0), 0.0), _w2, _r))
+                        else:
+                            _adj.append((_c, _w, _r))
+                    _adj.sort(key=lambda t: t[0], reverse=True)
+                    if _adj[0][2].option_symbol != best.option_symbol:
+                        _block("TIEBREAK_OICAP_PICK_CHANGED")
+                    _ranked = _adj
+                    best = _ranked[0][2]
+                if (_STRIKE_TIEBREAK in ("delta", "both") and len(_ranked) >= 2
+                        and self.MIN_SCORE_MARGIN >= _STRIKE_TIEBREAK_MIN_FLOOR):
+                    _m0 = ((_ranked[0][1] - _ranked[1][1]) if _MARGIN_PRE_DTE
+                           else (_ranked[0][0] - _ranked[1][0]))
+                    if _m0 < self.MIN_SCORE_MARGIN:
+                        _r0, _r1 = _ranked[0][2], _ranked[1][2]
+                        _pick = _r0 if abs(_r0.delta) >= abs(_r1.delta) else _r1
+                        if _pick.option_symbol != best.option_symbol:
+                            _block("TIEBREAK_DELTA_PICK_CHANGED")
+                        best = _pick
+                        _tiebreak_pass = True   # near-tie resolved, margin gate passes
 
                 # [knob E] Strike rotation after loss: if the top pick is a strike
                 # still inside its same-contract stop/struct cooldown, rotate to the
@@ -890,6 +1128,18 @@ class SurgicalReplay:
                 if _blk is None and contract_loss_tracker.blocked(
                         contract=best.option_symbol, direction=bias):
                     _blk = _gate("SAME_CONTRACT_SESSION_BLOCK")
+                # [P2] soft cooldown from a near-breakeven shakeout exit: block
+                # during the cooldown; afterwards require recorded flow (when
+                # present and non-neutral) to agree with bias before re-entry.
+                if _blk is None and _SOFT_CONTRACT_BLOCK_MIN > 0:
+                    _sc_until = soft_cooldown_until.get(f"{best.option_symbol}:{bias}")
+                    if _sc_until is not None and bar_idx < _sc_until:
+                        _blk = _gate("SAME_CONTRACT_SOFT_COOLDOWN")
+                    elif _sc_until is not None:
+                        _f = _flow_at(flow_by_min or {}, minute_iso)
+                        _fb = str((_f or {}).get("flow_bias") or "").upper()
+                        if _fb in ("LONG", "SHORT") and _fb != bias:
+                            _blk = _gate("SAME_CONTRACT_SOFT_FLOW_DISAGREE")
                 # [A-direction] Same-direction session entry cap (shared with live).
                 if _blk is None and direction_counter.blocked(direction=bias):
                     _blk = _gate("DIRECTION_ENTRY_CAP")
@@ -941,15 +1191,17 @@ class SurgicalReplay:
                     continue
 
                 margin = 0.0
-                recs = sel.recommendations if hasattr(sel, "recommendations") else []
-                if len(recs) >= 2:
+                if len(_ranked) >= 2:
                     if _MARGIN_PRE_DTE:
-                        margin = (recs[0].breakdown.weighted_raw
-                                  - recs[1].breakdown.weighted_raw)
+                        margin = _ranked[0][1] - _ranked[1][1]
                     else:
-                        margin = recs[0].composite_score - recs[1].composite_score
-                if margin < self.MIN_SCORE_MARGIN and _gate("SCORE_MARGIN") is not None:
+                        margin = _ranked[0][0] - _ranked[1][0]
+                if (margin < self.MIN_SCORE_MARGIN and not _tiebreak_pass
+                        and _gate("SCORE_MARGIN") is not None):
+                    _block("SCORE_MARGIN")   # was silently uncounted pre-2026-07-18
                     continue
+                if _tiebreak_pass:
+                    _block("TIEBREAK_DELTA_ENTRY_ALLOWED")
                 conv, _ = self._conv.score(
                     composite=best.composite_score, score_margin=margin,
                     liquidity=best.breakdown.liquidity,
@@ -963,7 +1215,7 @@ class SurgicalReplay:
                 # % -of-capital sizing (mirrors live Tier 2) — NOT a fixed lot count.
                 lots = self._size_lots(
                     best=best, underlying=underlying, bias=bias, atm_iv=octx.atm_iv,
-                    conf=ctx.confidence, equity=equity, peak=peak_equity,
+                    conf=conf_eff, equity=equity, peak=peak_equity,
                     session_open=session_open, open_premium_cost=open_premium_cost,
                     lot_size=lot_size, bar_ts=bar.start_timestamp)
                 if lots < 1:
@@ -984,7 +1236,7 @@ class SurgicalReplay:
                 pos = ReplayTrade(underlying=underlying, contract=best.option_symbol,
                                   direction=bias, entry_ts=minute_iso, entry_prem=entry,
                                   lots=lots, lot_size=lot_size, conviction=round(conv, 3),
-                                  mcb_conf=round(float(ctx.confidence), 3),
+                                  mcb_conf=round(conf_eff, 3),
                                   trend_score=round(float(getattr(ctx, "trend_score", 0.0)), 3),
                                   or_ext=round(_or_ext, 3), peak_prem=entry,
                                   would_block=",".join(_would_fire))

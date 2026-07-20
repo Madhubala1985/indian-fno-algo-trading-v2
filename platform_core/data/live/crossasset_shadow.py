@@ -22,21 +22,86 @@ a missing feed never raises and never disturbs the trade path.
 
 This module is standalone and is NOT imported by live_structure_pipeline. Wiring the pre-open
 call into the live boot sequence is a hot-path change held for explicit go-ahead.
+
+v2 (2026-07-15, batch 1): intraday flow is INDEX-WEIGHTED over top-8 constituent baskets
+(_CONSTITUENTS_W, one batched kite.ltp per poll); legacy top-3 equal mean logged as
+avg_flow_pct_eq; weighted participation logged as breadth. CROSSASSET_WEIGHTED=0 reverts.
 """
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
 
-# Index-heavy constituents whose intraday flow leads the index (directive §4.2).
+# LEGACY top-3 equal-weight baskets (pre-2026-07-15). Still computed every poll
+# as `avg_flow_pct_eq` (series continuity for the shadow corpus), and becomes
+# the PRIMARY flow again with CROSSASSET_WEIGHTED=0 (instant revert knob).
 _CONSTITUENTS = {
     "NIFTY":     ("HDFCBANK", "RELIANCE", "ICICIBANK"),
     "SENSEX":    ("HDFCBANK", "RELIANCE", "ICICIBANK"),
     "BANKNIFTY": ("HDFCBANK", "ICICIBANK", "SBIN"),
 }
+
+# ── v2 weighted baskets (batch 1, 2026-07-15) ────────────────────────────────
+# Top-8 constituents per index with their REAL index weights (%, static
+# snapshot as-of 2026-06 month-end factsheets, rounded to 0.1). Static is fine:
+# index weights drift slowly (free-float rebalances are quarterly and small) —
+# refresh the numbers when the baskets are next touched. The top-3 equal
+# basket covered only ≈31-55% of index weight and let one stock masquerade as
+# "participation"; top-8 covers ≈54% (NIFTY) / ≈59% (SENSEX) / ≈87% (BANKNIFTY).
+# NOTE: the NIFTY and SENSEX top-8 NAME sets genuinely coincide (both are the
+# same mega-caps — SENSEX's 30-stock universe has none of the NIFTY small
+# free-float tails, the divergence lives below rank 8); what differs is the
+# WEIGHTS — the 30-stock SENSEX concentrates more per name. BANKNIFTY is
+# banks-only by construction. All symbols quoted on NSE (SENSEX constituents
+# via their NSE listings — same equity, deeper feed).
+_CONSTITUENTS_W: dict[str, tuple[tuple[str, float], ...]] = {
+    "NIFTY": (
+        ("HDFCBANK", 13.2), ("ICICIBANK", 9.1), ("RELIANCE", 8.1),
+        ("INFY", 5.0), ("BHARTIARTL", 4.7), ("LT", 4.2),
+        ("ITC", 4.0), ("TCS", 3.9),
+    ),
+    "SENSEX": (
+        ("HDFCBANK", 14.8), ("ICICIBANK", 10.4), ("RELIANCE", 9.2),
+        ("INFY", 6.1), ("BHARTIARTL", 5.1), ("LT", 4.8),
+        ("ITC", 4.4), ("TCS", 4.3),
+    ),
+    "BANKNIFTY": (
+        ("HDFCBANK", 28.5), ("ICICIBANK", 25.4), ("SBIN", 8.7),
+        ("KOTAKBANK", 8.5), ("AXISBANK", 8.2), ("BOB", 3.1),
+        ("PNB", 2.7), ("CANBK", 2.3),
+    ),
+}
+
+
+def _weighted_enabled() -> bool:
+    """CROSSASSET_WEIGHTED=0 reverts to the legacy top-3 equal basket."""
+    return os.environ.get("CROSSASSET_WEIGHTED", "1") != "0"
+
+
+def _basket(underlying: str) -> tuple[tuple[str, ...], dict[str, float]]:
+    """(symbols, weight-by-symbol) for the active mode. Legacy mode returns the
+    top-3 basket with unit weights, which makes the weighted mean degenerate to
+    the old equal-weighted mean exactly."""
+    if _weighted_enabled():
+        pairs = _CONSTITUENTS_W.get(underlying, ())
+        if pairs:
+            return tuple(s for s, _ in pairs), {s: w for s, w in pairs}
+    syms = _CONSTITUENTS.get(underlying, ())
+    return tuple(syms), {s: 1.0 for s in syms}
+
+
+def all_basket_symbols(underlyings) -> tuple[str, ...]:
+    """Union of every active basket across `underlyings` — the ONE batched
+    kite.ltp() universe per poll (~24 symbols max, well under Kite's limit)."""
+    seen: dict[str, None] = {}
+    for u in underlyings:
+        for s in _basket(u)[0]:
+            seen.setdefault(s)
+    return tuple(seen)
 
 # ── Live-readable adaptive state (2026-07-14) ─────────────────────────────────
 # The trade path may READ this to let real-time flow override a lagging HTF read
@@ -66,6 +131,7 @@ class CrossAssetFeeds(Protocol):
     def overnight_sp_pct(self, session_date) -> float | None: ...
     def brent_momentum_pct(self, session_date, days: int) -> float | None: ...
     def constituent_ltp(self, symbol: str) -> float | None: ...
+    def constituent_ltps(self, symbols) -> dict: ...
     def india_vix(self) -> float | None: ...
 
 
@@ -83,6 +149,9 @@ class NullFeeds:
 
     def constituent_ltp(self, symbol: str):
         return None
+
+    def constituent_ltps(self, symbols) -> dict:
+        return {}
 
     def india_vix(self):
         return None
@@ -119,6 +188,26 @@ class KiteFeedProvider:
 
     def constituent_ltp(self, symbol: str) -> float | None:
         return self._ltp(f"NSE:{symbol}")
+
+    def constituent_ltps(self, symbols) -> dict:
+        """ALL constituent LTPs in ONE kite.ltp() batch call (batch-1 efficiency:
+        one network round-trip per poll instead of ~24). Missing/errored symbols
+        simply absent from the result; a dead adapter returns {}. Never raises."""
+        out: dict[str, float] = {}
+        try:
+            kite = getattr(self._adapter, "kite", None)
+            syms = list(symbols)
+            if kite is None or not syms:
+                return out
+            resp = kite.ltp([f"NSE:{s}" for s in syms]) or {}
+            for s in syms:
+                row = resp.get(f"NSE:{s}")
+                lp = row.get("last_price") if isinstance(row, dict) else None
+                if lp:
+                    out[s] = float(lp)
+        except Exception:
+            return out
+        return out
 
     # ── external macro (delegated; NEEDS_FEED if no macro_provider) ───────────
     def gift_nifty_gap_pct(self, session_date) -> float | None:
@@ -303,16 +392,32 @@ class CrossAssetShadow:
         return rec
 
     # ── intraday constituent-flow snapshot ───────────────────────────────────
-    def intraday_flow(self, *, underlying: str, timestamp, is_session_open: bool = False) -> dict:
-        """Log constituent flow vs the session open (directional lead). NEVER raises."""
+    def intraday_flow(self, *, underlying: str, timestamp, is_session_open: bool = False,
+                      ltp_snapshot: dict | None = None) -> dict:
+        """Log constituent flow vs the session open (directional lead). NEVER raises.
+
+        v2 (batch 1, 2026-07-15): flow is INDEX-WEIGHTED over the top-8 basket —
+        `avg_flow_pct` = Σ(wᵢ·moveᵢ)/Σwᵢ over the constituents with a live LTP,
+        so every existing consumer (adaptive override, NIFTY gate, TURN detector,
+        bias-invalidation flow input) upgrades automatically. The legacy top-3
+        equal mean is still logged as `avg_flow_pct_eq` for series continuity,
+        and `breadth` = weighted fraction of constituents agreeing with the flow
+        sign (logged only — a 1-stock rally is not participation; do NOT gate on
+        it yet). CROSSASSET_WEIGHTED=0 restores the legacy basket as primary.
+        `ltp_snapshot` (symbol→LTP) lets the caller batch ONE kite.ltp() for all
+        underlyings per poll; without it the feed's own batch method (then the
+        per-symbol fallback) is used.
+        """
         rec = {"kind": "flow", "underlying": underlying}
         try:
             ts = timestamp.astimezone(timezone.utc).isoformat() if hasattr(timestamp, "astimezone") else str(timestamp)
             rec["ts"] = ts
-            moves = {}
+            syms, weights = _basket(underlying)
+            ltps = self._ltps_for(syms, ltp_snapshot)
+            moves: dict[str, float | None] = {}
             ref = self._open_ref.setdefault(underlying, {})
-            for sym in _CONSTITUENTS.get(underlying, ()):
-                ltp = self._feeds.constituent_ltp(sym)
+            for sym in syms:
+                ltp = ltps.get(sym)
                 if ltp is None or ltp <= 0:
                     moves[sym] = None
                     continue
@@ -320,13 +425,28 @@ class CrossAssetShadow:
                     ref[sym] = ltp
                 base = ref.get(sym)
                 moves[sym] = round(100.0 * (ltp - base) / base, 3) if base else 0.0
-            valid = [m for m in moves.values() if m is not None]
-            avg = round(sum(valid) / len(valid), 3) if valid else None
+            valid = {s: m for s, m in moves.items() if m is not None}
+            wsum = sum(weights[s] for s in valid)
+            avg = (round(sum(weights[s] * m for s, m in valid.items()) / wsum, 3)
+                   if valid and wsum > 0 else None)
+            # breadth: weighted share of live constituents whose move agrees with
+            # the weighted-flow sign (0 counts as disagreement; None when flat).
+            breadth = None
+            if avg is not None and avg != 0.0 and wsum > 0:
+                agree = sum(weights[s] for s, m in valid.items() if m * avg > 0)
+                breadth = round(agree / wsum, 3)
+            # legacy top-3 equal mean, for continuity with the pre-v2 corpus
+            # (identical to avg in legacy mode — the log stays self-consistent).
+            eq_syms = _CONSTITUENTS.get(underlying, ())
+            eq_valid = [valid[s] for s in eq_syms if s in valid]
+            avg_eq = round(sum(eq_valid) / len(eq_valid), 3) if eq_valid else None
             bias = (("LONG" if (avg or 0) > 0.05 else "SHORT" if (avg or 0) < -0.05 else "NEUTRAL")
                     if avg is not None else None)
             rec.update({
                 "constituent_moves_pct": moves, "avg_flow_pct": avg,
+                "avg_flow_pct_eq": avg_eq, "breadth": breadth,
                 "flow_bias": bias,
+                "weights_mode": "weighted_top8" if _weighted_enabled() else "eq_top3",
                 "source": "kite" if valid else "NEEDS_FEED",
             })
             self._write(rec)
@@ -341,16 +461,16 @@ class CrossAssetShadow:
                 # sticky from-open level (07-14: the level made the override quasi-permanent).
                 mom = (sum(buf[-5:]) / 5 - sum(buf[:5]) / 5) if len(buf) == 10 else None
                 LAST_FLOW[underlying] = {"epoch": _time.time(), "avg_flow_pct": avg,
-                                         "flow_bias": bias,
+                                         "flow_bias": bias, "breadth": breadth,
                                          "mom": (round(mom, 3) if mom is not None else None)}
                 roll = sum(buf[-5:]) / min(len(buf), 5)
                 self._flow_roll[underlying] = roll
                 # Hysteresis state machine: side = LONG when roll >= +0.05, SHORT
                 # when <= -0.05, RETAINED through the neutral band. A turn fires on
                 # side CHANGE. The old prev-vs-current single-step comparison could
-                # only fire on a >=0.5%-per-sample jerk (mean moves (new-old)/5 per
-                # step) — a gradual real reversal crosses the band over minutes and
-                # never satisfied it: 0 turn events ever recorded, incl. the
+                # only fire on a >=0.5%-per-sample jerk (the mean moves (new-old)/5
+                # per step) — a gradual real reversal crosses the band over minutes
+                # and never satisfied it: 0 turn events ever recorded, including the
                 # 2026-07-15 12:56 IST breakdown this detector exists to catch.
                 if len(buf) >= 5:
                     _side = ("LONG" if roll >= 0.05
@@ -368,6 +488,21 @@ class CrossAssetShadow:
         except Exception:
             pass
         return rec
+
+    def _ltps_for(self, syms, ltp_snapshot: dict | None) -> dict:
+        """Resolve basket LTPs: caller-supplied batch snapshot → feed batch call
+        → per-symbol fallback (legacy providers without constituent_ltps)."""
+        if ltp_snapshot is not None:
+            return {s: ltp_snapshot.get(s) for s in syms}
+        batch = getattr(self._feeds, "constituent_ltps", None)
+        if callable(batch):
+            try:
+                got = batch(syms) or {}
+                if got:
+                    return {s: got.get(s) for s in syms}
+            except Exception:
+                pass
+        return {s: self._feeds.constituent_ltp(s) for s in syms}
 
     @staticmethod
     def _fii_stance() -> dict:
@@ -450,9 +585,15 @@ def spawn_session_logger(adapter, underlyings, *, macro_provider=None,
                 if hm > (eh, em):
                     break
                 if hm >= (sh, sm):
+                    # ONE kite.ltp() batch for every basket symbol across all
+                    # underlyings per poll (batch-1 efficiency) — still entirely
+                    # inside this daemon thread, so the tick path never blocks.
+                    snap = feeds.constituent_ltps(all_basket_symbols(underlyings))
                     for u in underlyings:
+                        # `snap or None`: a transiently-failed batch falls back to
+                        # the feed's own resolution inside intraday_flow.
                         shadow.intraday_flow(underlying=u, timestamp=datetime.now(timezone.utc),
-                                             is_session_open=first)
+                                             is_session_open=first, ltp_snapshot=snap or None)
                     first = False
                 time.sleep(max(5, poll_sec))
         except Exception:

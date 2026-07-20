@@ -44,12 +44,22 @@ Design constraints:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from math import fabs, isfinite
 
 from platform_core.options.oi_analytics import OIAnalyticsSnapshot
 from platform_core.options.gamma_exposure import GammaExposureSnapshot
+from platform_core.options.gex_gate import _wall as _spot_side_wall
+
+# STRIKE_GEX_SPOTSIDE (default OFF): score gex_proximity against the spot-side-
+# constrained walls (call_wall_above_strike / put_wall_below_strike) instead of
+# the legacy unconstrained walls, which top one dominant strike on BOTH sides in
+# ~40% of recorded snapshots (07-17 report §5). A snapshot that carries the field
+# with value None means "no strike on that side" and scores as wall-unknown
+# (0.50) rather than falling back to the legacy wall. Pending replay A/B.
+_GEX_SPOTSIDE: bool = os.environ.get("STRIKE_GEX_SPOTSIDE", "0") == "1"
 
 
 JsonScalar = None | bool | int | float | str
@@ -838,7 +848,8 @@ class StrikeSelectionEngine:
         )
 
         if bias == "LONG":
-            wall = gex_snapshot.call_wall_strike
+            wall = (_spot_side_wall(gex_snapshot, "call_wall_above_strike", "call_wall_strike")
+                    if _GEX_SPOTSIDE else gex_snapshot.call_wall_strike)
             if wall is None:
                 wall_score = 0.50
                 reasoning.append("GEX: call wall unknown")
@@ -866,7 +877,8 @@ class StrikeSelectionEngine:
                     reasoning.append(f"GEX: spot below flip {flip:.0f} — long-gamma dampens")
 
         else:  # SHORT → PUT buyers
-            wall = gex_snapshot.put_wall_strike
+            wall = (_spot_side_wall(gex_snapshot, "put_wall_below_strike", "put_wall_strike")
+                    if _GEX_SPOTSIDE else gex_snapshot.put_wall_strike)
             if wall is None:
                 wall_score = 0.50
                 reasoning.append("GEX: put wall unknown")

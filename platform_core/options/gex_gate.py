@@ -13,6 +13,18 @@ from __future__ import annotations
 
 from typing import Any
 
+_MISSING = object()
+
+
+def _wall(gex: Any, spot_side_attr: str, legacy_attr: str) -> float | None:
+    """Spot-side-constrained wall when the snapshot provides the field (even if
+    None — None means "no strike on that side", which must NOT fall back to the
+    unconstrained wall or the wrong-side bug returns); legacy wall otherwise."""
+    value = getattr(gex, spot_side_attr, _MISSING)
+    if value is _MISSING:
+        return getattr(gex, legacy_attr, None)
+    return value
+
 
 def gex_wall_block(
     *,
@@ -34,7 +46,14 @@ def gex_wall_block(
 
     Fail-open: missing ``gex``, non-positive ``spot``, or a non-LONG/SHORT bias
     returns None (never blocks) — this is an edge filter, not a safety control.
-    ``gex`` exposes ``call_wall_strike`` / ``put_wall_strike`` / ``net_gamma_regime``.
+
+    Wall source (night 2026-07-18, consumer switch for the 07-17 §5 degeneracy
+    fix): prefer the spot-side-constrained ``call_wall_above_strike`` /
+    ``put_wall_below_strike`` when the snapshot carries them — the legacy
+    unconstrained walls rank one dominant strike on BOTH sides in ~40% of
+    recorded snapshots, leaving this gate silently fail-open on the wrong-side
+    one. Snapshots without the new fields (older recordings) keep the legacy
+    ``call_wall_strike`` / ``put_wall_strike`` behaviour unchanged.
     """
     if gex is None or spot <= 0 or proximity_pct < 0:
         return None
@@ -45,12 +64,12 @@ def gex_wall_block(
     if block_long_gamma and str(regime).upper() == "LONG_GAMMA":
         return f"GEX_LONG_GAMMA_REGIME (mean-reverting / pinning — no momentum chase) regime={regime}"
     if b == "LONG":
-        cw = getattr(gex, "call_wall_strike", None)
+        cw = _wall(gex, "call_wall_above_strike", "call_wall_strike")
         if cw and cw >= spot and (cw - spot) / spot <= proximity_pct:
             return (f"GEX_CALL_WALL_AHEAD spot={spot:.0f} call_wall={cw:.0f} "
                     f"dist={(cw - spot) / spot * 100:.2f}% regime={regime}")
     elif b == "SHORT":
-        pw = getattr(gex, "put_wall_strike", None)
+        pw = _wall(gex, "put_wall_below_strike", "put_wall_strike")
         if pw and pw <= spot and (spot - pw) / spot <= proximity_pct:
             return (f"GEX_PUT_WALL_AHEAD spot={spot:.0f} put_wall={pw:.0f} "
                     f"dist={(spot - pw) / spot * 100:.2f}% regime={regime}")
