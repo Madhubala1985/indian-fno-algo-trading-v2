@@ -23,9 +23,18 @@ fi
 # agent already running? (grabbing the free lock for an instant is harmless)
 if ! flock -n "$LOCK" true 2>/dev/null; then exit 0; fi
 
-# 3. reset-time gate: only consult it when the log currently ENDS in a limit death
-if tail -c 300 "$LOG" 2>/dev/null | grep -q "session limit"; then
-    RESET=$(grep -oE "resets [0-9]{1,2}:[0-9]{2}(am|pm)" "$LOG" | tail -1 | sed 's/resets //')
+# 3. reset-time gate: only consult it when the log currently ENDS in a limit death.
+# Two distinct limit shapes exist and BOTH must match here (2026-07-20): the generic
+# "You've hit your session limit · resets H:MMpm" AND the model-scoped "You've reached
+# your <Model> limit" (which carries NO reset time). The original pattern matched only
+# the former, so the 07-20 Fable-5 death would have slipped the gate and relaunched
+# straight into the wall had the burst window still been open.
+if tail -c 300 "$LOG" 2>/dev/null | grep -qE "session limit|reached your .* limit"; then
+    # Read the reset time from the SAME tail window that matched, not the whole
+    # file: a model-scoped death carries no reset time, and a whole-file grep
+    # would silently reuse an unrelated timestamp from hours earlier.
+    RESET=$(tail -c 300 "$LOG" 2>/dev/null \
+            | grep -oE "resets [0-9]{1,2}:[0-9]{2}(am|pm)" | tail -1 | sed 's/resets //')
     if [ -n "$RESET" ]; then
         R=$(date -d "today $RESET" +%s 2>/dev/null || echo 0)
         MSG_TS=$(stat -c %Y "$LOG")

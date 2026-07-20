@@ -403,6 +403,7 @@ class UnderlyingRuntimeState:
     captured_strike_rec:   object | None = None
     captured_score_margin: float  | None = None  # rank1 - rank2 composite score
     captured_gex_snapshot: object | None = None  # dealer gamma (GEX) snapshot at capture
+    captured_tiebreak_pass: bool = False         # delta tie-break resolved a near-tie
 
     # ── MCB adaptation watch ───────────────────────────────────────────────
     contra_bos_count:  int = 0   # BOS events opposing current MCB bias (session total)
@@ -451,6 +452,35 @@ _EXPLICIT_CAPITAL:  bool = (os.environ.get("PAPER_STARTING_CAPITAL") is not None
 # decisive short-DTE SENSEX selections below a floor calibrated at mult 1.0.
 # Shared env name with surgical_replay. Default OFF = current behaviour.
 _MARGIN_PRE_DTE:    bool = (os.environ.get("STRIKE_MARGIN_PRE_DTE", "0") == "1")
+
+# ── Strike score-margin tie-break (live port of the surgical_replay P1 knob) ──
+# A near-tie between the top-2 strikes is a coin the scorer cannot call: the
+# dominant OI wall pumps the OTM candidate's oi_support to 1.00, exactly
+# offsetting its worse delta/theta, and the margin gate reads the resulting tie
+# as "no conviction" and blocks. "delta" enters the higher-|delta| of the two
+# instead — the better *vehicle* for a directional trade.
+#   Evidence: night 2026-07-19 H1 (delta05), 30 (underlying,day) replay pairs at
+#   per-symbol live floors, costs included. delta05+gexspot+wide04 composite:
+#   net +41,928 / ex-best-day +23,454 vs base +9,455 / +737, gain spread over
+#   9 days (7 positive) and robust to dropping the best changed day.
+# MIN_FLOOR guard (mandatory): the tie-break PASSES only at symbols whose gate
+# floor is >= this threshold (NIFTY/BANKNIFTY at 0.05) and DAMAGES SENSEX at its
+# loose 0.015 floor, where it unlocks junk near-ties. 0.0 = unrestricted.
+# The adoption config is STRIKE_TIEBREAK=delta with STRIKE_TIEBREAK_MIN_FLOOR=0.05;
+# delta MUST NOT reach SENSEX. Both default OFF = current live behaviour.
+_STRIKE_TIEBREAK:  str = os.environ.get("STRIKE_TIEBREAK", "").strip().lower()
+_STRIKE_TIEBREAK_MIN_FLOOR: float = float(
+    os.environ.get("STRIKE_TIEBREAK_MIN_FLOOR", "0") or 0)
+
+# Pre-arm structure-exit berth (live port of the surgical_replay wide04 knob).
+# See _option_exit_signal() for the mechanism and evidence. 0 = off (legacy).
+_EXIT_BOS_MIN_PEAK_PCT: float = float(
+    os.environ.get("EXIT_BOS_MIN_PEAK_PCT", "0") or 0)
+
+
+# The tie-break decision lives in an import-safe module so it can be unit-tested
+# without importing this pipeline (which opens a Kite WebSocket at import).
+from platform_core.options.strike_tiebreak import delta_tiebreak_pick as _delta_tiebreak_pick
 
 
 def _resolve_initial_equity() -> float:
@@ -2306,6 +2336,14 @@ print(
     f" EXIT_RATCHET_ARM_PCT=0 disables)"
 )
 print(
+    f"[STRIKE ADOPTION] tiebreak={_STRIKE_TIEBREAK or 'OFF'}"
+    f"  tiebreak_min_floor={_STRIKE_TIEBREAK_MIN_FLOOR:.3f}"
+    f"  gex_spotside={'ON' if os.environ.get('STRIKE_GEX_SPOTSIDE', '0') == '1' else 'OFF'}"
+    f"  exit_bos_min_peak={_EXIT_BOS_MIN_PEAK_PCT:.0%}"
+    + ("" if _STRIKE_TIEBREAK != "delta" or _STRIKE_TIEBREAK_MIN_FLOOR > 0 else
+       "  !! WARNING: delta tie-break UNGUARDED — will reach SENSEX (measured LOSS)")
+)
+print(
     f"[SIZING RAILS] lot_ceilings="
     f"{'pure-%-of-capital (no fixed ceiling)' if _TIER2_MAX_LOTS <= 0 else f'T2={_TIER2_MAX_LOTS} T3={_TIER3_MAX_LOTS} (capital-scaled)'}"
     f"  position_premium_cap={_MAX_POSITION_PREMIUM_FRAC:.0%} of equity"
@@ -2650,6 +2688,19 @@ def _option_exit_signal(emitted_events, trader: OptionPaperTrader):
     """
     pos = trader._position
     if pos is None:
+        return None
+    # [wide04] Pre-arm berth: an UNARMED position ignores 1m structure exits
+    # until premium has been at least MIN_PEAK in its favor. The 30% stop,
+    # fast-fail, TP and breakeven ratchet still check every minute — this
+    # suppresses only the 1m BOS/CHoCH leg, which on 07-17 shook the book out of
+    # right-direction entries near breakeven. THESIS_INVALIDATED still fires
+    # downstream (same precedence as surgical_replay). 0 = off.
+    #   Evidence: night 2026-07-19 H6 — standalone +23,454 net, and ROBUST
+    #   across the 0.02-0.05 plateau (wide02 +21,028 / wide03 +22,478 /
+    #   wide04 +23,454 / wide05 +21,416), so the 0.04 choice is not a cliff.
+    if (_EXIT_BOS_MIN_PEAK_PCT > 0.0
+            and not trader.ratchet_armed()
+            and pos.peak_premium < pos.entry_premium * (1.0 + _EXIT_BOS_MIN_PEAK_PCT)):
         return None
     for event in emitted_events:
         evt  = event.event_type.value if hasattr(event.event_type, "value") else str(event.event_type)
@@ -3619,6 +3670,7 @@ def on_ticks(raw_ticks):
                 _st.captured_market_ctx    = None
                 _st.captured_score_margin  = None
                 _st.captured_gex_snapshot  = None
+                _st.captured_tiebreak_pass = False   # never leak a waiver across bars
 
         # Resolve state for this bar's feed symbol (None = unknown feed)
         _current_state = _state_by_feed.get(completed_bar.symbol)
@@ -3976,6 +4028,33 @@ def on_ticks(raw_ticks):
                                     )
                                 else:
                                     _current_state.captured_score_margin = None
+                                # ── [P1] delta tie-break (see knob decl). Only
+                                # fires when the margin would have BLOCKED, and
+                                # only at symbols whose floor >= MIN_FLOOR — the
+                                # guard that keeps delta away from SENSEX.
+                                _current_state.captured_tiebreak_pass = False
+                                _tb_floor = _GATE_SCORE_MARGIN_BY_SYM.get(
+                                    _current_state.option_underlying,
+                                    _MIN_SCORE_MARGIN_TIER23,
+                                )
+                                _tb_margin = _current_state.captured_score_margin
+                                _tb_pick, _tb_fired = _delta_tiebreak_pick(
+                                    _recs, _tb_floor, _STRIKE_TIEBREAK,
+                                    _STRIKE_TIEBREAK_MIN_FLOOR, _tb_margin,
+                                )
+                                if _tb_fired:
+                                    _changed = _tb_pick.option_symbol != best.option_symbol
+                                    best = _tb_pick
+                                    _current_state.captured_strike_rec = best
+                                    _current_state.captured_tiebreak_pass = True
+                                    print(
+                                        f"[TIEBREAK] {_current_state.option_underlying}"
+                                        f" margin={_tb_margin:.4f}<{_tb_floor} "
+                                        f"→ delta pick {best.option_symbol} "
+                                        f"(δ={best.delta:.3f}, "
+                                        f"{'RE-RANKED' if _changed else 'unchanged'}) "
+                                        f"— margin gate allowed"
+                                    )
                                 print(
                                     f"[STRIKE] {best.option_symbol}  "
                                     f"δ={best.delta:.2f}  "
@@ -5147,7 +5226,10 @@ def on_ticks(raw_ticks):
                                             _current_state.option_underlying, _MIN_OI_SUPPORT_TIER23
                                         )
                                         _sq_parts: list[str] = []
-                                        if _sm_val is not None and _sm_val < _eff_sm_min:
+                                        # [P1] a resolved delta tie-break waives ONLY the
+                                        # margin leg; iv_attr / oi_support still bind.
+                                        if (_sm_val is not None and _sm_val < _eff_sm_min
+                                                and not _current_state.captured_tiebreak_pass):
                                             _sq_parts.append(
                                                 f"score_margin={_sm_val:.3f}<{_eff_sm_min}"
                                             )
