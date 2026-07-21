@@ -23,6 +23,14 @@ fi
 # agent already running? (grabbing the free lock for an instant is harmless)
 if ! flock -n "$LOCK" true 2>/dev/null; then exit 0; fi
 
+# NEVER launch while the live trading session is running (2026-07-21): a research
+# burst must not compete with the market-hours pipeline for CPU/IO (the 07-16
+# wedge). This also makes "start at market close" automatic — the burst holds off
+# until run_supervised_live exits at ~15:30 IST, then the next 10-min tick fires it.
+if pgrep -f "run_supervised_live" >/dev/null 2>&1; then
+    note "live session running — deferring burst until market close"; exit 0
+fi
+
 # 3. reset-time gate: only consult it when the log currently ENDS in a limit death.
 # Two distinct limit shapes exist and BOTH must match here (2026-07-20): the generic
 # "You've hit your session limit · resets H:MMpm" AND the model-scoped "You've reached
