@@ -715,6 +715,32 @@ _REGIME_DESIZE_MULT:  float = float(os.environ.get("REGIME_DESIZE_MULT", "0.5") 
 # (−₹21.8k @29% WR over 27 trades) while NIFTY-SHORT makes money (+₹13.7k @40%).
 # Block NIFTY longs, keep NIFTY shorts. SENSEX untouched. NIFTY_LONG_GATE=0 reverts.
 _NIFTY_LONG_GATE:     bool  = (os.environ.get("NIFTY_LONG_GATE", "1") != "0")
+
+# ── Early flow-TURN entry seed for the options book (2026-07-21) ──────────────
+# The options book enters on the STRUCTURE bias, which confirms an intraday turn
+# a median 194min late or never (scripts/study_confirmation_latency.py). The
+# crossasset flow-TURN detector fires earlier (the futures sleeve already trades
+# it; on 07-21 it shorted at 09:46 near the high while the options bias didn't
+# confirm SHORT until 10:49, entering puts at the exact premium peak). When the
+# knob is ON and structure bias is NEUTRAL, seed the entry bias from a fresh
+# non-stale TURN so the direction runs through the ENTIRE unchanged gate stack.
+# Decision logic in the import-safe platform_core.data.live.turn_entry. Tagged
+# and confidence-seeded (NOT the inverted confidence engine) so it is separable
+# and the max-loss cap sizes it. DEFAULT OFF — enabling is an explicit decision.
+from platform_core.data.live.turn_entry import (
+    TurnEntryConfig as _TurnEntryConfig,
+    turn_entry_direction as _turn_entry_direction,
+)
+_TURN_ENTRY_CFG = _TurnEntryConfig(
+    enabled   = (os.environ.get("OPTIONS_TURN_ENTRY", "0") == "1"),
+    conf_seed = float(os.environ.get("OPTIONS_TURN_CONF", "0.60") or 0.60),
+    max_age_sec  = float(os.environ.get("OPTIONS_TURN_MAX_AGE_SEC", "180") or 180),
+    cooldown_sec = float(os.environ.get("OPTIONS_TURN_COOLDOWN_SEC", "1800") or 1800),
+    max_per_day  = int(os.environ.get("OPTIONS_TURN_MAX_PER_DAY", "3") or 3),
+)
+# Per-underlying consumption state, reset on session-date change.
+_turn_entry_state: dict = {}   # underlying -> {consumed_epoch,count,last_entry_epoch,day}
+
 _override_printed: dict = {}   # (underlying, dir) -> printed flag (throttle: log state changes only)
 _last_filter_reason: dict = {}  # underlying -> last ENTRY FILTER reason written to pt_decisions
 # LONG_GAMMA regime veto — the bigger lever: when the GEX gate is enabled, also
@@ -2336,6 +2362,16 @@ print(
     f" EXIT_RATCHET_ARM_PCT=0 disables)"
 )
 print(
+    f"[TURN-ENTRY] options early flow-TURN seed: "
+    f"{'ON' if _TURN_ENTRY_CFG.enabled else 'OFF'}"
+    + (f"  conf_seed={_TURN_ENTRY_CFG.conf_seed:.2f}"
+       f"  max_age={_TURN_ENTRY_CFG.max_age_sec:.0f}s"
+       f"  cooldown={_TURN_ENTRY_CFG.cooldown_sec:.0f}s"
+       f"  max/day={_TURN_ENTRY_CFG.max_per_day}"
+       if _TURN_ENTRY_CFG.enabled else
+       "  (options book waits for structure confirmation — median 194min late)")
+)
+print(
     f"[STRIKE ADOPTION] tiebreak={_STRIKE_TIEBREAK or 'OFF'}"
     f"  tiebreak_min_floor={_STRIKE_TIEBREAK_MIN_FLOOR:.3f}"
     f"  gex_spotside={'ON' if os.environ.get('STRIKE_GEX_SPOTSIDE', '0') == '1' else 'OFF'}"
@@ -3891,10 +3927,70 @@ def on_ticks(raw_ticks):
                     except Exception as _bi_exc:
                         print(f"[BIAS INVALIDATION] error (fail-open): {_bi_exc}")
 
+                # ── [OPTIONS_TURN_ENTRY] early flow-TURN seed (knob, default OFF) ──
+                # When structure bias is NEUTRAL but the crossasset flow-TURN
+                # detector fired a fresh directional turn, seed the entry bias from
+                # it so the options book acts on the EARLY signal. The seeded
+                # direction then flows through the ENTIRE unchanged gate stack
+                # below (opposition / strike-quality / max-loss cap / halts /
+                # position limits). Fully wrapped — any error leaves bias untouched.
+                _turn_seeded = False
+                if _TURN_ENTRY_CFG.enabled and str(market_ctx.bias) == "NEUTRAL":
+                    try:
+                        import time as _t
+                        from dataclasses import replace as _dc_replace
+                        _u = _current_state.option_underlying
+                        _today = str(_session_date)
+                        _st = _turn_entry_state.get(_u)
+                        if _st is None or _st.get("day") != _today:
+                            _st = {"consumed_epoch": 0.0, "count": 0,
+                                   "last_entry_epoch": 0.0, "day": _today}
+                            _turn_entry_state[_u] = _st
+                        _tev = None
+                        try:
+                            from platform_core.data.live.crossasset_shadow import LAST_TURN as _LAST_TURN
+                            _tev = _LAST_TURN.get(_u)
+                        except Exception:
+                            _tev = None
+                        # direction the invalidation engine neutralised THIS bar (don't re-seed it)
+                        _inval_dir = None
+                        try:
+                            if "_bi_eff" in dir() and _bi_eff == "NEUTRAL" and _bi_raw in ("LONG", "SHORT"):
+                                _inval_dir = _bi_raw
+                        except Exception:
+                            _inval_dir = None
+                        _tdir, _treason = _turn_entry_direction(
+                            structure_bias=str(market_ctx.bias),
+                            turn_event=_tev,
+                            now_epoch=_t.time(),
+                            last_consumed_epoch=_st["consumed_epoch"],
+                            count_today=_st["count"],
+                            last_entry_epoch=_st["last_entry_epoch"],
+                            just_invalidated_dir=_inval_dir,
+                            cfg=_TURN_ENTRY_CFG,
+                        )
+                        if _tdir in ("LONG", "SHORT"):
+                            _now = _t.time()
+                            market_ctx = _dc_replace(
+                                market_ctx,
+                                bias=MarketBias(_tdir),
+                                confidence=max(market_ctx.confidence, _TURN_ENTRY_CFG.conf_seed),
+                            )
+                            _st["consumed_epoch"] = float(_tev.get("epoch", _now))
+                            _st["count"] += 1
+                            _st["last_entry_epoch"] = _now
+                            _turn_seeded = True
+                            print(f"[TURN-ENTRY] {_u}: structure NEUTRAL → seeded {_tdir} "
+                                  f"from fresh flow-TURN (conf={_TURN_ENTRY_CFG.conf_seed:.2f}, "
+                                  f"#{_st['count']}/{_TURN_ENTRY_CFG.max_per_day}) — "
+                                  f"runs the full gate stack")
+                    except Exception as _te_exc:
+                        print(f"[TURN-ENTRY] error (fail-open, bias untouched): {_te_exc}")
+
                 # trend_score is the raw fused signal; conf saturates at 1.0 for
                 # any |trend| >= 0.18, so conf alone cannot show bias decay.
                 print(
-                    f"\n[OPTIONS] bias={market_ctx.bias}  "
+                    f"\n[OPTIONS] bias={market_ctx.bias}{'  [TURN-SEEDED]' if _turn_seeded else ''}  "
                     f"conf={market_ctx.confidence:.2f}  "
                     f"trend={market_ctx.trend_score:+.3f}"
                 )

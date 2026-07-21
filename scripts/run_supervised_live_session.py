@@ -492,6 +492,17 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
     env.setdefault("STRIKE_TIEBREAK_MIN_FLOOR", "0.05")
     env.setdefault("STRIKE_GEX_SPOTSIDE", "1")
     env.setdefault("EXIT_BOS_MIN_PEAK_PCT", "0.04")
+
+    # ── Early flow-TURN entry seed for the options book (operator directive 07-21) ──
+    # Lets the options book act on the crossasset flow-TURN when its own structure
+    # bias is still NEUTRAL, instead of waiting ~194min (median) for structure
+    # confirmation. Motivated live by 07-21: the futures sleeve shorted at 09:46
+    # near the high (+₹6.8k) while the options bias didn't confirm SHORT until
+    # 10:49, buying puts at the exact premium peak. The seeded direction runs the
+    # ENTIRE unchanged gate stack (opposition / strike-quality / max-loss cap /
+    # halts / position limits). ON for the dry-run OOS test — this is paper, so
+    # live-in-dry-run is the zero-risk judge; set OPTIONS_TURN_ENTRY=0 to revert.
+    env.setdefault("OPTIONS_TURN_ENTRY", "1")
     # Fail-closed interlock: an unguarded delta tie-break reaches SENSEX, where
     # it is measured-negative. Refuse to launch rather than trade the losing arm.
     if (env.get("STRIKE_TIEBREAK") == "delta"
