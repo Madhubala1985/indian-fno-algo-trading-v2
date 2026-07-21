@@ -737,6 +737,10 @@ _TURN_ENTRY_CFG = _TurnEntryConfig(
     max_age_sec  = float(os.environ.get("OPTIONS_TURN_MAX_AGE_SEC", "180") or 180),
     cooldown_sec = float(os.environ.get("OPTIONS_TURN_COOLDOWN_SEC", "1800") or 1800),
     max_per_day  = int(os.environ.get("OPTIONS_TURN_MAX_PER_DAY", "3") or 3),
+    # Aggressive: let a fresh turn override an OPPOSED structure bias (the 07-21
+    # BANKNIFTY wrong-way-LONG case). DEFAULT OFF — needs an A/B before it can
+    # overrule the model's own direction with a lag-prone flow signal.
+    override_opposed = (os.environ.get("OPTIONS_TURN_OVERRIDE_OPPOSED", "0") == "1"),
 )
 # Per-underlying consumption state, reset on session-date change.
 _turn_entry_state: dict = {}   # underlying -> {consumed_epoch,count,last_entry_epoch,day}
@@ -3935,7 +3939,9 @@ def on_ticks(raw_ticks):
                 # below (opposition / strike-quality / max-loss cap / halts /
                 # position limits). Fully wrapped — any error leaves bias untouched.
                 _turn_seeded = False
-                if _TURN_ENTRY_CFG.enabled and str(market_ctx.bias) == "NEUTRAL":
+                if _TURN_ENTRY_CFG.enabled and (
+                        str(market_ctx.bias) == "NEUTRAL"
+                        or _TURN_ENTRY_CFG.override_opposed):
                     try:
                         import time as _t
                         from dataclasses import replace as _dc_replace
@@ -3971,6 +3977,7 @@ def on_ticks(raw_ticks):
                         )
                         if _tdir in ("LONG", "SHORT"):
                             _now = _t.time()
+                            _prev_bias = str(market_ctx.bias)
                             market_ctx = _dc_replace(
                                 market_ctx,
                                 bias=MarketBias(_tdir),
@@ -3980,7 +3987,9 @@ def on_ticks(raw_ticks):
                             _st["count"] += 1
                             _st["last_entry_epoch"] = _now
                             _turn_seeded = True
-                            print(f"[TURN-ENTRY] {_u}: structure NEUTRAL → seeded {_tdir} "
+                            _how = ("structure NEUTRAL" if _prev_bias == "NEUTRAL"
+                                    else f"OVERRODE opposed {_prev_bias}")
+                            print(f"[TURN-ENTRY] {_u}: {_how} → seeded {_tdir} "
                                   f"from fresh flow-TURN (conf={_TURN_ENTRY_CFG.conf_seed:.2f}, "
                                   f"#{_st['count']}/{_TURN_ENTRY_CFG.max_per_day}) — "
                                   f"runs the full gate stack")

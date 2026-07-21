@@ -48,6 +48,15 @@ class TurnEntryConfig:
     max_age_sec: float = 180.0     # a TURN older than this is stale — do not chase
     cooldown_sec: float = 1800.0   # min gap between TURN-seeded entries per underlying
     max_per_day: int = 3           # per underlying
+    override_opposed: bool = False
+    # ↑ default OFF. When OFF the seed fires ONLY on a NEUTRAL structure bias — the
+    # safe case (nothing to override). When ON, a fresh turn may ALSO override a
+    # structure bias pointing the OPPOSITE way (the 2026-07-21 BANKNIFTY case:
+    # bias LONG while the turn — correctly — said SHORT, and both books missed the
+    # move). This is materially more aggressive: it overrules the model's own
+    # directional view with a flow signal whose detector has a documented lag-FAIL
+    # history, so it stays OFF until an A/B proves it (net AND ex-best-day). It
+    # never overrides a bias that AGREES with the turn (no need).
 
 
 def turn_entry_direction(
@@ -84,13 +93,19 @@ def turn_entry_direction(
     """
     if not cfg.enabled:
         return None, "disabled"
-    if structure_bias != "NEUTRAL":
-        return None, "bias_not_neutral"          # never override an active bias
     if not turn_event:
         return None, "no_turn"
     to = turn_event.get("to")
     if to not in ("LONG", "SHORT"):
         return None, "bad_dir"
+    if structure_bias != "NEUTRAL":
+        # An active directional bias. Only proceed if override is enabled AND the
+        # bias points the OPPOSITE way to the turn (the wrong-bias case worth
+        # rescuing); if it already agrees, the normal path handles it.
+        if not cfg.override_opposed:
+            return None, "bias_not_neutral"      # safe default: never override
+        if structure_bias == to:
+            return None, "bias_already_agrees"
     epoch = float(turn_event.get("epoch", 0.0) or 0.0)
     if epoch <= last_consumed_epoch:
         return None, "already_consumed"

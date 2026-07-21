@@ -52,9 +52,31 @@ def test_fires_short():
 # ── never overrides an active bias ──────────────────────────────────────────
 
 @pytest.mark.parametrize("bias", ["LONG", "SHORT"])
-def test_never_overrides_active_bias(bias):
+def test_never_overrides_active_bias_by_default(bias):
     d, r = _call(structure_bias=bias)
     assert (d, r) == (None, "bias_not_neutral")
+
+
+# ── override_opposed mode (default OFF): the BANKNIFTY 07-21 wrong-way case ──
+
+_OVERRIDE = TurnEntryConfig(enabled=True, override_opposed=True)
+
+
+def test_override_rescues_opposed_bias():
+    # bias LONG, fresh turn SHORT (today's BANKNIFTY) -> override to SHORT
+    d, r = _call(structure_bias="LONG", turn_event=_turn("SHORT"), cfg=_OVERRIDE)
+    assert (d, r) == ("SHORT", "ok")
+
+
+def test_override_does_not_fire_when_bias_already_agrees():
+    # bias SHORT, turn SHORT -> nothing to override; normal path owns it
+    d, r = _call(structure_bias="SHORT", turn_event=_turn("SHORT"), cfg=_OVERRIDE)
+    assert (d, r) == (None, "bias_already_agrees")
+
+
+def test_override_still_fires_on_neutral():
+    d, r = _call(structure_bias="NEUTRAL", turn_event=_turn("LONG"), cfg=_OVERRIDE)
+    assert d == "LONG"
 
 
 # ── never re-seeds a just-neutralised direction ─────────────────────────────
