@@ -79,6 +79,22 @@ WORK PLAN (adapt as evidence dictates — this is the spine, not a script):
    risk — a wrong "fix" enabled by default is worse than the known-broken current
    state, because at least the current state is understood.
 
+5. AWARENESS + SECONDARY (only if turns remain after the confidence work): a new
+   live mechanism was wired today — OPTIONS_TURN_ENTRY (default OFF in code, ENABLED
+   via the launcher for tomorrow's dry-run). When structure bias is NEUTRAL it seeds
+   the options entry bias from a fresh crossasset flow-TURN (platform_core/data/live/
+   turn_entry.py; the [TURN-ENTRY] and [OPTIONS ...[TURN-SEEDED]] log lines mark it).
+   This is INTENTIONAL — do NOT flag it as a bug. It exists because the options bias
+   confirms turns 194min late (Item context above); on 07-21 the sleeve's flow-TURN
+   shorted at 09:46 near the high while the options bias waited until 10:49 and bought
+   puts at the premium peak. It is verify-only for you (do not edit turn_entry.py or
+   the seed block). IF you have turns left after the confidence verdict: replay- or
+   log-validate it — on the recorded corpus, would seeding options entries from the
+   flow-TURN on NEUTRAL-structure bars have improved net AND ex-best-day vs the
+   current wait-for-structure behaviour? Pre-register; report n and ex-best-day; this
+   is the same TURN detector that graded a lag-FAIL for the sleeve, so be rigorous —
+   one good live day (07-21) is not evidence.
+
 DELIVERABLE: a straight answer to "is the confidence signal salvageable, and if so
 does the fix separate winners from losers out-of-sample?" — the gate real funds wait
 behind. An honest "it's Disease B, calibration won't help, the direction engine is the
