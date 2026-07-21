@@ -264,6 +264,29 @@ class BacktestConfig:
 # opportunity while the winner trails. 0 disables.
 _RATCHET_ARM_PCT: float = float(os.environ.get("EXIT_RATCHET_ARM_PCT", "0.08") or 0.08)
 
+# ── [Bug 3, 2026-07-21] Ratchet profit-LOCK fraction (default 0 = breakeven) ──
+# The ratchet currently protects ONLY breakeven: a trade that peaks +8-11% and
+# reverses gives back the ENTIRE gain (measured: 4 such round-trips exited at ~0).
+# LOCK_FRAC>0 protects that fraction of the peak gain instead — lock level =
+# entry × (1 + LOCK_FRAC × (peak/entry − 1)). 0.0 reproduces the exact current
+# breakeven behaviour (lock level == entry). NOT a trailing stop (which this
+# codebase has measured and REJECTED repeatedly); a single discrete lock once
+# armed. Default OFF pending replay A/B — do NOT enable without net + ex-best-day.
+_RATCHET_LOCK_FRAC: float = float(os.environ.get("EXIT_RATCHET_LOCK_FRAC", "0") or 0.0)
+
+# ── [Bug 1, 2026-07-21] Realistic resting-SL-M stop-fill model (default OFF) ──
+# The stop is set at (1−stop_loss_pct); on a fast move the premium crosses it
+# mid-bar and is only discovered at the (worse) bar close — measured 40% realised
+# vs a 30% stop on 2 SENSEX calls. A real resting SL-M order fills NEAR its
+# trigger, not at the next bar close. When enabled, a genuine overshoot is
+# modelled as filling at the stop level minus a slippage haircut (kept honest —
+# never the optimistic exact-stop). Default OFF: the conservative bar-close fill
+# is preserved until the paired real-armed resting-SL-M order path exists AND the
+# model is A/B-validated. Enabling this ALONE (without resting orders) would make
+# paper P&L optimistic vs the current market-out-at-bar-close execution.
+_EXIT_STOP_SLM_MODEL: bool = (os.environ.get("EXIT_STOP_SLM_MODEL", "0") == "1")
+_EXIT_STOP_SLM_SLIP: float = float(os.environ.get("EXIT_STOP_SLM_SLIP", "0.03") or 0.03)
+
 @dataclass(slots=True)
 class OptionPosition:
     underlying_symbol: str
@@ -479,18 +502,33 @@ class OptionPaperTrader:
                     )
         if exit_reason is None and pct_of_entry <= stop_loss_pct:
             _max_loss = 1.0 - stop_loss_pct
+            # [Bug 1] Model a resting SL-M fill NEAR the trigger on a genuine
+            # overshoot, instead of the worse bar-close price. Only ever tightens
+            # a loss toward the stop level (never below the trigger, never a
+            # profit); slippage keeps it honest. Default OFF → bar-close preserved.
+            if _EXIT_STOP_SLM_MODEL and pct_of_entry < stop_loss_pct:
+                _slm_fill = pos.entry_premium * stop_loss_pct * (1.0 - _EXIT_STOP_SLM_SLIP)
+                if _slm_fill > current_premium:      # higher premium = smaller loss
+                    current_premium = _slm_fill
+                    pct_of_entry = current_premium / max(pos.entry_premium, 0.001)
             _actual_loss = 1.0 - pct_of_entry
             exit_reason = f"STOP_LOSS max_loss={_max_loss:.0%} actual_loss={_actual_loss:.0%}"
         # Breakeven ratchet: an armed winner that round-trips to entry exits at
         # breakeven instead of turning into a loser. Structure exits (force_reason)
         # and the stop take precedence; TP comes after.
+        # [Bug 3] Lock level: entry (breakeven) when LOCK_FRAC=0 — the exact
+        # current behaviour — else a fraction of the peak gain above entry.
+        _ratchet_lock_level = pos.entry_premium * (
+            1.0 + _RATCHET_LOCK_FRAC * (
+                pos.peak_premium / max(pos.entry_premium, 0.001) - 1.0))
         if (exit_reason is None and _RATCHET_ARM_PCT > 0.0
                 and pos.peak_premium >= pos.entry_premium * (1.0 + _RATCHET_ARM_PCT)
-                and current_premium <= pos.entry_premium):
+                and current_premium <= _ratchet_lock_level):
+            _peak_pct = pos.peak_premium / max(pos.entry_premium, 0.001) - 1.0
             exit_reason = (
-                f"BREAKEVEN_RATCHET (peaked "
-                f"+{pos.peak_premium / max(pos.entry_premium, 0.001) - 1.0:.0%}, "
-                f"back to entry)"
+                f"BREAKEVEN_RATCHET (peaked +{_peak_pct:.0%}, "
+                + (f"back to entry)" if _RATCHET_LOCK_FRAC <= 0.0
+                   else f"locked {_RATCHET_LOCK_FRAC:.0%} of peak)")
             )
         if exit_reason is None and pct_of_entry >= take_profit_pct:
             exit_reason = f"TAKE_PROFIT ({pct_of_entry:.0%} of entry)"
