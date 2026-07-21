@@ -95,6 +95,27 @@ WORK PLAN (adapt as evidence dictates — this is the spine, not a script):
    is the same TURN detector that graded a lag-FAIL for the sleeve, so be rigorous —
    one good live day (07-21) is not evidence.
 
+6. EXIT-BUG A/Bs (after the confidence verdict; three exit defects were found in the
+   live book today, two wired as DEFAULT-OFF knobs for you to validate on the replay
+   corpus — pre-register, report net AND ex-best-day, do NOT enable without both):
+   - BUG 1 EXIT_STOP_SLM_MODEL (+ EXIT_STOP_SLM_SLIP, default 3%): the 30% stop
+     realised 40% on 2 SENSEX calls because it is checked at bar CLOSE. The knob
+     models a resting-SL-M fill near the trigger. CAVEAT you must state: enabling
+     the paper model ALONE (without a real-armed resting-SL-M order) makes paper
+     P&L optimistic — so the deliverable is (a) does the model change replay P&L,
+     and (b) a PROPOSAL for the real-armed resting-SL-M order path (do not build
+     the order path — propose it).
+   - BUG 3 EXIT_RATCHET_LOCK_FRAC (default 0 = current breakeven): 4 winners peaked
+     +8-11% then gave the whole gain back to breakeven. The knob locks a fraction
+     of the peak. Sweep e.g. 0.0/0.25/0.5/0.75; report net + ex-best-day per level.
+     This is NOT a trailing stop — trailing is measured-REJECTED here; if your A/B
+     reproduces that (lock hurts), say so and keep it OFF.
+   - BUG 2 (89% of exits are STRUCTURE_EXIT/BOS, the same 194-min-late engine):
+     the exit-side face of the entry lag, tied to the confidence/bias work above —
+     not a separate knob. If you find a clean non-trail improvement, PROPOSE it.
+   backtest_runner.py exit logic is now editable ONLY for proven bug fixes under the
+   authority section; these three knobs already exist — A/B them, don't re-add them.
+
 DELIVERABLE: a straight answer to "is the confidence signal salvageable, and if so
 does the fix separate winners from losers out-of-sample?" — the gate real funds wait
 behind. An honest "it's Disease B, calibration won't help, the direction engine is the
