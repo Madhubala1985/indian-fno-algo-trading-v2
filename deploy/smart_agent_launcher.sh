@@ -20,6 +20,17 @@ NOW=$(date +%s)
 if [ "$NOW" -ge "$(cat "$UNTIL_FILE" 2>/dev/null || echo 0)" ]; then
     rm -f "$UNTIL_FILE"; note "burst window expired — launcher disabled"; exit 0
 fi
+# not-before gate (2026-07-22): honour an explicit delayed start. The operator can
+# set ~/.agent_burst_not_before to an epoch; the burst holds until then, then runs
+# straight through to $UNTIL_FILE. Consumed (deleted) once passed so it never re-gates.
+NB_FILE=/home/ubuntu/.agent_burst_not_before
+if [ -f "$NB_FILE" ]; then
+    NB=$(cat "$NB_FILE" 2>/dev/null || echo 0)
+    if [ "$NOW" -lt "$NB" ]; then
+        note "burst not-before $(date -d @"$NB" '+%H:%M %Z') — waiting $(( (NB-NOW)/60 )) min"; exit 0
+    fi
+    rm -f "$NB_FILE"
+fi
 # agent already running? (grabbing the free lock for an instant is harmless)
 if ! flock -n "$LOCK" true 2>/dev/null; then exit 0; fi
 
