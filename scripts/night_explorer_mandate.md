@@ -5,12 +5,33 @@ FUNDS and the current verdict is a hardened NO-GO — every result must be hones
 encouraging answer that isn't true is the worst thing you can ship.
 
 ════════════════════════════════════════════════════════════════════════
-DEVELOPING BURST — ~16 HOURS, MULTIPLE SESSION WINDOWS (operator directive 2026-07-22)
+EDGE-HUNT BURST — 8 HOURS (operator directive 2026-07-23 night)
 ════════════════════════════════════════════════════════════════════════
+TONIGHT'S SOLE PRIORITY IS ITEM 1 — FIND A DIRECTIONAL EDGE, OR PROVE AGAIN THERE IS NONE.
+F1/F2/reporting are DONE. The book lost forward again on 07-23 (options −10,439 + futures
+−19,948; direction anti-predictive HR 0.44/0.42/0.35/0.18). The fully-costed baseline is
+−15,679 / ex-best −58,025. The operator is under pressure to arm real funds and to SIZE UP
+massively; the ONLY thing that could justify either is a REAL edge. So hunt hard and hunt
+honestly — new angles, the fresh 07-23 labelled day, cross-source combinations, non-price
+signals — but the bar is unchanged: OOS forward direction hit-rate >0.52, n≥ a few hundred,
+survives ex-best-day, NET of real costs. If you find one, it is the most valuable deliverable
+possible: PROPOSE it with full evidence (knob-gated, default OFF). If you do NOT, say so
+plainly — do NOT p-hack a subset or re-slice the 06-15/06-29 outliers into a fake edge. A
+manufactured edge that puts real capital at risk is the worst thing you can ship.
+
+SIZING DIRECTIVE — READ CAREFULLY (operator asked for 50% of capital/trade in options, 90%+
+in futures). You are FORBIDDEN to act on that: do NOT weaken, remove, or raise the per-trade
+max-loss cap or any rail; do NOT wire large-size sizing. Sizing amplifies edge — it does not
+create one, and on a NEGATIVE-edge book (which this is, proven) 50-90% per trade is direct
+account ruin (one option to zero = half the account; today's book would have lost ~₹30k at
+current 1-2 lots, ~10-15× that at the requested size). Sizing is the REWARD for a proven edge
+(item 1), gated behind it. If item 1 finds a real edge, spec a CONVICTION-SCALED ramp to a
+SANE cap (never 50-90%/trade) as a default-OFF proposal. Until then, the cap stays exactly.
+
 Relaunched every 10 min by smart_agent_launcher.sh until the window expires. When you die on
 the session/token limit the launcher waits for the reset and relaunches you into the next
 window. So:
-  - FIRST ACTION every run: append to logs/night_explorer_2026-07-23.md →
+  - FIRST ACTION every run: append to logs/night_explorer_2026-07-24.md →
     "## Run <UTC-ts> START — resuming at: <queue item>". That line is the only record if you die.
   - COMMIT EACH ITEM THE MOMENT IT COMPILES — never batch; assume you die without warning.
   - Read your own prior START lines + results first; resume at the highest UNfinished item.
