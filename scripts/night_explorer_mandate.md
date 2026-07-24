@@ -49,6 +49,36 @@ CONTEXT (settled by the 07-22 burst — do NOT re-derive, build on it):
     OPTIONS_TURN (only 9 turn events total = no evidence). Verdict: NO-GO, hardened.
 
 ════════════════════════════════════════════════════════════════════════
+OPERATOR-REQUESTED RISK-MANAGEMENT STUDY (2026-07-24) — test EXACTLY, report honestly
+════════════════════════════════════════════════════════════════════════
+The operator proposes an intraday framework: (a) take the first position within the first
+15-20 min of open, in BOTH books; (b) an "efficient" (tighter) stop-loss so a wrong trade
+loses the SL not ~100%; (c) trail / lock profits on winners so an about-to-hit SL still banks
+gains. Test each RIGOROUSLY on the recorded corpus, net of real costs, ex-best-day, and report
+what MINIMISES loss / best shapes risk — do NOT present any of it as "found the edge":
+  S1  ENTRY-TIMING: does forcing/allowing the first entry in the 09:15-09:35 window beat the
+      current gated entry? A/B first-15/20-min entries vs status quo. NOTE the OR-break study
+      (raw opening-range breaks have no edge) and that direction is at-chance — quantify whether
+      early entry changes net + ex-best-day at all, or just moves the loss earlier.
+  S2  STOP-LOSS EFFICIENCY GRID: sweep the option stop (e.g. 15/20/25/30%) and a futures-%
+      stop; report net, ex-best-day, win-rate, avg-loss, and the FAT-TAIL (worst trades) per
+      level. The honest tension to quantify: tighter SL = smaller losses but MORE stop-outs on
+      an at-chance signal (whipsaw). Find the level that best shapes the loss distribution;
+      state plainly that on a no-edge book NO level is net-positive — it only changes the shape.
+      Fold in Bug-1 (bar-close stop realised 40% vs a 30% set): does an intrabar/tick stop
+      materially cut the fat tail? Propose the real-armed resting-SL-M order if so.
+  S3  PROFIT-LOCK / TRAIL: the operator wants trailing. CAVEAT UP FRONT: trailing has been
+      measured and REJECTED multiple times in this book (project notes). Re-test cleanly anyway
+      on the current corpus with real premiums: (i) EXIT_RATCHET_LOCK_FRAC sweep 0/0.25/0.5/0.75,
+      (ii) a true trailing stop at a few trail-widths, (iii) partial-scale-out. net + ex-best per
+      variant. If trailing again fails, say so with the numbers; if a lock materially helps
+      WITHOUT hurting ex-best-day, PROPOSE it default-OFF.
+  FRAMING (state in the report): all three are RISK-MANAGEMENT overlays. On a proven at-chance
+  direction they reshape HOW the book loses; they cannot make it win. They can improve a
+  WINNING strategy — so they are worth having ready — but they are NOT an edge and NOT a
+  real-funds green light. Everything default-OFF, evidence-gated, no rail weakened.
+
+════════════════════════════════════════════════════════════════════════
 QUEUE — everything left to fix, ordered by what moves the real-funds decision
 ════════════════════════════════════════════════════════════════════════
 
