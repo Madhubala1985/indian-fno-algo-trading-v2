@@ -147,7 +147,10 @@ def _parse_log(log_path: Path) -> dict:
 
 _TRADE_LOGGED_RE = re.compile(
     r"\[TRADE LOGGED\]\s+(?P<contract>\S+)\s+(?P<direction>LONG|SHORT)\s+"
-    r"entry=₹(?P<entry>[\d,.]+)\s+exit=₹(?P<exit>[\d,.]+)\s+pnl=₹(?P<pnl>[-+\d,.]+)"
+    r"entry=₹(?P<entry>[\d,.]+)\s+exit=₹(?P<exit>[\d,.]+)\s+"
+    # The live logger emits the sign on EITHER side of the rupee glyph:
+    # winners as `pnl=+₹91.49`, losers as `pnl=₹-3,507.21`. Accept both.
+    r"pnl=(?P<pre_sign>[-+])?₹(?P<post_sign>[-+])?(?P<pnl>[\d,.]+)"
 )
 
 
@@ -158,6 +161,12 @@ def _parse_trades(log_path: Path) -> dict:
     logs/paper_trades.csv, so the header claimed 52 trades / +₹25,935 on a
     3-trade -₹9,754 day. The reflection is a per-session report — everything
     in it must come from THIS session's log.
+
+    Bug fix (2026-07-24): the pnl group required the sign AFTER the rupee
+    glyph, which only losers emit — every winning trade was silently dropped,
+    so 2026-07-24 reported 5 trades / -₹10,443.89 against a true 8 trades /
+    -₹7,744.98. Every reflection written under the old regex is negatively
+    biased; trades.db and the EOD PORTFOLIO SUMMARY were always correct.
     """
     rows: list[dict] = []
     total_pnl = 0.0
@@ -171,6 +180,8 @@ def _parse_trades(log_path: Path) -> dict:
                     pnl = float(m.group("pnl").replace(",", ""))
                 except (ValueError, TypeError):
                     continue
+                if "-" in (m.group("pre_sign"), m.group("post_sign")):
+                    pnl = -pnl
                 rows.append({
                     "symbol": m.group("contract"),
                     "direction": m.group("direction"),
