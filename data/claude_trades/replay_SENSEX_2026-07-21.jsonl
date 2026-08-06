@@ -1,0 +1,2 @@
+{"side": "LONG", "type": "PE", "strike": 77600, "entry_px": 344.45, "lot": 20, "ts_ist": "2026-07-21 09:40", "status": "CLOSED", "thesis": "scalp the persistent open down-drift; stop if SENSEX>77720", "exit_px": 410.3, "pnl": 1317}
+{"side": "LONG", "type": "PE", "strike": 77400, "entry_px": 342.95, "lot": 20, "ts_ist": "2026-07-21 11:45", "status": "CLOSED", "thesis": "downtrend continuation, new lows; stop SENSEX>77500", "exit_px": 317.8, "pnl": -503}
