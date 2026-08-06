@@ -375,6 +375,8 @@ class UnderlyingRuntimeState:
     last_struct_exit_contract: str = ""        # contract symbol of last structure exit
     reentry_loss_streak:       int = 0          # consecutive losing exits (chop re-entry brake)
     reentry_lockout_until_bar: int = -1         # block new entries on this underlying until this bar
+    post_stop_locked:          bool = False     # a hard stop fired — no new entries this session
+    post_stop_contract:        str  = ""        # contract whose stop triggered the lockout
     # Same-contract session loss limit: N losing exits on one contract+direction
     # block that pair for the rest of the session (same-strike churn killer).
     contract_loss_tracker: _SameContractLossTracker = field(default_factory=_SameContractLossTracker)
@@ -565,7 +567,7 @@ _state_by_feed: dict[str, UnderlyingRuntimeState] = {
 # Tier 1 (Defensive): entered when drawdown is elevated
 # Tier 2 (Normal):    default operating mode
 # Tier 3 (Aggressive): only when equity is above initial, low drawdown, high confidence
-_TIER1_RISK_FRAC: float = 0.010   # 1.0% of equity at risk — fixed (never profile-adjusted)
+_TIER1_RISK_FRAC: float = float(os.environ.get("PAPER_TIER1_RISK_FRAC", "0.010") or 0.010)   # was hardcoded 1%; env-tunable for the paper aggression experiment (2026-07-30)
 
 # ── Paper risk profile — small-capital calibration ───────────────────────────
 # PAPER_RISK_PROFILE: conservative (default, real-fund safe) | balanced | aggressive
@@ -680,6 +682,27 @@ _TIER3_MIN_CONF:  float = 0.35    # tier 3 eligibility enforced at tier selectio
 _SENSEX_PRIMARY_ROUTING:     bool  = (os.environ.get("SENSEX_PRIMARY_ROUTING", "1") == "1")
 _NIFTY_VERY_STRONG_CONF:     float = float(os.environ.get("NIFTY_VERY_STRONG_CONF", "0.95") or 0.95)
 _SENSEX_PRIORITY_UNDERLYING: str   = "SENSEX"
+
+# Anti-chase entry gate (2026-07-30): reverse-engineering proved the model buys the TOP
+# -- today all 3 entries were at 91-99% of the option's recent range with ~0% upside left,
+# then reversed 24-60%. Block a LONG when spot is already near the top of its recent range
+# (up-move ran) and a SHORT near the bottom. Enter mid-range, not the exhausted extreme.
+# Knob-gated, fail-open. PAPER_ANTICHASE_GATE=0 disables; THRESHOLD default 0.80.
+_ANTICHASE_GATE:      bool  = (os.environ.get("PAPER_ANTICHASE_GATE", "1") == "1")
+_ANTICHASE_LOOKBACK:  int   = int(os.environ.get("PAPER_ANTICHASE_LOOKBACK", "15") or 15)
+_ANTICHASE_THRESHOLD: float = float(os.environ.get("PAPER_ANTICHASE_THRESHOLD", "0.80") or 0.80)
+
+# Regime gate (2026-07-31): the regime engine already classifies each bar and it SEPARATES
+# on the live book -- BALANCED (chop) lost -31,536 over 41 trades while COMPRESSION made
+# +17,715. The model computed last_dir_regime every minute and IGNORED it (only a 0.5x
+# de-size, not enough). This STANDS ASIDE in BALANCED chop -- runtime adaptation: read the
+# condition, change behaviour. Knob-gated, default ON. PAPER_REGIME_BLOCK_BALANCED=0 disables.
+_REGIME_BLOCK_BALANCED: bool = (os.environ.get("PAPER_REGIME_BLOCK_BALANCED", "1") == "1")
+# Stricter regime gate (experimental, default OFF): trade ONLY in COMPRESSION and stand
+# aside (conf*=0) otherwise. Distinct from _REGIME_BLOCK_BALANCED which only blocks BALANCED.
+# Was referenced in on_ticks without a decl (NameError, fail-open -> every bar skipped);
+# defined here defaulting OFF to restore normal breadth. PAPER_REGIME_ONLY_COMPRESSION=1 enables.
+_REGIME_ONLY_COMPRESSION: bool = (os.environ.get("PAPER_REGIME_ONLY_COMPRESSION", "0") == "1")
 
 # ── GEX wall-proximity entry gate (PROTOTYPE 2026-06-18, opt-in / default OFF) ──
 # Dealer-gamma "walls" act as intraday resistance/support: price tends to stall or
@@ -799,6 +822,23 @@ _MAX_OPTION_PREMIUM_LOSS_FRACTION: float = float(
 _STOP_LOSS_PCT:     float = 1.0 - _MAX_OPTION_PREMIUM_LOSS_FRACTION   # 0.70 remaining
 _TAKE_PROFIT_PCT:   float = 2.00
 _MIN_DTE_TO_HOLD:   int   = 2
+
+# ── BUG B (2026-07-25): intra-bar tick-stop poll ──────────────────────────────
+# The bar-close exit path checks the option premium stop ONCE per finalized minute
+# (on_ticks only acts on a completed bar; evaluate_and_close then marks a single
+# fetch_ltp pull). A fast move can gap ~10pp past the trigger before the next
+# close: the live book logged two losers "STOP_LOSS max_loss=30% actual_loss=40%"
+# (ids 17/21, -19,952 combined, both dead in 3-4 bars). When EXIT_TICK_STOP_POLL_SECS
+# > 0, on_ticks polls the held option LTP every N seconds BETWEEN bar closes and
+# routes the stop exit the INSTANT the polled premium crosses the level — the honest
+# intra-bar equivalent of a resting SL-M (NO order is armed; the paper fill is the
+# actually-observed poll premium, never a modelled trigger price). It ONLY ever
+# fires the hard %-stop (TP/ratchet/thesis stay bar-close) and can only TIGHTEN a
+# loss toward its set level, so it weakens no rail. Default 0 => OFF => on_ticks
+# byte-identical to the bar-close-only path. Proof: scripts/prove_tick_stop.py.
+_EXIT_TICK_STOP_POLL_SECS: float = float(
+    os.environ.get("EXIT_TICK_STOP_POLL_SECS", "0") or 0.0
+)
 # Expiry-selection DTE floor: trade the NEAREST expiry with at least this many
 # days of runway (best value — cheapest, highest gamma, chart-matching), rolling
 # forward only when the front contract is about to expire. Replaces the prior
@@ -838,6 +878,21 @@ _SAME_CONTRACT_STRUCT_COOLDOWN_BARS:   int = int(os.environ.get("STRUCT_EXIT_CON
 # much larger out-of-sample trade count.
 _MAX_REENTRY_LOSSES:   int = int(os.environ.get("REENTRY_MAX_LOSSES", "3")   or 3)
 _REENTRY_LOCKOUT_BARS: int = int(os.environ.get("REENTRY_LOCKOUT_BARS", "60") or 60)
+
+# ── Post-stop directional lockout (2026-08-07) ───────────────────────────────
+# One hard stop-out on an underlying ends DIRECTIONAL trading on it for the
+# session. Evidence: re-engaging direction after the session's read has already
+# been proven wrong went 0-for-2 for -Rs3,903 in causal replay + live
+# (replay 2026-08-05 -3,138 entering a "new-high re-assertion" that was the day
+# high; live 2026-08-06 -765 chasing a BANKNIFTY breakout after a correct
+# 13:01 stand-aside call). Both days the earlier read was right and the
+# re-engagement lost. This is a strictly TIGHTER cousin of the existing chop
+# re-entry brake (which needs 3 consecutive losing exits): a hard stop is
+# already proof the directional thesis was wrong, so one is enough.
+# It does NOT halt the session — exits, EOD close and accounting all run
+# normally; it only blocks NEW entries on that underlying.
+# PAPER_POST_STOP_LOCKOUT=0 disables.
+_POST_STOP_LOCKOUT: bool = (os.environ.get("PAPER_POST_STOP_LOCKOUT", "1") == "1")
 
 # Confluence gate for Tier2/Tier3: require minimum OI support on the selected strike.
 # Proven defect: SENSEX entry had oi_support=0.034 (near-zero OI = liquidity risk).
@@ -1048,6 +1103,12 @@ def _print_gate_startup() -> None:
         f"same_direction_session_max_entries={_DirectionEntryCounter().max_entries}  "
         f"entry_cutoff={_ENTRY_CUTOFF_IST_HOUR}:00 IST (0=off)"
     )
+    print(
+        f"[POST-STOP LOCKOUT] {'ON' if _POST_STOP_LOCKOUT else 'OFF'} — "
+        f"{'one hard stop-out ends NEW entries on that underlying for the session '
+           '(exits/EOD close unaffected)' if _POST_STOP_LOCKOUT else 'disabled'}  "
+        f"PAPER_POST_STOP_LOCKOUT={'1' if _POST_STOP_LOCKOUT else '0'}"
+    )
     if _PAPER_GATE_PROFILE == "paper_trade_unlock":
         print("[WARNING] Paper trade-unlock experiment — not approved for real funds.")
     elif _gate_experiment_active:
@@ -1077,6 +1138,16 @@ _HARD_HALT_DAILY_LOSS_FRAC: float = float(os.environ.get("PAPER_HARD_HALT_DAILY_
 # 0 = DISABLED (no streak halt; rely on the daily-loss floor + smooth sizer taper).
 _HARD_HALT_CONSEC_LOSSES:   int   = int(os.environ.get("PAPER_HARD_HALT_CONSEC_LOSSES", "3") or 3)
 _MAX_ACCOUNT_DD:            float = float(os.environ.get("PAPER_MAX_ACCOUNT_DD", "0.150") or 0.150)
+# F1 (safety tightening, DEFAULT OFF): when a DAILY_LOSS hard-halt fires, also FLATTEN
+# open positions via the existing audited EOD close path (reason DAILY_LOSS_FLATTEN),
+# so the book cannot bleed past the daily cap on MTM before a position's own stop fires.
+# OFF = legacy behaviour (halt gates NEW entries only; open positions carried).
+_FLATTEN_ON_DAILY_HALT: bool = (os.environ.get("PAPER_FLATTEN_ON_DAILY_HALT", "0") == "1")
+# F2 (honest-equity, DEFAULT OFF, real_armed-only effect): on an UNCONFIRMED real exit,
+# do NOT fold the BSM-estimate pnl into equity and do NOT mark the position closed —
+# hold it as EXIT_PENDING_UNCONFIRMED and let reconciliation book broker truth. OFF =
+# legacy behaviour (estimate booked). Paper/dry-run fills are synthetic+confirmed → no effect.
+_HOLD_UNCONFIRMED_EXIT: bool = (os.environ.get("PAPER_HOLD_UNCONFIRMED_EXIT", "0") == "1")
 
 # ── Per-underlying PositionSizer sets ────────────────────────────────────────
 # Each underlying gets independent instances so sizer internal tracking
@@ -1202,6 +1273,10 @@ _halt_reason:            str         = ""
 _soft_halted:            bool        = False
 _soft_halt_reason:       str         = ""
 _consecutive_losses:     int         = 0
+# F2: set True when an UNCONFIRMED real exit is held as EXIT_PENDING_UNCONFIRMED (the
+# BSM estimate was NOT booked). Reported equity is unreliable until reconciliation
+# resolves broker truth. Only ever set under _HOLD_UNCONFIRMED_EXIT + real_armed.
+_equity_unreliable:      bool        = False
 _shutdown_triggered:     bool        = False  # set True by _handle_market_close_shutdown
 # Serializes the market-close shutdown trigger. _handle_market_close_shutdown is
 # reachable from BOTH the WS thread (on_ticks bar-level 15:30 check) and the main
@@ -1361,6 +1436,16 @@ from platform_core.data.live.options_analytics_shadow import (
 _opt_analytics_shadow = (
     _OptionsAnalyticsShadow()
     if _os.environ.get("PAPER_OPT_ANALYTICS_SHADOW", "1") != "0" else None
+)
+# Option-book order-flow SHADOW (2026-07-26): the chain snapshot we already fetch each
+# bar carries per-strike bid/ask qty + volume + OI on the strikes we trade; it was used
+# only for liquidity gating. This logs the DIRECTIONAL book flow (call vs put demand) the
+# index-futures orderflow shadow cannot see. Logs-only, never gates. Kill with
+# PAPER_OPTION_FLOW_SHADOW=0. Validate on corpus before it is ever wired to a decision.
+from platform_core.data.live.option_flow_shadow import OptionFlowShadow as _OptionFlowShadow
+_option_flow_shadow = (
+    _OptionFlowShadow()
+    if _os.environ.get("PAPER_OPTION_FLOW_SHADOW", "1") != "0" else None
 )
 # Phase-3 intelligence wiring (2026-07-10): ContinuationClassifier in SHADOW —
 # assembles the 22-field observation from 1m bar history + Dealer/OI/Premium
@@ -2360,10 +2445,14 @@ print(
     f"  max_single_trade={_PAPER_MAX_SINGLE_TRADE_RISK_FRAC * 100:.1f}%"
 )
 from platform_core.backtesting.backtest_runner import _RATCHET_ARM_PCT as _ratchet_arm
+from platform_core.backtesting.backtest_runner import _RATCHET_LOCK_FRAC as _ratchet_lock
 print(
     f"[EXIT PROTECTION] breakeven_ratchet_arm=+{_ratchet_arm:.0%}"
-    f" (armed winner can't become a loser; armed position frees its risk slot;"
-    f" EXIT_RATCHET_ARM_PCT=0 disables)"
+    f"  ratchet_lock_frac={_ratchet_lock:.0%}"
+    + (" (locks that % of peak on retrace)" if _ratchet_lock > 0.0
+       else " (lock OFF: armed floor = entry)")
+    + f" (armed winner can't become a loser; armed position frees its risk slot;"
+    f" EXIT_RATCHET_ARM_PCT=0 disables; EXIT_RATCHET_LOCK_FRAC sets lock)"
 )
 print(
     f"[TURN-ENTRY] options early flow-TURN seed: "
@@ -2448,9 +2537,59 @@ def _seed_opening_ranges_if_missing() -> None:
                   f"chop guards INACTIVE, model would trade chop-blind!")
 
 
+# ── [B1 2026-07-25] Structure-side warm-start knob (DEFAULT OFF) ──────────────
+# The MCB (bias) is warm-started but the StructureEngine/SwingDetector/FVG engines
+# start COLD every session, degrading the first-20-min FVG-quality gate (empty
+# active_htf_fvgs + recent_sweeps). PAPER_WARMSTART_STRUCTURE=1 seeds those engines
+# from the SAME historical CSV the MCB warm-start already loads. Default OFF: it
+# changes the live signal surface book-wide, so it stays gated until an A/B clears
+# net AND ex-best-day. Weakens no rail — it only POPULATES engines with real history.
+_WARMSTART_STRUCTURE: bool = (
+    os.environ.get("PAPER_WARMSTART_STRUCTURE", "0").strip().lower() in ("1", "true", "yes", "on")
+)
+
+
+def _warm_start_structure_from_csv() -> None:
+    """Seed each underlying's StructureEngine/SwingDetector/FVG(15m,1h) from the same
+    historical CSV bars the MCB warm-start loads. Knob-gated (default OFF); mirrors the
+    live per-bar feed order via structure_warmstart.warm_start_structure_engines."""
+    if not _WARMSTART_STRUCTURE:
+        print("[STRUCT WARMSTART] OFF (PAPER_WARMSTART_STRUCTURE=1 to enable) — "
+              "structure engines start cold, as before")
+        return
+    from platform_core.data.live.structure_warmstart import warm_start_structure_engines
+    for key, und_state in _runtime_by_underlying.items():
+        feed_symbol = und_state.feed_symbol
+        engine = ENGINES.get(feed_symbol)
+        swing = SWING_DETECTORS.get(feed_symbol)
+        if engine is None or swing is None:
+            print(f"[STRUCT WARMSTART] {key}: no structure engine for feed={feed_symbol} — skip")
+            continue
+        csv_path = _find_warmstart_csv(key)
+        if csv_path is None:
+            print(f"[STRUCT WARMSTART] {key}: no CSV in data/ — structure engines stay cold")
+            continue
+        bars_1m = _csv_bars_to_livebars(csv_path, feed_symbol)
+        if not bars_1m:
+            print(f"[STRUCT WARMSTART] {key}: CSV {csv_path.name} empty — cold")
+            continue
+        counts = warm_start_structure_engines(
+            engine=engine, swing_detector=swing,
+            fvg_15m=und_state.fvg_15m, fvg_1h=und_state.fvg_1h,
+            bars_1m=bars_1m, adapter=structure_adapter,
+        )
+        print(
+            f"[STRUCT WARMSTART] {key}: fed {counts['1m']} 1m bars → "
+            f"swing_pts={counts['swing_pts']} struct_events={counts['struct_events']} "
+            f"fvg15_bars={counts['fvg15']} fvg1h_bars={counts['fvg1h']} | "
+            f"active gaps 15m={len(und_state.fvg_15m.active_gaps)} 1h={len(und_state.fvg_1h.active_gaps)}"
+        )
+
+
 _print_gate_startup()  # print gate profile + per-underlying thresholds at every startup
 _load_state()         # restore from disk at process startup
 _warm_start_mcb_from_csv()   # pre-seed MCB from historical CSV — eliminates cold-start NEUTRAL lock
+_warm_start_structure_from_csv()  # [B1] pre-seed structure engines (knob-gated, default OFF)
 _seed_opening_ranges_if_missing()  # late-start fail-safe: rebuild OR from Kite so chop guards stay active
 
 # ── Warm-start readiness guard — NEVER start blind ────────────────────────────
@@ -3392,9 +3531,14 @@ def _run_shadow_option_intelligence(
         _maybe_print_shadow_summary(state.option_underlying)
 
 
-def _eod_force_close_all() -> None:
+def _eod_force_close_all(reason_tag: str = "EOD_FORCE_CLOSE") -> None:
     """
     Force-close every open paper option position at market close.
+
+    reason_tag labels the recorded exit (trade exit_reason + route_exit reason +
+    DB exit row). Defaults to "EOD_FORCE_CLOSE" (market-close shutdown). F1 passes
+    "DAILY_LOSS_FLATTEN" when a daily-loss hard-halt flattens the book. The close/
+    route/confirm mechanics are identical for every reason — only the label differs.
 
     For each open position:
       - Requires last_bar_close > 0 AND last_atm_iv > 0.
@@ -3410,6 +3554,7 @@ def _eod_force_close_all() -> None:
     Never inserts a fabricated price when the BSM inputs are unavailable.
     """
     global _equity, _peak_equity, _open_premium_cost, _daily_pnl, _consecutive_losses
+    global _equity_unreliable
 
     for key, und_state in _runtime_by_underlying.items():
         if not und_state.option_trader.has_open_position():
@@ -3438,7 +3583,7 @@ def _eod_force_close_all() -> None:
             stop_loss_pct=_STOP_LOSS_PCT,
             take_profit_pct=_TAKE_PROFIT_PCT,
             min_dte=_MIN_DTE_TO_HOLD,
-            force_reason="EOD_FORCE_CLOSE",
+            force_reason=reason_tag,
             current_premium_override=_eod_live_ltp,
         )
 
@@ -3460,7 +3605,7 @@ def _eod_force_close_all() -> None:
                 lots          = _closed.lots,
                 lot_size      = _closed.lot_size,
                 exit_premium  = _closed.exit_premium,
-                reason        = "EOD_FORCE_CLOSE",
+                reason        = reason_tag,
                 session_tag   = _session_tag,
                 risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
                 db            = _db,
@@ -3502,6 +3647,34 @@ def _eod_force_close_all() -> None:
             except Exception:
                 pass
 
+            # F2 (honest-equity): the real SELL was NOT confirmed — the broker may
+            # still hold this position. Booking the BSM-estimate pnl into equity here
+            # would report a closed, richer book while carrying live exposure. When the
+            # knob is ON, DO NOT book the estimate and DO NOT mark the position closed:
+            # restore it as EXIT_PENDING_UNCONFIRMED and let ReconciliationEngine book
+            # broker truth. Equity is flagged unreliable until then. OFF = legacy.
+            if _HOLD_UNCONFIRMED_EXIT:
+                # evaluate_and_close appended _closed to completed_trades and nulled
+                # _position; reverse both so the position is HELD, not booked.
+                _trader = und_state.option_trader
+                if _trader.completed_trades and _trader.completed_trades[-1] is _closed:
+                    _trader.completed_trades.pop()
+                _trader._position = pos
+                _equity_unreliable = True
+                print(
+                    f"[EOD EXIT HELD] {key} {_closed.contract_symbol} EXIT_PENDING_UNCONFIRMED "
+                    f"— estimate NOT booked (equity_unreliable=True); reconcile from broker"
+                )
+                try:
+                    _db.write_runtime_event(
+                        "EXIT_PENDING_UNCONFIRMED", severity="CRITICAL",
+                        message=f"{_closed.contract_symbol} held; equity unreliable until reconcile",
+                        equity=_equity,
+                    )
+                except Exception:
+                    pass
+                continue
+
         _equity               += _closed.pnl
         _peak_equity           = max(_peak_equity, _equity)
         _open_premium_cost     = _compute_open_premium_cost()
@@ -3528,7 +3701,7 @@ def _eod_force_close_all() -> None:
                 exit_premium=_closed.exit_premium,
                 pnl=_closed.pnl,
                 bars_held=_closed.bars_held,
-                exit_reason="EOD_FORCE_CLOSE",
+                exit_reason=reason_tag,
                 exit_ts=datetime.now(timezone.utc).isoformat(),
                 equity_after=_equity,
             )
@@ -3646,11 +3819,325 @@ def _handle_market_close_shutdown(reason: str) -> None:
         pass
 
 
+
+def _book_intraday_option_exit(_current_state, _closed, _pre_exit_pos):
+    """
+    Route + finalize an intraday option exit that `evaluate_and_close` has already
+    booked (position nulled, trade appended to completed_trades). Extracted verbatim
+    from the on_ticks bar-close path so the intra-bar tick-stop poll (BUG B) can book
+    an exit through the IDENTICAL accounting instead of a divergent copy.
+    Returns True when the exit was HELD as unconfirmed (caller must skip the rest of
+    the tick iteration), else False. Behaviour-preserving for the bar-close caller.
+    """
+    global _equity, _peak_equity, _open_premium_cost, _daily_pnl
+    global _consecutive_losses, _trading_halted, _halt_reason, _equity_unreliable
+    # ── Route the exit + confirm the fill BEFORE finalizing ──
+    # paper/real_dry_run: confirm_fill synthesizes a FILLED at the BSM
+    # exit premium, so accounting is unchanged.  real_armed: place the
+    # real SELL order and confirm the ACTUAL exit price.  An unconfirmed
+    # real exit means the broker may STILL hold the position → HALT
+    # (fail-closed; reconciliation + manual intervention resolve).
+    try:
+        _exit_result = _exec_router.route_exit(
+            underlying    = _current_state.option_underlying,
+            tradingsymbol = _closed.contract_symbol,
+            lots          = _closed.lots,
+            lot_size      = _closed.lot_size,
+            exit_premium  = _closed.exit_premium,
+            reason        = str(_closed.exit_reason),
+            session_tag   = _session_tag,
+            risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
+            db            = _db,
+        )
+        _exit_fill = _exec_router.confirm_fill(
+            _exit_result,
+            expected_qty=_closed.lots * _closed.lot_size,
+            fallback_premium=_closed.exit_premium,
+        )
+    except Exception:
+        _exit_fill = None
+
+    # Final exit price/pnl: actual fill in real_armed, else BSM estimate.
+    if (_EXECUTION_MODE == "real_armed"
+            and _exit_fill is not None and _exit_fill.is_filled):
+        _final_exit_premium = _exit_fill.average_price
+        _final_pnl = (
+            (_final_exit_premium - _closed.entry_premium)
+            * _closed.lot_size * _closed.lots
+        )
+        # Real fills embed the spread; statutory charges only.
+        _final_pnl, _closed.costs = _apply_txn_costs(
+            _final_pnl, entry_premium=_closed.entry_premium,
+            exit_premium=_final_exit_premium,
+            quantity=_closed.lot_size * _closed.lots,
+            underlying=_closed.underlying_symbol,
+            spread_frac_per_side=0.0)
+        print(
+            f"[REAL FILL] EXIT {_closed.contract_symbol} filled "
+            f"@₹{_final_exit_premium:.2f} qty={_exit_fill.filled_quantity} "
+            f"actual_pnl=₹{_final_pnl:,.0f} (est ₹{_closed.pnl:,.0f})"
+        )
+    else:
+        _final_exit_premium = _closed.exit_premium
+        _final_pnl = _closed.pnl
+
+    # Keep _closed consistent with the executed fill so the JSON trade
+    # log (as_paper_trade) matches pt_trades and the accounting below.
+    _closed.exit_premium = _final_exit_premium
+    _closed.pnl          = _final_pnl
+
+    # real_armed exit that did not confirm — HALT (broker may still hold).
+    if (_EXECUTION_MODE == "real_armed"
+            and (_exit_fill is None or not _exit_fill.is_filled)):
+        _miss = _exit_fill.status if _exit_fill is not None else "ROUTER_ERROR"
+        _trading_halted = True
+        _halt_reason = (
+            f"REAL_EXIT_UNCONFIRMED {_closed.contract_symbol} status={_miss}"
+        )
+        print_warning_block(
+            "REAL EXIT NOT CONFIRMED — TRADING HALTED",
+            bar_index=_bar_count,
+            underlying=_current_state.option_underlying,
+            contract=_closed.contract_symbol,
+            reason=_halt_reason + " (reconcile broker position manually)",
+        )
+        try:
+            _db.write_runtime_event(
+                "REAL_EXIT_UNCONFIRMED", severity="CRITICAL",
+                message=_halt_reason, equity=_equity,
+            )
+        except Exception:
+            pass
+
+    # F2 (honest-equity) — INTRADAY path. Mirrors the EOD hold in
+    # _eod_force_close_all: an unconfirmed real exit must NOT book the
+    # BSM estimate into realised equity while the broker may still hold
+    # the position. When the knob is ON, restore the position as
+    # EXIT_PENDING_UNCONFIRMED, flag equity unreliable, and skip the
+    # finalization entirely; ReconciliationEngine books broker truth.
+    # OFF (default) / paper / dry-run: never entered → legacy behaviour
+    # byte-identical. (Halt is already set above; the per-bar halt/soft
+    # checks below still run on the next tick.)
+    if (_HOLD_UNCONFIRMED_EXIT
+            and _EXECUTION_MODE == "real_armed"
+            and (_exit_fill is None or not _exit_fill.is_filled)):
+        _trader = _current_state.option_trader
+        if _trader.completed_trades and _trader.completed_trades[-1] is _closed:
+            _trader.completed_trades.pop()
+        _trader._position = _pre_exit_pos
+        _equity_unreliable = True
+        print(
+            f"[EXIT HELD] {_current_state.option_underlying} "
+            f"{_closed.contract_symbol} EXIT_PENDING_UNCONFIRMED — "
+            f"estimate NOT booked (equity_unreliable=True); reconcile from broker"
+        )
+        try:
+            _db.write_runtime_event(
+                "EXIT_PENDING_UNCONFIRMED", severity="CRITICAL",
+                message=(f"{_closed.contract_symbol} held; equity "
+                         f"unreliable until reconcile"),
+                equity=_equity,
+            )
+        except Exception:
+            pass
+        return True
+
+    # ── Finalize accounting at the final exit price ──
+    _equity += _final_pnl
+    _peak_equity = max(_peak_equity, _equity)
+    _open_premium_cost = _compute_open_premium_cost()
+    _daily_pnl += _final_pnl
+    # Guards classify on GROSS — see EOD-close site (breakeven
+    # exits must not feed loss streaks because of the toll).
+    if (_final_pnl + getattr(_closed, "costs", 0.0)) < 0:
+        _consecutive_losses += 1
+    else:
+        _consecutive_losses = 0
+    # Re-entry cooldown state (keyed on exit_reason, not pnl)
+    if "STOP_LOSS" in str(_closed.exit_reason):
+        _current_state.last_stop_bar      = _bar_count
+        _current_state.last_stop_contract = _closed.contract_symbol
+        # Post-stop directional lockout: the session's directional read has been
+        # proven wrong on this underlying — stop trading it rather than re-engage.
+        if _POST_STOP_LOCKOUT and not _current_state.post_stop_locked:
+            _current_state.post_stop_locked   = True
+            _current_state.post_stop_contract = _closed.contract_symbol
+            print(
+                f"[POST-STOP LOCKOUT] {_current_state.option_underlying}: hard stop on "
+                f"{_closed.contract_symbol} — NO further entries on this underlying this "
+                f"session (re-engaging after a proven-wrong read went 0/2 for -₹3,903). "
+                f"Exits and EOD close continue normally. PAPER_POST_STOP_LOCKOUT=0 disables."
+            )
+    # Structure-exit cooldown state (chop filter): BOS/CHOCH exits
+    # previously bypassed the cooldown, causing same-strike churn.
+    if "STRUCTURE_EXIT" in str(_closed.exit_reason):
+        _current_state.last_struct_exit_bar      = _bar_count
+        _current_state.last_struct_exit_contract = _closed.contract_symbol
+    # Same-contract session loss limit: count losing exits per
+    # (contract, direction); at the limit that pair is blocked
+    # for the rest of the session (same-strike churn killer).
+    _current_state.contract_loss_tracker.record_exit(
+        contract=_closed.contract_symbol,
+        direction=str(_closed.direction),
+        # GROSS: a toll-only negative is not a losing exit.
+        pnl=_final_pnl + getattr(_closed, "costs", 0.0),
+    )
+    if _current_state.contract_loss_tracker.blocked(
+        contract=_closed.contract_symbol,
+        direction=str(_closed.direction),
+    ):
+        print(
+            f"[SAME-CONTRACT SESSION BLOCK] {_closed.contract_symbol} "
+            f"{_closed.direction}: "
+            f"{_current_state.contract_loss_tracker.losses(contract=_closed.contract_symbol, direction=str(_closed.direction))} "
+            f"losing exits — blocked for the rest of the session"
+        )
+    # Chop re-entry brake: consecutive losing exits lock the
+    # underlying briefly; a win resets immediately (trend continues).
+    # GROSS classification (identical to pre-cost-model behaviour).
+    if (_closed.pnl + getattr(_closed, "costs", 0.0)) > 0:
+        _current_state.reentry_loss_streak = 0
+    else:
+        _current_state.reentry_loss_streak += 1
+        if _current_state.reentry_loss_streak >= _MAX_REENTRY_LOSSES:
+            _current_state.reentry_lockout_until_bar = _bar_count + _REENTRY_LOCKOUT_BARS
+            _current_state.reentry_loss_streak = 0  # fresh start after the lockout
+            print(
+                f"[CHOP RE-ENTRY LOCKOUT] {_current_state.option_underlying}: "
+                f"{_MAX_REENTRY_LOSSES} consecutive losing exits — new entries "
+                f"blocked for {_REENTRY_LOCKOUT_BARS} bars (until bar "
+                f"{_current_state.reentry_lockout_until_bar})"
+            )
+    print_exit_block(
+        underlying=_closed.underlying_symbol,
+        strike=_closed.strike,
+        option_type=_closed.option_type,
+        direction=_closed.direction,
+        lots=_closed.lots,
+        lot_size=_closed.lot_size,
+        entry_premium=_closed.entry_premium,
+        exit_premium=_final_exit_premium,
+        pnl=_final_pnl,
+        bars_held=_closed.bars_held,
+        exit_reason=str(_closed.exit_reason),
+        equity=_equity,
+    )
+    try:
+        _db.write_trade_exit(
+            underlying=_current_state.option_underlying,
+            exit_premium=_final_exit_premium,
+            pnl=_final_pnl,
+            bars_held=_closed.bars_held,
+            exit_reason=str(_closed.exit_reason),
+            exit_ts=datetime.now(timezone.utc).isoformat(),
+            equity_after=_equity,
+        )
+    except Exception:
+        pass
+    if _save_state():
+        trade_logger.log_trade(trade=_closed.as_paper_trade())
+    else:
+        print_warning_block(
+            "STATE SAVE FAILED",
+            reason=(
+                "trade not logged to CSV — "
+                "position closed in memory, will re-evaluate after restart"
+            ),
+        )
+    _all_completed = [
+        t.as_paper_trade()
+        for _s in _runtime_by_underlying.values()
+        for t in _s.option_trader.completed_trades
+    ]
+    _summary = performance_tracker.calculate_summary(trades=_all_completed)
+    print_performance_summary(
+        total_trades=_summary.total_trades,
+        wins=_summary.winning_trades,
+        losses=_summary.losing_trades,
+        total_pnl=_summary.total_pnl,
+        avg_pnl=_summary.average_pnl,
+        equity=_equity,
+        initial_equity=_INITIAL_EQUITY,
+    )
+    return False
+
+
+def _tick_stop_poll_all():
+    """
+    BUG B intra-bar tick-stop poll (knob EXIT_TICK_STOP_POLL_SECS, default OFF).
+
+    Runs inside on_ticks on EVERY spot tick, throttled per-underlying to one poll
+    every EXIT_TICK_STOP_POLL_SECS seconds. For each enabled underlying holding an
+    open option, fetch the REAL option LTP; if it has crossed the hard %-stop level
+    (entry * _STOP_LOSS_PCT), book the exit NOW at the actually-observed poll premium
+    through the SAME evaluate_and_close + _book_intraday_option_exit path the bar-close
+    handler uses. This is the honest intra-bar equivalent of a resting SL-M: the fill
+    is the premium we actually saw when we decided to exit, never a modelled trigger.
+
+    Deliberately narrow: it acts ONLY when the premium is already at/below the stop,
+    so it can never fire TP / ratchet / thesis exits intra-bar (those remain
+    bar-close-driven) and can only tighten a loss toward its set level. Never raises
+    into the tick path. No-ops entirely when the knob is 0.
+    """
+    if _EXIT_TICK_STOP_POLL_SECS <= 0.0:
+        return
+    _now = datetime.now(timezone.utc)
+    for _st in _runtime_by_underlying.values():
+        try:
+            if not is_option_target_enabled(_st.option_underlying):
+                continue
+            if not _st.option_trader.has_open_position():
+                continue
+            _last = getattr(_st, "last_tick_stop_poll", None)
+            if _last is not None and (_now - _last).total_seconds() < _EXIT_TICK_STOP_POLL_SECS:
+                continue
+            _st.last_tick_stop_poll = _now
+            _pos = getattr(_st.option_trader, "_position", None)
+            if _pos is None:
+                continue
+            _ltp = _held_option_ltp(_st)
+            if _ltp is None or _ltp <= 0.0:
+                continue
+            # Real-time exit evaluation (2026-07-30): evaluate ALL price exits on the
+            # tick — the hard stop AND the capture-optimizer profit exits (scalp/ratchet).
+            # evaluate_and_close marks peak_premium from this live LTP and fires any exit
+            # whose level is crossed intra-bar, so a +SCALP%% spike or a stop is booked in
+            # real time instead of waiting for the (worse) bar close — this is resting
+            # stop/target-order behaviour. Structure/thesis exits stay on the bar-close
+            # path. Was previously restricted to the hard stop only (once-a-minute blind).
+            _pre_exit_pos = _pos
+            _closed = _st.option_trader.evaluate_and_close(
+                current_spot=float(getattr(_pos, "strike", 0.0) or 0.0),  # unused on override path
+                current_iv=_st.last_atm_iv,
+                current_date=_now.date(),
+                bar_index=_bar_count,
+                stop_loss_pct=_STOP_LOSS_PCT,
+                take_profit_pct=_TAKE_PROFIT_PCT,
+                min_dte=_MIN_DTE_TO_HOLD,
+                force_reason=None,
+                current_premium_override=_ltp,
+            )
+            if _closed is None:
+                continue
+            # Audit marker so the session log distinguishes an intra-bar tick exit
+            # from a bar-close stop. Does not change accounting.
+            _closed.exit_reason = f"{_closed.exit_reason} (tick@{_EXIT_TICK_STOP_POLL_SECS:g}s)"
+            print(
+                f"[TICK EXIT] {_st.option_underlying} {_closed.contract_symbol} "
+                f"@ ₹{_ltp:.2f} intra-bar — {_closed.exit_reason}"
+            )
+            _book_intraday_option_exit(_st, _closed, _pre_exit_pos)
+        except Exception:
+            # Fail-open: a poll error must never break the tick path; the bar-close
+            # stop still runs as the backstop.
+            continue
+
+
 def on_ticks(raw_ticks):
     global _equity, _peak_equity, _open_premium_cost, _bar_count
     global _trading_halted, _halt_reason, _daily_pnl, _session_date, _session_opening_equity
     global _soft_halted, _soft_halt_reason, _consecutive_losses
-    global _kite_session_valid, _kite_session_error
+    global _kite_session_valid, _kite_session_error, _equity_unreliable
     # Note: last_atm_iv, bar_history, bars_since_save, fvg_quality, fvg_quality_bar,
     #       captured_market_ctx, captured_strike_rec are now on UnderlyingRuntimeState.
 
@@ -3673,6 +4160,14 @@ def on_ticks(raw_ticks):
                 continue
 
         tick = mapper.map_tick(raw_tick)
+
+        # ── BUG B: intra-bar tick-stop poll (knob-gated, default OFF) ──────────
+        # Poll open option positions against the hard %-stop on the tick path so a
+        # fast move exits when the premium crosses the level instead of gapping
+        # ~10pp past it by the next bar close. No-ops when the knob is 0; never
+        # raises. Runs before bar building so it is not tied to bar-completion ticks.
+        if _EXIT_TICK_STOP_POLL_SECS > 0.0 and not _trading_halted and not _shutdown_triggered:
+            _tick_stop_poll_all()
 
         completed_bar = (
             bar_builder.update_tick(
@@ -4068,6 +4563,19 @@ def on_ticks(raw_ticks):
                             except Exception:
                                 pass
 
+                        # SHADOW: option-book directional flow from THIS live chain
+                        # (logs-only, never gates). Wired on the proven-live on_ticks
+                        # seam beside the analytics shadow (2026-07-27 relocation).
+                        if _option_flow_shadow is not None:
+                            try:
+                                _option_flow_shadow.observe_chain(
+                                    _current_state.option_underlying, live_chain, spot,
+                                    _current_state.strike_step,
+                                    bar_ts=completed_bar.start_timestamp,
+                                )
+                            except Exception:
+                                pass
+
                         # Phase-3 SHADOW: ContinuationClassifier (logs-only).
                         if _continuation_shadow is not None:
                             try:
@@ -4167,12 +4675,18 @@ def on_ticks(raw_ticks):
                                     f"score={best.composite_score:.2f}  "
                                     f"iv={best.implied_volatility:.1%}"
                                 )
-                                # Observability only — never raises, never affects behavior
+                                # Observability only — never raises, never affects behavior.
+                                # `best` here is POST-tie-break (line ~4603 re-ranks it),
+                                # so executed_rec records the contract actually sized/traded
+                                # even when the delta tie-break waived the near-tie — the
+                                # pre-tie-break rank-1 stays in selected_symbol for scoring.
                                 _audit_selection(
                                     result=_selection_result,
                                     candidates=_candidates_list,
                                     feed_symbol=completed_bar.symbol,
                                     strike_step=_current_state.strike_step,
+                                    executed_rec=_current_state.captured_strike_rec,
+                                    tiebreak_fired=_current_state.captured_tiebreak_pass,
                                 )
                     except Exception as exc:
                         _err_str = str(exc)
@@ -4414,6 +4928,9 @@ def on_ticks(raw_ticks):
                 # Mark to the REAL option LTP (live paper/dry-run); BSM only if the
                 # quote is unavailable. Fixes fictional model-priced exits.
                 _live_ltp = _held_option_ltp(_current_state)
+                # F2 (honest-equity): capture the open position BEFORE the close so an
+                # unconfirmed real exit can be restored (held) instead of booked.
+                _pre_exit_pos = getattr(_current_state.option_trader, "_position", None)
                 _closed = _current_state.option_trader.evaluate_and_close(
                     current_spot=completed_bar.close_price,
                     current_iv=_current_state.last_atm_iv,
@@ -4428,190 +4945,8 @@ def on_ticks(raw_ticks):
                     current_premium_override=_live_ltp,
                 )
                 if _closed is not None:
-                    # ── Route the exit + confirm the fill BEFORE finalizing ──
-                    # paper/real_dry_run: confirm_fill synthesizes a FILLED at the BSM
-                    # exit premium, so accounting is unchanged.  real_armed: place the
-                    # real SELL order and confirm the ACTUAL exit price.  An unconfirmed
-                    # real exit means the broker may STILL hold the position → HALT
-                    # (fail-closed; reconciliation + manual intervention resolve).
-                    try:
-                        _exit_result = _exec_router.route_exit(
-                            underlying    = _current_state.option_underlying,
-                            tradingsymbol = _closed.contract_symbol,
-                            lots          = _closed.lots,
-                            lot_size      = _closed.lot_size,
-                            exit_premium  = _closed.exit_premium,
-                            reason        = str(_closed.exit_reason),
-                            session_tag   = _session_tag,
-                            risk_context  = {"pnl": round(_closed.pnl, 2), "equity": _equity},
-                            db            = _db,
-                        )
-                        _exit_fill = _exec_router.confirm_fill(
-                            _exit_result,
-                            expected_qty=_closed.lots * _closed.lot_size,
-                            fallback_premium=_closed.exit_premium,
-                        )
-                    except Exception:
-                        _exit_fill = None
-
-                    # Final exit price/pnl: actual fill in real_armed, else BSM estimate.
-                    if (_EXECUTION_MODE == "real_armed"
-                            and _exit_fill is not None and _exit_fill.is_filled):
-                        _final_exit_premium = _exit_fill.average_price
-                        _final_pnl = (
-                            (_final_exit_premium - _closed.entry_premium)
-                            * _closed.lot_size * _closed.lots
-                        )
-                        # Real fills embed the spread; statutory charges only.
-                        _final_pnl, _closed.costs = _apply_txn_costs(
-                            _final_pnl, entry_premium=_closed.entry_premium,
-                            exit_premium=_final_exit_premium,
-                            quantity=_closed.lot_size * _closed.lots,
-                            underlying=_closed.underlying_symbol,
-                            spread_frac_per_side=0.0)
-                        print(
-                            f"[REAL FILL] EXIT {_closed.contract_symbol} filled "
-                            f"@₹{_final_exit_premium:.2f} qty={_exit_fill.filled_quantity} "
-                            f"actual_pnl=₹{_final_pnl:,.0f} (est ₹{_closed.pnl:,.0f})"
-                        )
-                    else:
-                        _final_exit_premium = _closed.exit_premium
-                        _final_pnl = _closed.pnl
-
-                    # Keep _closed consistent with the executed fill so the JSON trade
-                    # log (as_paper_trade) matches pt_trades and the accounting below.
-                    _closed.exit_premium = _final_exit_premium
-                    _closed.pnl          = _final_pnl
-
-                    # real_armed exit that did not confirm — HALT (broker may still hold).
-                    if (_EXECUTION_MODE == "real_armed"
-                            and (_exit_fill is None or not _exit_fill.is_filled)):
-                        _miss = _exit_fill.status if _exit_fill is not None else "ROUTER_ERROR"
-                        _trading_halted = True
-                        _halt_reason = (
-                            f"REAL_EXIT_UNCONFIRMED {_closed.contract_symbol} status={_miss}"
-                        )
-                        print_warning_block(
-                            "REAL EXIT NOT CONFIRMED — TRADING HALTED",
-                            bar_index=_bar_count,
-                            underlying=_current_state.option_underlying,
-                            contract=_closed.contract_symbol,
-                            reason=_halt_reason + " (reconcile broker position manually)",
-                        )
-                        try:
-                            _db.write_runtime_event(
-                                "REAL_EXIT_UNCONFIRMED", severity="CRITICAL",
-                                message=_halt_reason, equity=_equity,
-                            )
-                        except Exception:
-                            pass
-
-                    # ── Finalize accounting at the final exit price ──
-                    _equity += _final_pnl
-                    _peak_equity = max(_peak_equity, _equity)
-                    _open_premium_cost = _compute_open_premium_cost()
-                    _daily_pnl += _final_pnl
-                    # Guards classify on GROSS — see EOD-close site (breakeven
-                    # exits must not feed loss streaks because of the toll).
-                    if (_final_pnl + getattr(_closed, "costs", 0.0)) < 0:
-                        _consecutive_losses += 1
-                    else:
-                        _consecutive_losses = 0
-                    # Re-entry cooldown state (keyed on exit_reason, not pnl)
-                    if "STOP_LOSS" in str(_closed.exit_reason):
-                        _current_state.last_stop_bar      = _bar_count
-                        _current_state.last_stop_contract = _closed.contract_symbol
-                    # Structure-exit cooldown state (chop filter): BOS/CHOCH exits
-                    # previously bypassed the cooldown, causing same-strike churn.
-                    if "STRUCTURE_EXIT" in str(_closed.exit_reason):
-                        _current_state.last_struct_exit_bar      = _bar_count
-                        _current_state.last_struct_exit_contract = _closed.contract_symbol
-                    # Same-contract session loss limit: count losing exits per
-                    # (contract, direction); at the limit that pair is blocked
-                    # for the rest of the session (same-strike churn killer).
-                    _current_state.contract_loss_tracker.record_exit(
-                        contract=_closed.contract_symbol,
-                        direction=str(_closed.direction),
-                        # GROSS: a toll-only negative is not a losing exit.
-                        pnl=_final_pnl + getattr(_closed, "costs", 0.0),
-                    )
-                    if _current_state.contract_loss_tracker.blocked(
-                        contract=_closed.contract_symbol,
-                        direction=str(_closed.direction),
-                    ):
-                        print(
-                            f"[SAME-CONTRACT SESSION BLOCK] {_closed.contract_symbol} "
-                            f"{_closed.direction}: "
-                            f"{_current_state.contract_loss_tracker.losses(contract=_closed.contract_symbol, direction=str(_closed.direction))} "
-                            f"losing exits — blocked for the rest of the session"
-                        )
-                    # Chop re-entry brake: consecutive losing exits lock the
-                    # underlying briefly; a win resets immediately (trend continues).
-                    # GROSS classification (identical to pre-cost-model behaviour).
-                    if (_closed.pnl + getattr(_closed, "costs", 0.0)) > 0:
-                        _current_state.reentry_loss_streak = 0
-                    else:
-                        _current_state.reentry_loss_streak += 1
-                        if _current_state.reentry_loss_streak >= _MAX_REENTRY_LOSSES:
-                            _current_state.reentry_lockout_until_bar = _bar_count + _REENTRY_LOCKOUT_BARS
-                            _current_state.reentry_loss_streak = 0  # fresh start after the lockout
-                            print(
-                                f"[CHOP RE-ENTRY LOCKOUT] {_current_state.option_underlying}: "
-                                f"{_MAX_REENTRY_LOSSES} consecutive losing exits — new entries "
-                                f"blocked for {_REENTRY_LOCKOUT_BARS} bars (until bar "
-                                f"{_current_state.reentry_lockout_until_bar})"
-                            )
-                    print_exit_block(
-                        underlying=_closed.underlying_symbol,
-                        strike=_closed.strike,
-                        option_type=_closed.option_type,
-                        direction=_closed.direction,
-                        lots=_closed.lots,
-                        lot_size=_closed.lot_size,
-                        entry_premium=_closed.entry_premium,
-                        exit_premium=_final_exit_premium,
-                        pnl=_final_pnl,
-                        bars_held=_closed.bars_held,
-                        exit_reason=str(_closed.exit_reason),
-                        equity=_equity,
-                    )
-                    try:
-                        _db.write_trade_exit(
-                            underlying=_current_state.option_underlying,
-                            exit_premium=_final_exit_premium,
-                            pnl=_final_pnl,
-                            bars_held=_closed.bars_held,
-                            exit_reason=str(_closed.exit_reason),
-                            exit_ts=datetime.now(timezone.utc).isoformat(),
-                            equity_after=_equity,
-                        )
-                    except Exception:
-                        pass
-                    if _save_state():
-                        trade_logger.log_trade(trade=_closed.as_paper_trade())
-                    else:
-                        print_warning_block(
-                            "STATE SAVE FAILED",
-                            reason=(
-                                "trade not logged to CSV — "
-                                "position closed in memory, will re-evaluate after restart"
-                            ),
-                        )
-                    _all_completed = [
-                        t.as_paper_trade()
-                        for _s in _runtime_by_underlying.values()
-                        for t in _s.option_trader.completed_trades
-                    ]
-                    _summary = performance_tracker.calculate_summary(trades=_all_completed)
-                    print_performance_summary(
-                        total_trades=_summary.total_trades,
-                        wins=_summary.winning_trades,
-                        losses=_summary.losing_trades,
-                        total_pnl=_summary.total_pnl,
-                        avg_pnl=_summary.average_pnl,
-                        equity=_equity,
-                        initial_equity=_INITIAL_EQUITY,
-                    )
+                    if _book_intraday_option_exit(_current_state, _closed, _pre_exit_pos):
+                        continue
 
             # Session reset + capital protection checks run every BANKNIFTY bar
             _try_resume_trading(_bar_date_live)
@@ -4637,6 +4972,18 @@ def on_ticks(raw_ticks):
                     )
                 except Exception:
                     pass
+                # F1 (safety tightening, DEFAULT OFF): a daily hard-stop that leaves
+                # the book open is not a hard stop. When enabled AND the halt is a
+                # DAILY_LOSS breach (NOT MAX_DRAWDOWN, which requires manual restart),
+                # FLATTEN via the existing audited close/route/confirm path so an open
+                # position cannot bleed past the cap on MTM before its own stop fires.
+                if _FLATTEN_ON_DAILY_HALT and "DAILY_LOSS" in _halt_reason:
+                    print_warning_block(
+                        "DAILY_LOSS FLATTEN",
+                        equity=f"₹{_equity:,.0f}",
+                        reason="daily hard-halt — force-closing open positions (PAPER_FLATTEN_ON_DAILY_HALT)",
+                    )
+                    _eod_force_close_all(reason_tag="DAILY_LOSS_FLATTEN")
                 _save_state()
 
             # ── Soft halt check ──────────────────────────────────────────────
@@ -4815,6 +5162,38 @@ def on_ticks(raw_ticks):
                     _nifty_reason = ("NIFTY_LONG_GATE — needs live flow support "
                                      f"(flow={'none' if _nflow is None else _nflow.get('flow_bias')})")
 
+            # Anti-chase: don't buy the exhausted extreme (see knob decl).
+            _antichase_reason = ""
+            if _ANTICHASE_GATE and _dir in ("LONG", "SHORT"):
+                try:
+                    _acb = _current_state.bar_history.get("1m") or []
+                    _acw = _acb[-_ANTICHASE_LOOKBACK:] if len(_acb) >= 5 else []
+                    if _acw:
+                        _aclo = min(b.low_price for b in _acw)
+                        _achi = max(b.high_price for b in _acw)
+                        _acsp = _acw[-1].close_price
+                        if _achi > _aclo:
+                            _acpos = (_acsp - _aclo) / (_achi - _aclo)
+                            if _dir == "LONG" and _acpos >= _ANTICHASE_THRESHOLD:
+                                _effective_conf *= 0.0
+                                _antichase_reason = f"ANTICHASE_LONG spot@{_acpos:.0%} of range (up-move ran)"
+                            elif _dir == "SHORT" and _acpos <= (1.0 - _ANTICHASE_THRESHOLD):
+                                _effective_conf *= 0.0
+                                _antichase_reason = f"ANTICHASE_SHORT spot@{_acpos:.0%} of range (down-move ran)"
+                    if _antichase_reason:
+                        print(f"[ANTICHASE BLOCK] {_current_state.option_underlying} {_dir}: {_antichase_reason}")
+                except Exception:
+                    pass
+
+            # Regime gate: stand aside in BALANCED chop (see knob decl). Runtime adaptation
+            # -- the model reads its own live regime and refuses the losing condition.
+            _regime_reason = ""
+            _rg = str(getattr(_current_state, "last_dir_regime", "")).upper()
+            if _REGIME_ONLY_COMPRESSION and _rg not in ("COMPRESSION", "", "UNKNOWN"):
+                _effective_conf *= 0.0
+                _regime_reason = f"REGIME_GATE {_rg} (only COMPRESSION trades) — standing aside"
+                print(f"[REGIME GATE] {_current_state.option_underlying}: {_rg} regime — standing aside (trade only COMPRESSION)")
+
             # Open-drive window: session-phase (and warm-up) blocks are lifted
             # during the seeded 09:15–09:35 IST window — see _open_drive_pass_now.
             _session_entry_ok = _session_ctx.allow_entry or _open_drive_pass_now()
@@ -4963,6 +5342,15 @@ def on_ticks(raw_ticks):
                             f"{_current_state.direction_entry_counter.entries(direction=str(_mctx.bias))} "
                             f"entries this session (max "
                             f"{_current_state.direction_entry_counter.max_entries})"
+                        )
+
+                    # [A-stop] Post-stop directional lockout: one hard stop-out ends
+                    # directional trading on this underlying for the session.
+                    if _pre_entry_block is None and _current_state.post_stop_locked:
+                        _pre_entry_block = (
+                            f"POST_STOP_LOCKOUT — hard stop on "
+                            f"{_current_state.post_stop_contract} this session; "
+                            f"directional read proven wrong, standing aside"
                         )
 
                     # [A-chop] Chop re-entry lockout: after consecutive losing exits

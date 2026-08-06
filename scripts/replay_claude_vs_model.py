@@ -17,7 +17,15 @@ exec(open(HARNESS).read().split("def bt(")[0], ns)
 load_day, LOT, fly_value = ns["load_day"], ns["LOT"], ns["fly_value"]
 WING = 2  # iron butterfly wing width in strikes (defined risk)
 
-COST_LEG = 0.0015           # fraction of premium per leg (matches iron_butterfly cost model)
+# 2026-08-07: the old `COST_LEG = 0.0015 * premium` model undercharged multi-leg
+# structures by ~6-9x because it ignored the FLAT Rs20-per-order brokerage (a 4-leg
+# fly pays 8 orders = Rs160 before any percentage charge). All costing now goes
+# through the platform's single source of truth.
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+from platform_core.execution.transaction_costs import (
+    structure_round_trip_costs, exchange_for_underlying,
+)
 ENTRY_SKIP = 20             # skip ~first 20 snapshots (opening range) -> enter ~09:30 IST
 DAYS = ["2026-08-03", "2026-08-04", "2026-08-05"]
 
@@ -53,15 +61,19 @@ def replay_file(path):
     move = x[1] - e[1]
 
     # MODEL: long ATM call
+    _exch = exchange_for_underlying(und)
     m_gross = (ce_x - ce_e) * lot
-    m_cost = COST_LEG * (ce_e + ce_x) * lot
+    m_cost = structure_round_trip_costs(
+        [(ce_e, ce_x, "BUY")], quantity=lot, exchange=_exch).total
     m_pnl = m_gross - m_cost
 
     # CLAUDE: short ATM straddle (sell CE+PE at entry, buy back EOD)
     strad_e = ce_e + pe_e
     strad_x = ce_x + pe_x
     c_gross = (strad_e - strad_x) * lot
-    c_cost = COST_LEG * 2 * (strad_e + strad_x) * lot
+    c_cost = structure_round_trip_costs(
+        [(ce_e, ce_x, "SELL"), (pe_e, pe_x, "SELL")],
+        quantity=lot, exchange=_exch).total
     c_pnl = c_gross - c_cost
 
     # IRON BUTTERFLY: short ATM straddle + long wings at +/-WING strikes (defined risk) —
@@ -70,7 +82,16 @@ def replay_file(path):
     vx, _ = fly_value(legs_x, atm, x[3], WING)
     ib_pnl = None
     if v0 is not None and vx is not None:
-        ib_pnl = (v0 - vx) * lot - COST_LEG * 4 * ((v0 + vx) / 2) * lot
+        _step = (strikes_e[1] - strikes_e[0]) if len(strikes_e) > 1 else 100
+        _w = WING * _step
+        _wce_e, _wpe_e = nearest(legs_e, strikes_e, atm + _w, "CE"), nearest(legs_e, strikes_e, atm - _w, "PE")
+        _wce_x, _wpe_x = nearest(legs_x, x[3], atm + _w, "CE"), nearest(legs_x, x[3], atm - _w, "PE")
+        if None not in (_wce_e, _wpe_e, _wce_x, _wpe_x):
+            _ib_cost = structure_round_trip_costs(
+                [(ce_e, ce_x, "SELL"), (pe_e, pe_x, "SELL"),
+                 (_wce_e, _wce_x, "BUY"), (_wpe_e, _wpe_x, "BUY")],
+                quantity=lot, exchange=_exch).total
+            ib_pnl = (v0 - vx) * lot - _ib_cost
 
     return {"und": und, "lot": lot, "atm": atm, "move": move,
             "model_pnl": m_pnl, "claude_pnl": c_pnl, "ib_pnl": ib_pnl,

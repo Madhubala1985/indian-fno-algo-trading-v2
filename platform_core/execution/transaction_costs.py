@@ -82,6 +82,59 @@ def option_round_trip_costs(*, entry_premium: float, exit_premium: float,
                          gst=gst, stamp=stamp, spread=spread)
 
 
+def structure_round_trip_costs(legs, *, quantity: int, exchange: str = "NFO",
+                               spread_frac_per_side: float | None = None) -> CostBreakdown:
+    """Full toll for a MULTI-LEG structure (iron fly, straddle, spread).
+
+    `legs` is an iterable of (entry_premium, exit_premium, opening_side) where
+    opening_side is "SELL" for a short leg and "BUY" for a long leg; the closing
+    order is the opposite side, so STT (sell-side) and stamp (buy-side) land on
+    the correct halves of each leg.
+
+    The term that matters here is BROKERAGE: it is FLAT PER EXECUTED ORDER, so a
+    4-leg structure pays 8 × ₹20 = ₹160 before any percentage charge, and that
+    does not shrink with size. Structures whose expected move is only a few points
+    of premium cannot clear it — see the min-edge gate in iron_butterfly_live.py.
+    """
+    txn_frac = _TXN_FRAC.get(exchange.upper(), _TXN_FRAC["NFO"])
+    sf = SPREAD_FRAC_PER_SIDE if spread_frac_per_side is None else spread_frac_per_side
+    q = max(int(quantity), 0)
+    brokerage = stt = txn = sebi = stamp = spread = 0.0
+    for entry_px, exit_px, open_side in legs:
+        open_side = str(open_side).upper()
+        entry_turn = max(float(entry_px), 0.0) * q
+        exit_turn  = max(float(exit_px), 0.0) * q
+        # opening order + closing order
+        brokerage += _BROKERAGE_PER_ORDER * 2
+        txn       += txn_frac * (entry_turn + exit_turn)
+        sebi      += _SEBI_FRAC * (entry_turn + exit_turn)
+        spread    += sf * (entry_turn + exit_turn)
+        if open_side == "SELL":          # sell to open, buy to close
+            stt   += _STT_SELL_FRAC * entry_turn
+            stamp += _STAMP_BUY_FRAC * exit_turn
+        else:                            # buy to open, sell to close
+            stt   += _STT_SELL_FRAC * exit_turn
+            stamp += _STAMP_BUY_FRAC * entry_turn
+    gst = _GST_FRAC * (brokerage + txn + sebi)
+    return CostBreakdown(brokerage=brokerage, stt=stt, txn=txn, sebi=sebi,
+                         gst=gst, stamp=stamp, spread=spread)
+
+
+def iron_fly_round_trip_costs(*, atm_ce: float, atm_pe: float, wing_ce: float,
+                              wing_pe: float, quantity: int, exchange: str = "NFO",
+                              exit_fraction: float = 0.85,
+                              spread_frac_per_side: float | None = None) -> CostBreakdown:
+    """Toll for a 4-leg iron butterfly (8 orders). `exit_fraction` approximates the
+    average exit premium when exact exit legs are unknown; cost is only weakly
+    sensitive to it because the dominant terms are flat per order."""
+    f = float(exit_fraction)
+    return structure_round_trip_costs(
+        [(atm_ce, atm_ce * f, "SELL"), (atm_pe, atm_pe * f, "SELL"),
+         (wing_ce, wing_ce * f, "BUY"), (wing_pe, wing_pe * f, "BUY")],
+        quantity=quantity, exchange=exchange,
+        spread_frac_per_side=spread_frac_per_side)
+
+
 def apply_costs(gross_pnl: float, *, entry_premium: float, exit_premium: float,
                 quantity: int, underlying: str,
                 spread_frac_per_side: float | None = None) -> tuple[float, float]:
