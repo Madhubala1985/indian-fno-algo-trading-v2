@@ -1,0 +1,38 @@
+{
+ "armed_at": "13:52 IST",
+ "note": "id=9 stopped -4,401. No further breakout entries. Remaining arms = vol-sleeve management only. All probe=LTP.",
+ "triggers": [
+  {
+   "name": "VRP_UPPER_BE",
+   "underlying": "NIFTY",
+   "dir": "ABOVE",
+   "level": 24824,
+   "probe": "LTP",
+   "action": "NIFTY vol sleeve past UPPER breakeven \u2014 wing caps at 25,000"
+  },
+  {
+   "name": "VRP_LOWER_BE",
+   "underlying": "NIFTY",
+   "dir": "BELOW",
+   "level": 24376,
+   "probe": "LTP",
+   "action": "NIFTY vol sleeve past LOWER breakeven \u2014 wing caps at 24,200"
+  },
+  {
+   "name": "VRP2_UPPER_BE",
+   "underlying": "SENSEX",
+   "dir": "ABOVE",
+   "level": 79300,
+   "probe": "LTP",
+   "action": "SENSEX vol sleeve past UPPER breakeven \u2014 wing caps at 79,600"
+  },
+  {
+   "name": "VRP2_LOWER_BE",
+   "underlying": "SENSEX",
+   "dir": "BELOW",
+   "level": 77900,
+   "probe": "LTP",
+   "action": "SENSEX vol sleeve past LOWER breakeven \u2014 wing caps at 77,600"
+  }
+ ]
+}
