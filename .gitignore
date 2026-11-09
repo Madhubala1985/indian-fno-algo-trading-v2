@@ -28,3 +28,6 @@ deploy/secrets.env
 
 # broker credentials — never commit
 configs/angelone_config.json
+
+# kite credentials - never commit
+configs/kite_config.json
