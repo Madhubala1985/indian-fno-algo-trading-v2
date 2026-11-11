@@ -70,18 +70,28 @@ def test_real_armed_uses_live_adapter_with_interlocks():
 
 
 def test_entry_places_real_order_and_confirms_actual_fill():
-    mk = MockKite(status="COMPLETE", trades=[{"average_price": 611.25, "quantity": 60}])
+    mk = MockKite(status="COMPLETE", trades=[{"average_price": 611.25, "quantity": 20}])
     r = _router(mk)
     res = r.route_entry(underlying="SENSEX", tradingsymbol="SENSEX26JUN77000CE",
-                        lots=3, lot_size=20, premium=600.0, direction="LONG", session_tag="t")
+                        lots=1, lot_size=20, premium=600.0, direction="LONG", session_tag="t")
     # real order placed with correct params; order_id returned but NOT a fill yet
     assert res.success and res.order_id == "MOCKORD1" and res.filled is False
     p = mk.placed[0]
-    assert p["transaction_type"] == "BUY" and p["quantity"] == 60 and p["order_type"] == "MARKET"
+    assert p["transaction_type"] == "BUY" and p["quantity"] == 20 and p["order_type"] == "MARKET"
     assert p["exchange"] == "BFO"
     # confirm the fill at the ACTUAL average price (not the 600 fallback)
-    f = r.confirm_fill(res, expected_qty=60, fallback_premium=600.0)
-    assert f.is_filled and f.filled_quantity == 60 and abs(f.average_price - 611.25) < 1e-9
+    f = r.confirm_fill(res, expected_qty=20, fallback_premium=600.0)
+    assert f.is_filled and f.filled_quantity == 20 and abs(f.average_price - 611.25) < 1e-9
+
+
+def test_entry_above_lot_cap_is_blocked_before_broker():
+    mk = MockKite()
+    r = _router(mk)
+    res = r.route_entry(underlying="SENSEX", tradingsymbol="SENSEX26JUN77000CE",
+                        lots=3, lot_size=20, premium=600.0, direction="LONG", session_tag="t")
+    assert not res.success and res.status == "CAP_BLOCKED"
+    assert "REAL_MAX_LOTS_PER_ORDER" in res.rejection_reason
+    assert mk.placed == []   # fail-closed: nothing reached the broker
 
 
 def test_exit_places_sell_and_confirms():

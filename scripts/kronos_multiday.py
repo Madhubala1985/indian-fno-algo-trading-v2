@@ -17,8 +17,8 @@ import json, os, sys, time
 import numpy as np
 import pandas as pd
 
-KRONOS = "/home/madhu/institutional_ai/external/Kronos"
-ROOT = "/home/madhu/institutional_ai/institutional_trading_system_v2"
+KRONOS = os.environ.get("KRONOS_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "external", "Kronos"))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, KRONOS)
 os.chdir(ROOT)
 

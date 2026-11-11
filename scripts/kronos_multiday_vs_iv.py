@@ -18,7 +18,7 @@ from __future__ import annotations
 import collections, datetime as dt, glob, json, os, sys
 import numpy as np
 
-ROOT = "/home/madhu/institutional_ai/institutional_trading_system_v2"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(ROOT); sys.path.insert(0, ROOT)
 HORIZON = float(os.environ.get("KR_DAYS", "2"))
 SRC = f"data/kronos/eval_multiday_{int(HORIZON)}d.jsonl"

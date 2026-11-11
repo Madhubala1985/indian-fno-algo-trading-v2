@@ -1,3 +1,11 @@
-# Runtime deps are provisioned on the host/venv (kiteconnect etc.).
-# crossasset_shadow macro feeds are Kite-native (GLOBAL:US500 / NSEIX:GIFT NIFTY /
-# MCX CRUDEOIL) — no third-party market-data package required. yfinance removed.
+# Core model
+pydantic>=2.6
+pydantic-settings>=2.2
+kiteconnect>=5.0
+# Analysis scripts
+numpy>=1.26
+pandas>=2.2
+# Tests
+pytest>=8.0
+pytest-asyncio>=0.23
+# Optional: Kronos foundation-model study needs torch + the Kronos repo (set KRONOS_PATH)

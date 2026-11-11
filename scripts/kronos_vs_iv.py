@@ -18,7 +18,7 @@ from __future__ import annotations
 import json, glob, os, collections, statistics, sys
 import numpy as np
 
-ROOT = "/home/madhu/institutional_ai/institutional_trading_system_v2"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 

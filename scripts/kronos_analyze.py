@@ -10,12 +10,13 @@ dumb always-buy-puts control was run against it; the same discipline applies her
 model that cannot beat "what vol just was" adds nothing.
 """
 from __future__ import annotations
+import os
 import json, statistics, sys
 import numpy as np
 import pandas as pd
 
-SRC = "/home/madhu/institutional_ai/institutional_trading_system_v2/data/kronos/eval_results.jsonl"
-DATA = "/home/madhu/institutional_ai/institutional_trading_system_v2/data/kronos"
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/kronos/eval_results.jsonl")
+DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/kronos")
 
 
 def corr(a, b):
@@ -70,7 +71,7 @@ def main() -> int:
     print(f"  sign hit rate           : {hit:.1f}%   (n={len(d)})")
     print(f"  mean |actual move|      : {d['act_ret_bps'].abs().mean():.1f} bps")
     # net P&L: trade ATM option, delta~0.5, 1 lot; costs from the platform model
-    sys.path.insert(0, "/home/madhu/institutional_ai/institutional_trading_system_v2")
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from platform_core.execution.transaction_costs import (
         structure_round_trip_costs, exchange_for_underlying)
     LOT = {"NIFTY": 65, "SENSEX": 20, "BANKNIFTY": 30}

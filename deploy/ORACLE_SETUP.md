@@ -44,7 +44,7 @@ are rebuilt on the VM):
 rsync -avz --exclude venv --exclude '__pycache__' --exclude '*.pyc' \
   --exclude 'data/*.csv' --exclude 'logs/*.log' \
   -e "ssh -i ~/.ssh/oracle.key" \
-  /home/madhu/institutional_ai/institutional_trading_system_v2/ \
+  ~/nse-market-intelligence-v2/ \
   ubuntu@YOUR_VM_IP:/home/ubuntu/institutional_trading_system_v2/
 ```
 
@@ -104,7 +104,7 @@ journalctl -u trading-model.service -f
 ---
 ## STEP 7 — (LAPTOP) pull the data back for analysis (whenever you want me to look)
 ```bash
-cd /home/madhu/institutional_ai/institutional_trading_system_v2
+cd ~/nse-market-intelligence-v2
 # edit deploy/pull_from_vm.sh once if your key path differs, then:
 rsync -avz -e "ssh -i ~/.ssh/oracle.key" \
   ubuntu@YOUR_VM_IP:/home/ubuntu/institutional_trading_system_v2/logs/ logs/

@@ -18,9 +18,9 @@ import json, os, sys, time
 import numpy as np
 import pandas as pd
 
-KRONOS = "/home/madhu/institutional_ai/external/Kronos"
-DATA = "/home/madhu/institutional_ai/institutional_trading_system_v2/data/kronos"
-OUT = "/home/madhu/institutional_ai/institutional_trading_system_v2/data/kronos/eval_results.jsonl"
+KRONOS = os.environ.get("KRONOS_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "external", "Kronos"))
+DATA = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/kronos")
+OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data/kronos/eval_results.jsonl")
 sys.path.insert(0, KRONOS)
 
 LOOKBACK = int(os.environ.get("KR_LOOKBACK", "256"))
